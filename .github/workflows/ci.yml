@@ -23,6 +23,9 @@ jobs:
       - name: Restore
         run: dotnet restore
 
+      - name: Restore tools
+        run: dotnet tool restore
+
       - name: Build
         run: dotnet build --configuration Release --no-restore
 
@@ -38,6 +41,28 @@ jobs:
         with:
           name: coverage
           path: TestResults/**/coverage.cobertura.xml
+
+      # Renders the cobertura output as a coverage table on the run's Summary tab and publishes a
+      # browsable HTML report artifact. Test assemblies and the non-packable server host are filtered
+      # out so the numbers reflect the shipped packages. Note: RabbitMQ coverage reads low here by
+      # design — its broker integration tests require Docker and are excluded from this job.
+      - name: Coverage summary
+        if: always()
+        run: |
+          dotnet reportgenerator \
+            -reports:"TestResults/**/coverage.cobertura.xml" \
+            -targetdir:"coverage" \
+            -reporttypes:"Html;MarkdownSummaryGithub" \
+            -assemblyfilters:"+UKBatch.*;-*.Tests;-UKBatch.Server" \
+            -classfilters:"-*.Migrations.*"
+          cat coverage/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report (HTML)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/**
 
       - name: Pack (verify packable on every CI)
         run: dotnet pack --configuration Release --no-build --output ./artifacts
