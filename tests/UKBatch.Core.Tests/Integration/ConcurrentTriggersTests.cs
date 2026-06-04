@@ -70,9 +70,34 @@ public class ConcurrentTriggersTests
             var executions = await Task.WhenAll(tasks).ConfigureAwait(false);
             execIds.AddRange(executions.Select(e => e.ExecutionId));
 
-            // Wait for every one to reach terminal state.
+            // Wait for every one to reach terminal state — progress-aware, NOT a fixed wall-clock
+            // budget. A fixed timeout measures machine speed, not correctness: on a loaded runner
+            // (full-suite parallel load, 2-core CI) 1000 executions legitimately take minutes. The
+            // assertion target is "no deadlock", and a deadlock looks like NOTHING terminating for a
+            // sustained window — so we keep waiting while work keeps retiring and fail only when no
+            // execution completes for a full stall window.
             var waitTasks = execIds.Select(id => awaiter.WaitForTerminalAsync(id, default)).ToArray();
-            await Task.WhenAll(waitTasks).WaitAsync(TimeSpan.FromSeconds(120)).ConfigureAwait(false);
+            var allDone = Task.WhenAll(waitTasks);
+            var stallWindow = TimeSpan.FromSeconds(30);
+            var lastProgress = waitTasks.Count(t => t.IsCompleted);
+            var lastProgressAt = Environment.TickCount64;
+            while (!allDone.IsCompleted)
+            {
+                await Task.WhenAny(allDone, Task.Delay(TimeSpan.FromSeconds(1))).ConfigureAwait(false);
+                var done = waitTasks.Count(t => t.IsCompleted);
+                if (done > lastProgress)
+                {
+                    lastProgress = done;
+                    lastProgressAt = Environment.TickCount64;
+                }
+                else if (Environment.TickCount64 - lastProgressAt > stallWindow.TotalMilliseconds)
+                {
+                    throw new TimeoutException(
+                        $"No execution reached a terminal state for {stallWindow.TotalSeconds}s " +
+                        $"({done}/{Total} done) — possible dispatcher deadlock.");
+                }
+            }
+            await allDone.ConfigureAwait(false); // propagate any awaiter faults
 
             // Tally outcomes.
             var store = host.Services.GetRequiredService<IJobStore>();

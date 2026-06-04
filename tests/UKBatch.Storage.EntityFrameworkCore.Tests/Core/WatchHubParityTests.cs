@@ -87,32 +87,44 @@ public sealed class WatchHubParityTests
         var hub = new JobExecutionWatchHub(NullLogger<JobExecutionWatchHub>.Instance);
         var options = new WatchOptions { OverflowPolicy = WatchOverflowPolicy.DropNewest, BufferCapacity = 16 };
         var received = new List<JobExecution>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var consumer = Task.Run(async () =>
+        // Deterministic slow-consumer harness — no wall-clock scheduling assumptions. The previous
+        // version parked the consumer behind Task.Run + Task.Delay(50) and flaked to ZERO events
+        // under full-suite CPU load (the consumer never got scheduled before the publishes, so the
+        // subscription was not yet registered and all 500 events were dropped on the floor).
+        // MoveNextAsync runs the async-iterator body synchronously up to its first await (the
+        // empty-buffer read), so the subscription is REGISTERED the moment the call returns. The
+        // consumer then stays idle (no pending read) while we flood the buffer, which makes the
+        // DropNewest tail-drop structural instead of timing-dependent.
+        var watch = hub.WatchAsync(options, cts.Token).GetAsyncEnumerator(cts.Token);
+        try
         {
-            try
+            var firstMove = watch.MoveNextAsync();  // registers the subscription, then suspends on the empty buffer
+            hub.Publish(Exec("seed"));              // completes the pending read deterministically
+            (await firstMove.AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false)).Should().BeTrue();
+            received.Add(watch.Current);
+
+            // Consumer idle: the bounded buffer absorbs exactly BufferCapacity events, DropNewest
+            // discards the remaining tail.
+            const int Published = 500;
+            for (var i = 0; i < Published; i++) hub.Publish(Exec($"e{i}"));
+
+            // Drain the survivors — exactly BufferCapacity events are buffered, never more.
+            for (var i = 0; i < options.BufferCapacity; i++)
             {
-                await foreach (var ex in hub.WatchAsync(options, cts.Token).ConfigureAwait(false))
-                {
-                    started.TrySetResult();
-                    received.Add(ex);
-                    await Task.Delay(20, cts.Token).ConfigureAwait(false);
-                }
+                (await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false)).Should().BeTrue();
+                received.Add(watch.Current);
             }
-            catch (OperationCanceledException) { }
-        });
 
-        await Task.Delay(50).ConfigureAwait(false);
-        for (var i = 0; i < 500; i++) hub.Publish(Exec($"e{i}"));
-
-        await Task.Delay(300).ConfigureAwait(false);
-        cts.Cancel();
-        try { await consumer.ConfigureAwait(false); } catch (OperationCanceledException) { }
-
-        received.Count.Should().BeLessThan(500, "DropNewest drops tail events when the buffer is full");
-        received.Count.Should().BeGreaterThan(0);
+            received.Count.Should().BeLessThan(Published, "DropNewest drops tail events when the buffer is full");
+            received.Count.Should().BeGreaterThan(0);
+        }
+        finally
+        {
+            cts.Cancel();
+            await watch.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Fact]

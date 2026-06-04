@@ -124,36 +124,48 @@ public class InMemoryJobStoreWatchAsyncTests
             BufferCapacity = 16,
         };
         var received = new List<JobExecution>();
-        using var subCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var subCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var consumerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var consumer = Task.Run(async () =>
+        // Deterministic slow-consumer harness — no wall-clock scheduling assumptions. The previous
+        // version (Task.Run consumer + Task.Delay(50) "let subscribe register" + Task.Delay(20)
+        // per-event "slow" consumer) flaked under full-suite CPU load: when the awaited CreateAsync
+        // producer loop slowed enough, the consumer kept up, NOTHING was dropped, and
+        // BeLessThan(500) failed. MoveNextAsync runs the async-iterator body synchronously up to
+        // its first await, so the subscription is REGISTERED when the call returns; keeping the
+        // consumer idle (no pending read) while the creates flood the buffer makes the DropNewest
+        // tail-drop structural instead of timing-dependent.
+        var watch = store.WatchAsync(options, subCts.Token).GetAsyncEnumerator(subCts.Token);
+        try
         {
-            try
+            var firstMove = watch.MoveNextAsync();  // registers the subscription, then suspends on the empty buffer
+            _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);  // seed completes the pending read
+            (await firstMove.AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false)).Should().BeTrue();
+            received.Add(watch.Current);
+
+            // Consumer idle: the bounded buffer absorbs exactly BufferCapacity events, DropNewest
+            // discards the remaining tail.
+            const int Published = 500;
+            for (var i = 0; i < Published; i++)
             {
-                await foreach (var ex in store.WatchAsync(options, subCts.Token).ConfigureAwait(false))
-                {
-                    consumerStarted.TrySetResult();
-                    received.Add(ex);
-                    await Task.Delay(20, subCts.Token).ConfigureAwait(false); // slow
-                }
+                _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { }
-        });
 
-        await Task.Delay(50).ConfigureAwait(false); // let subscribe register
+            // Drain the survivors — exactly BufferCapacity events are buffered, never more.
+            for (var i = 0; i < options.BufferCapacity; i++)
+            {
+                (await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false)).Should().BeTrue();
+                received.Add(watch.Current);
+            }
 
-        for (var i = 0; i < 500; i++)
-        {
-            _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);
+            // DropNewest means events get dropped at the tail when buffer is full.
+            received.Count.Should().BeLessThan(Published);
+            received.Count.Should().BeGreaterThan(0);
         }
-
-        await Task.Delay(500).ConfigureAwait(false);
-        subCts.Cancel();
-        try { await consumer.ConfigureAwait(false); } catch (OperationCanceledException) { }
-
-        // DropNewest means events get dropped at the tail when buffer is full.
-        received.Count.Should().BeLessThan(500);
+        finally
+        {
+            subCts.Cancel();
+            await watch.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Fact]
