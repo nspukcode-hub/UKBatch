@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Sample.WorkerMode.Notification</RootNamespace>
+    <UserSecretsId>sample-workermode-notification-9b4e2a58</UserSecretsId>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Worker reference closure: AspNetCore (AddUKBatchAspNetCore + AddJob) + Worker (UseWorkerMode +
+         heartbeat) + Transport.RabbitMQ (cross-service receiver via the consumer pump). NO Api /
+         Dashboard / Storage — a RabbitMQ worker receives dispatch over the broker, not HTTP endpoints,
+         and keeps a narrow image closure. -->
+    <ProjectReference Include="..\..\src\UKBatch.AspNetCore\UKBatch.AspNetCore.csproj" />
+    <ProjectReference Include="..\..\src\UKBatch.Worker\UKBatch.Worker.csproj" />
+    <ProjectReference Include="..\..\src\UKBatch.Transport.RabbitMQ\UKBatch.Transport.RabbitMQ.csproj" />
+  </ItemGroup>
+</Project>

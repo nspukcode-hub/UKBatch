@@ -1,0 +1,263 @@
+@* 320px right-rail node inspector for DagView. Per-step-type content;
+   read-only (editing is the wizard's job). Pure presentational + JS for Copy JSON only. *@
+@inject IJSRuntime JsRuntime
+
+<aside class="dag-node-detail surface-card--elevated">
+    <div class="dag-node-detail__header">
+        <h2 class="dag-node-detail__title">
+            <span class="material-symbols-outlined">@HeaderIcon()</span>
+            @HeaderTitle()
+        </h2>
+        <div style="display:flex; align-items:center; gap:var(--space-xs);">
+            @if (Status is { } st)
+            {
+                <JobStatusBadge Status="st" />
+            }
+            <button class="btn--icon" aria-label="Close" @onclick="@(() => OnClose.InvokeAsync())">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+    </div>
+    <div class="dag-node-detail__body">
+        @switch (Step.StepType)
+        {
+            case BatchStepType.Job:
+                @RenderJob(Step.Job);
+                break;
+            case BatchStepType.ParallelGroup:
+                @RenderParallel(Step.ParallelGroup);
+                break;
+            case BatchStepType.ApprovalGate:
+                @RenderApproval(Step.Approval);
+                break;
+            default:
+                <section class="dag-node-detail__section">
+                    <dl><div class="dag-node-detail__row"><dt>Step ID</dt><dd class="mono">@Step.StepId</dd></div></dl>
+                    <p class="form-field__hint">Unsupported step type (forward-compat).</p>
+                </section>
+                break;
+        }
+    </div>
+</aside>
+
+@code {
+    [Parameter, EditorRequired] public BatchStep Step { get; set; } = default!;
+    [Parameter] public JobStatus? Status { get; set; }   // null in static mode
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    // ── Inline approval decision ────────────────────────────────────────────────────────
+    // The panel stays presentational: it renders the decision UI only when the parent passes a
+    // pending approval id for THIS gate, and raises OnApprove / OnReject for the parent to call the
+    // REST client. No IUKBatchClient injection here — the parent (RunDetail) owns the call + errors.
+
+    /// <summary>Pending approval id for this gate (this batch run); <c>null</c> ⇒ no decision UI.</summary>
+    [Parameter] public string? PendingApprovalId { get; set; }
+
+    /// <summary>True while an approve/reject call is in flight — disables both buttons.</summary>
+    [Parameter] public bool DecisionBusy { get; set; }
+
+    /// <summary>Error string from the last failed decision (e.g. role mismatch); <c>null</c> ⇒ no error.</summary>
+    [Parameter] public string? DecisionError { get; set; }
+
+    /// <summary>Raised when the operator confirms approval.</summary>
+    [Parameter] public EventCallback OnApprove { get; set; }
+
+    /// <summary>Raised when the operator confirms rejection — carries the (non-empty) reason.</summary>
+    [Parameter] public EventCallback<string> OnReject { get; set; }
+
+    private string _rejectReason = string.Empty;
+    private bool RejectReasonValid => !string.IsNullOrWhiteSpace(_rejectReason);
+
+    private async Task ApproveClickedAsync()
+    {
+        if (DecisionBusy) return;
+        await OnApprove.InvokeAsync();
+    }
+
+    private async Task RejectClickedAsync()
+    {
+        if (DecisionBusy || !RejectReasonValid) return;
+        var reason = _rejectReason;
+        await OnReject.InvokeAsync(reason);
+        _rejectReason = string.Empty;   // clear local input after a dispatched reject
+    }
+
+    private string HeaderIcon() => Step.StepType switch
+    {
+        BatchStepType.Job => "work",
+        BatchStepType.ParallelGroup => "alt_route",
+        BatchStepType.ApprovalGate => "rule",
+        _ => "help",
+    };
+
+    private string HeaderTitle() => Step.StepType switch
+    {
+        BatchStepType.Job => Step.Job?.JobName ?? "Job",
+        BatchStepType.ParallelGroup => "Parallel group",
+        BatchStepType.ApprovalGate => Step.Approval?.Title ?? "Approval gate",
+        _ => Step.StepId,
+    };
+
+    private RenderFragment RenderJob(JobStepData? job) => __builder =>
+    {
+        <section class="dag-node-detail__section">
+            <h3>Step</h3>
+            <dl>
+                <div class="dag-node-detail__row"><dt>Step ID</dt><dd class="mono">@Step.StepId</dd></div>
+                <div class="dag-node-detail__row"><dt>Job name</dt><dd>@(job?.JobName ?? "—")</dd></div>
+                <div class="dag-node-detail__row"><dt>Target service</dt><dd>@(job?.TargetService ?? "Local")</dd></div>
+                <div class="dag-node-detail__row"><dt>Max retries</dt><dd>@(job?.MaxRetries?.ToString() ?? "inherit")</dd></div>
+                <div class="dag-node-detail__row"><dt>Timeout</dt><dd>@TimeoutDisplay(job?.TimeoutSeconds)</dd></div>
+            </dl>
+        </section>
+        @if (job?.Parameters is { Count: > 0 })
+        {
+            <section class="dag-node-detail__section">
+                <h3>Parameters</h3>
+                <pre class="dag-node-detail__json"><code>@_paramsJson</code></pre>
+                <div style="display:flex; justify-content:flex-end; margin-top:var(--space-xxs);">
+                    <button class="btn--ghost btn--sm" @onclick="CopyParamsAsync">
+                        <span class="material-symbols-outlined">content_copy</span> Copy JSON
+                    </button>
+                </div>
+            </section>
+        }
+    };
+
+    private RenderFragment RenderParallel(ParallelGroupData? pg) => __builder =>
+    {
+        <section class="dag-node-detail__section">
+            <h3>Parallel group</h3>
+            <dl>
+                <div class="dag-node-detail__row"><dt>Step ID</dt><dd class="mono">@Step.StepId</dd></div>
+                <div class="dag-node-detail__row"><dt>Join policy</dt><dd>@(pg?.JoinPolicy.ToString() ?? "—")</dd></div>
+                <div class="dag-node-detail__row"><dt>Children</dt><dd>@(pg?.Steps.Count ?? 0)</dd></div>
+            </dl>
+        </section>
+        @if (pg?.Steps is { Count: > 0 } children)
+        {
+            <section class="dag-node-detail__section">
+                <h3>Branches</h3>
+                <div class="dag-node-detail__chips">
+                    @foreach (var c in children)
+                    {
+                        <span class="dag-node-detail__chip mono">@(c.Job?.JobName ?? c.StepId)</span>
+                    }
+                </div>
+            </section>
+        }
+    };
+
+    private RenderFragment RenderApproval(ApprovalGateConfig? cfg) => __builder =>
+    {
+        @* Decision section — only for a LIVE pending gate. Static/read-only views (no id, or a gate
+           not currently awaiting) keep exactly today's read-only layout. *@
+        @if (Status == JobStatus.AwaitingApproval && PendingApprovalId is not null)
+        {
+            <section class="dag-node-detail__section">
+                <h3>Decision</h3>
+                <div class="dag-node-detail__decision">
+                    <button class="btn btn--primary btn--sm" @onclick="ApproveClickedAsync" disabled="@DecisionBusy">
+                        @if (DecisionBusy)
+                        {
+                            <span class="material-symbols-outlined spin-animation">progress_activity</span>
+                        }
+                        else
+                        {
+                            <span class="material-symbols-outlined">check</span>
+                        }
+                        Approve
+                    </button>
+                    <div class="form-field" style="margin-bottom:0;">
+                        <input class="form-field__input"
+                               placeholder="Reason (required to reject)"
+                               @bind="_rejectReason"
+                               @bind:event="oninput"
+                               disabled="@DecisionBusy" />
+                        @if (!RejectReasonValid)
+                        {
+                            <span class="form-field__hint">Reason is required</span>
+                        }
+                    </div>
+                    <button class="btn btn--danger btn--sm" @onclick="RejectClickedAsync" disabled="@(DecisionBusy || !RejectReasonValid)">
+                        <span class="material-symbols-outlined">close</span>
+                        Reject
+                    </button>
+                    @if (DecisionError is { } err)
+                    {
+                        <span class="form-field__error">@err</span>
+                    }
+                </div>
+            </section>
+        }
+        <section class="dag-node-detail__section">
+            <h3>Approval gate</h3>
+            <dl>
+                <div class="dag-node-detail__row"><dt>Step ID</dt><dd class="mono">@Step.StepId</dd></div>
+                <div class="dag-node-detail__row"><dt>Title</dt><dd>@(cfg?.Title ?? "—")</dd></div>
+                <div class="dag-node-detail__row"><dt>Timeout</dt><dd>@ApprovalTimeoutDisplay(cfg?.TimeoutAfter)</dd></div>
+                <div class="dag-node-detail__row"><dt>On timeout</dt><dd>@(cfg?.OnTimeout.ToString() ?? "—")</dd></div>
+            </dl>
+        </section>
+        @if (!string.IsNullOrWhiteSpace(cfg?.Description))
+        {
+            <section class="dag-node-detail__section">
+                <h3>Description</h3>
+                <p style="margin:0; color:var(--color-text-secondary);">@cfg!.Description</p>
+            </section>
+        }
+        <section class="dag-node-detail__section">
+            <h3>Allowed roles</h3>
+            <div class="dag-node-detail__chips">
+                @if (cfg is null || cfg.AllowedRoles.Count == 0)
+                {
+                    <span class="dag-node-detail__chip">(none — gate dead-locks)</span>
+                }
+                else
+                {
+                    @foreach (var r in cfg.AllowedRoles)
+                    {
+                        <span class="dag-node-detail__chip">@(r == ApprovalGateConfig.AnyAuthenticatedUser ? "Any authenticated user" : r)</span>
+                    }
+                }
+            </div>
+        </section>
+    };
+
+    private string? _paramsJson;
+    private string? _lastStepId;   // tracks selection identity so the reject input doesn't bleed across nodes
+
+    protected override void OnParametersSet()
+    {
+        // Build the JSON view once per parameter change (not per render — hot-path discipline).
+        _paramsJson = Step.Job?.Parameters is { Count: > 0 } p
+            ? System.Text.Json.JsonSerializer.Serialize(p, new System.Text.Json.JsonSerializerOptions { WriteIndented = true })
+            : null;
+
+        // The panel instance is reused across selections (same render-tree position); reset the local
+        // reject reason whenever the inspected step changes, so a half-typed reason from one gate does
+        // not carry over to the next.
+        if (!string.Equals(_lastStepId, Step.StepId, StringComparison.Ordinal))
+        {
+            _lastStepId = Step.StepId;
+            _rejectReason = string.Empty;
+        }
+    }
+
+    private async Task CopyParamsAsync()
+    {
+        if (_paramsJson is null) return;
+        try { await JsRuntime.InvokeAsync<bool>("UKBatchDashboard.copyToClipboard", _paramsJson); }
+        catch (Exception) { /* clipboard unavailable — non-fatal */ }
+    }
+
+    private static string TimeoutDisplay(int? seconds) => seconds switch
+    {
+        null => "inherit",
+        0 => "no timeout",
+        var s => $"{s}s",
+    };
+
+    private static string ApprovalTimeoutDisplay(TimeSpan? after)
+        => after is { } t ? $"{t.TotalSeconds:F0}s" : "wait indefinitely";
+}

@@ -1,0 +1,12 @@
+# Repo-root .dockerignore shared by the UKBatch.Server image AND the Sample.WorkerMode worker images
+# (all use `build.context: .`). DO NOT exclude `samples/` — the worker Dockerfiles COPY their own
+# sample sources from this context. The server image simply does not COPY samples/.
+**/bin
+**/obj
+**/TestResults
+artifacts/
+.git
+.github
+*.user
+reports/
+documentation/

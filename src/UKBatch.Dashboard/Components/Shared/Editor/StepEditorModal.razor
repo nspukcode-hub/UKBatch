@@ -1,0 +1,81 @@
+@* StepEditorModal — node editing in a MODAL dialog. Used instead of an always-on
+   right-side inspector: selecting / dropping / rail-clicking a node opens this modal, so a
+   ParallelGroup's branches scroll INSIDE the modal card (max-height + overflow:auto body) instead of
+   pushing the whole page down. Follows ConfirmDialog's IsVisible / OnClose / backdrop-dismiss pattern.
+
+   Hosts the shared StepDraftEditor (same markup the Wizard uses → drift-proof round-trip parity). NO
+   JS-interop. AllowTargetService is forwarded from the parent: the Editor passes true for top-level
+   steps (cross-service-capable) and FALSE for onFailure compensation nodes (compensation runs LOCALLY,
+   so the cross-service dropdown is removed). Editing is LIVE: every field mutation
+   bubbles OnChanged so the Editor syncs the canvas label + marks dirty; the modal does NO server write
+   (explicit-Save-only — the page-level Save is the single write path). *@
+@if (IsVisible && Step is not null)
+{
+    <div class="modal-overlay" @onclick="OnClose">
+        <div class="modal-card dag-ed-modal" role="dialog" aria-modal="true" aria-labelledby="dag-ed-modal-title"
+             @onclick:stopPropagation="true">
+            <div class="modal-card__header">
+                <h3 id="dag-ed-modal-title" class="modal-card__title dag-ed-modal__title">
+                    <span class="material-symbols-outlined">@TypeIcon(Step.StepType)</span>
+                    @TypeLabel(Step.StepType)
+                </h3>
+                <button class="btn btn--icon" aria-label="Close" @onclick="OnClose">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+            </div>
+            <div class="modal-card__body dag-ed-modal__body">
+                <StepDraftEditor Step="Step" JobNames="JobNames" JobCatalog="JobCatalog" Services="Services"
+                                 AllowTargetService="AllowTargetService" OnChanged="OnChanged" />
+            </div>
+            <div class="modal-card__actions">
+                <button class="btn btn--primary" @onclick="OnClose">Done</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>True ⇒ the modal is shown. The Editor sets it when a node is dropped / clicked / rail-selected.</summary>
+    [Parameter, EditorRequired] public bool IsVisible { get; set; }
+
+    /// <summary>The draft being edited, or <c>null</c> (modal renders nothing).</summary>
+    [Parameter] public WizardStepDraft? Step { get; set; }
+
+    /// <summary>Local job names — forwarded to <c>StepDraftEditor</c> (superseded by <see cref="JobCatalog"/>).</summary>
+    [Parameter] public IReadOnlyList<string> JobNames { get; set; } = [];
+
+    /// <summary>Worker-aware "job @ service" catalog — forwarded to <c>StepDraftEditor</c>'s Job picker.</summary>
+    [Parameter] public IReadOnlyList<UKBatch.Dashboard.Models.JobCatalogEntry> JobCatalog { get; set; } = [];
+
+    /// <summary>Configured services for the cross-service target dropdown.</summary>
+    [Parameter] public IReadOnlyList<UKBatchServiceDescriptor> Services { get; set; } = [];
+
+    /// <summary>
+    /// Forwarded to <c>StepDraftEditor</c>. <c>false</c> ⇒ the cross-service target dropdown is hidden —
+    /// the Editor passes <c>false</c> for onFailure compensation nodes (compensation runs locally).
+    /// Defaults to <c>true</c> (top-level steps may run cross-service).
+    /// </summary>
+    [Parameter] public bool AllowTargetService { get; set; } = true;
+
+    /// <summary>Bubbled up on any field mutation so the Editor can sync the canvas label + mark dirty.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    /// <summary>Raised when the operator closes the modal (Done button, X, or backdrop click).</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static string TypeIcon(BatchStepType t) => t switch
+    {
+        BatchStepType.Job => "work",
+        BatchStepType.ParallelGroup => "alt_route",
+        BatchStepType.ApprovalGate => "rule",
+        _ => "circle",
+    };
+
+    private static string TypeLabel(BatchStepType t) => t switch
+    {
+        BatchStepType.Job => "Job",
+        BatchStepType.ParallelGroup => "Parallel group",
+        BatchStepType.ApprovalGate => "Approval gate",
+        _ => t.ToString(),
+    };
+}

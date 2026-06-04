@@ -1,0 +1,58 @@
+@* Read-only batch step list. Flat indented enumeration of the step DAG —
+   a text fallback alongside the visual DagView. *@
+
+<div class="batch-step-list">
+    @if (Steps.Count == 0)
+    {
+        <EmptyState Title="No steps" Detail="This batch has no steps configured." IconName="device_hub" />
+    }
+    else
+    {
+        <ol class="batch-step-list__items">
+            @foreach (var step in Steps)
+            {
+                <li @key="step.StepId" class="batch-step-list__item">
+                    @RenderStep(step, depth: 0)
+                </li>
+            }
+        </ol>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<BatchStep> Steps { get; set; } = [];
+
+    private RenderFragment RenderStep(BatchStep step, int depth) => __builder =>
+    {
+        <div class="batch-step-list__row" style="padding-left: @(depth * 24)px;">
+            <span class="material-symbols-outlined batch-step-list__icon">@StepIcon(step.StepType)</span>
+            <span class="batch-step-list__type">@step.StepType</span>
+            <span class="batch-step-list__detail">@StepDetail(step)</span>
+        </div>
+        @if (step.StepType == BatchStepType.ParallelGroup && step.ParallelGroup is { } pg)
+        {
+            <div class="batch-step-list__children">
+                @foreach (var child in pg.Steps)
+                {
+                    @RenderStep(child, depth + 1)
+                }
+            </div>
+        }
+    };
+
+    private static string StepIcon(BatchStepType t) => t switch
+    {
+        BatchStepType.Job => "work",
+        BatchStepType.ParallelGroup => "view_column",
+        BatchStepType.ApprovalGate => "back_hand",
+        _ => "circle",
+    };
+
+    private static string StepDetail(BatchStep step) => step.StepType switch
+    {
+        BatchStepType.Job => step.Job?.JobName ?? "(unknown job)",
+        BatchStepType.ParallelGroup => $"{step.ParallelGroup?.Steps.Count ?? 0} parallel children — JoinPolicy {step.ParallelGroup?.JoinPolicy}",
+        BatchStepType.ApprovalGate => step.Approval?.Title ?? "(approval gate)",
+        _ => string.Empty,
+    };
+}

@@ -1,0 +1,222 @@
+@* Batches catalog — paged list of definitions across Code/Dashboard/Api sources. *@
+@page "/dashboard/{ServiceName}/batches"
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject INotificationService Notifications
+@inject NavigationManager Nav
+
+<PageTitle>Batches - @ServiceName - UKBatch</PageTitle>
+
+@if (_redirected) return;
+
+<div class="page-title-row">
+    <h1 class="page-title">Batches</h1>
+    <div class="page-title-row__actions">
+        <a class="btn btn--primary" href="/dashboard/@ServiceName/batches/new">
+            <span class="material-symbols-outlined">add</span> Create batch
+        </a>
+        @* Visual drag-drop editor — the alternative to the guided form wizard. Both create the same
+           BatchDefinition; the editor offers an "Open in form wizard" switch and Detail's Edit opens it too. *@
+        <a class="btn btn--secondary" href="/dashboard/@ServiceName/batches/editor">
+            <span class="material-symbols-outlined">account_tree</span> Visual editor
+        </a>
+    </div>
+</div>
+
+<div class="catalog-filters">
+    <div class="form-field">
+        <label class="form-field__label" for="name-contains">Name contains</label>
+        <input id="name-contains" class="form-field__input"
+               type="search"
+               value="@_nameContains"
+               @oninput="@(e => OnNameInput(e.Value?.ToString() ?? string.Empty))" />
+    </div>
+    <div class="form-field">
+        <label class="form-field__label" for="source-filter">Source</label>
+        <select id="source-filter" class="form-field__select" @bind="_sourceFilter" @bind:after="ReloadAsync">
+            <option value="">Any source</option>
+            <option value="Code">Code</option>
+            <option value="Dashboard">Dashboard</option>
+            <option value="Api">Api</option>
+        </select>
+    </div>
+</div>
+
+@if (_errorMessage is { } err)
+{
+    <ErrorBanner Message="@err" OnRetry="ReloadAsync" />
+}
+else if (_envelope is null)
+{
+    <div class="page-loader">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading batches…</span>
+    </div>
+}
+else if (_envelope.Items.Count == 0)
+{
+    <EmptyState Title="No batch definitions"
+                Detail=@($"No batches match the filters on '{ServiceName}'.")
+                IconName="layers">
+        <ActionContent>
+            <a class="btn btn--primary" href="/dashboard/@ServiceName/batches/new">
+                <span class="material-symbols-outlined">add</span> Create batch
+            </a>
+            <a class="btn btn--secondary" href="/dashboard/@ServiceName/batches/editor">
+                <span class="material-symbols-outlined">account_tree</span> Visual editor
+            </a>
+        </ActionContent>
+    </EmptyState>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th class="data-table__header">Name</th>
+                <th class="data-table__header">Source</th>
+                <th class="data-table__header">Steps</th>
+                <th class="data-table__header">Schedule</th>
+                <th class="data-table__header">Failure policy</th>
+                <th class="data-table__header">Created</th>
+                <th class="data-table__header">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var batch in _envelope.Items)
+            {
+                <tr @key="batch.Id" class="data-table__row">
+                    <td class="data-table__cell">
+                        <a href="/dashboard/@ServiceName/batches/@Uri.EscapeDataString(batch.Id)">@batch.Name</a>
+                    </td>
+                    <td class="data-table__cell">@batch.Source</td>
+                    <td class="data-table__cell">@batch.Steps.Count</td>
+                    <td class="data-table__cell data-table__cell--id">@(batch.Schedule ?? "—")</td>
+                    <td class="data-table__cell">@batch.FailurePolicy</td>
+                    <td class="data-table__cell data-table__cell--id">@batch.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm")</td>
+                    <td class="data-table__cell">
+                        <button class="btn btn--secondary btn--inline" @onclick="() => RunAsync(batch)"
+                                disabled="@_runInFlight.Contains(batch.Id)">
+                            <span class="material-symbols-outlined">play_arrow</span>
+                            @(_runInFlight.Contains(batch.Id) ? "…" : "Run")
+                        </button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <PageEnvelopePager Envelope="@_envelope" Limit="@_limit" OnOffsetChanged="OnOffsetChanged" T="BatchDefinitionDto" />
+}
+
+@code {
+    [Parameter] public string ServiceName { get; set; } = default!;
+
+    private PageEnvelope<BatchDefinitionDto>? _envelope;
+    private IUKBatchClient? _client;
+    private int _offset;
+    private int _limit = 50;
+    private string _nameContains = string.Empty;
+    private string _sourceFilter = "";
+    private string? _errorMessage;
+    private bool _redirected;
+    private CancellationTokenSource? _debounceCts;
+    private readonly HashSet<string> _runInFlight = new(StringComparer.Ordinal);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var descriptor = Registry.TryGet(ServiceName);
+        if (descriptor is null)
+        {
+            _redirected = true;
+            Nav.NavigateTo("/dashboard", replace: true);
+            return;
+        }
+        State.CurrentService = descriptor;
+        _client = ClientFactory.GetClient(ServiceName);
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_client is null) return;
+        _errorMessage = null;
+        try
+        {
+            BatchSource? source = _sourceFilter switch
+            {
+                "Code" => BatchSource.Code,
+                "Dashboard" => BatchSource.Dashboard,
+                "Api" => BatchSource.Api,
+                _ => null,
+            };
+            _envelope = await _client.ListBatchesAsync(_offset, _limit,
+                string.IsNullOrEmpty(_nameContains) ? null : _nameContains,
+                source, CancellationToken.None);
+        }
+        catch (UKBatchClientException ex)
+        {
+            _errorMessage = $"Failed to load batches: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unexpected failure: {ex.Message}";
+        }
+    }
+
+    private async Task OnOffsetChanged(int newOffset)
+    {
+        _offset = newOffset;
+        await ReloadAsync();
+    }
+
+    private async Task RunAsync(BatchDefinitionDto batch)
+    {
+        if (_client is null || !_runInFlight.Add(batch.Id)) return;
+        try
+        {
+            var batchRunId = await _client.RunBatchByIdAsync(batch.Id, null, null, CancellationToken.None);
+            await Notifications.SuccessAsync(
+                "Batch triggered",
+                $"Run id: {batchRunId.Substring(0, Math.Min(8, batchRunId.Length))}");
+            Nav.NavigateTo($"/dashboard/{ServiceName}/runs/{batchRunId}");
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Run failed", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            await Notifications.ErrorAsync("Unexpected failure", ex.Message);
+        }
+        finally
+        {
+            _runInFlight.Remove(batch.Id);
+        }
+    }
+
+    private async Task OnNameInput(string value)
+    {
+        _nameContains = value;
+        _debounceCts?.Cancel();
+        _debounceCts = new CancellationTokenSource();
+        var ct = _debounceCts.Token;
+        try
+        {
+            await Task.Delay(300, ct);
+            if (!ct.IsCancellationRequested)
+            {
+                _offset = 0;
+                await ReloadAsync();
+            }
+        }
+        catch (OperationCanceledException) { /* coalesce */ }
+    }
+}
+
+<style>
+    .page-title-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); flex-wrap: wrap; }
+    .page-title-row__actions { display: flex; align-items: center; gap: var(--space-xs); flex-wrap: wrap; }
+    .catalog-filters { display: flex; gap: var(--space-md); margin-bottom: var(--space-md); flex-wrap: wrap; }
+    .catalog-filters .form-field { max-width: 320px; margin-bottom: 0; }
+</style>

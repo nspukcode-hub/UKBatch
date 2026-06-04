@@ -1,0 +1,15 @@
+@* Inline red error banner. *@
+
+<div class="error-banner" role="alert">
+    <span class="material-symbols-outlined">error</span>
+    <span class="error-banner__message">@Message</span>
+    @if (OnRetry.HasDelegate)
+    {
+        <button class="btn btn--inline" @onclick="OnRetry">Retry</button>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Message { get; set; } = default!;
+    [Parameter] public EventCallback OnRetry { get; set; }
+}

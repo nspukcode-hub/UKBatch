@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>HTTP transport adapter for UKBatch — cross-service ITransport over HMAC-signed REST (POST /publish, GET /poll, POST /invoke). Plug-in replacement for InProcessTransport when microservices need to communicate.</Description>
+    <RootNamespace>UKBatch.Transport.Http</RootNamespace>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\UKBatch.Abstractions\UKBatch.Abstractions.csproj" />
+    <ProjectReference Include="..\UKBatch.Core\UKBatch.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Polly" />
+    <PackageReference Include="Polly.Extensions" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="UKBatch.Transport.Http.Tests" />
+  </ItemGroup>
+
+  <!-- Override the repo-root README pack from Directory.Build.props with the
+       per-package NuGet README (mirrors UKBatch.Api / UKBatch.Dashboard pattern). -->
+  <ItemGroup>
+    <None Remove="$(MSBuildThisFileDirectory)..\..\README.md" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

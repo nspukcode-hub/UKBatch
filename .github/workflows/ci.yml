@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      # Docker-free gate — green everywhere. The EF Core adapter's PostgreSQL Testcontainers tests carry
+      # [Trait("Category","RequiresDocker")] and are validated in a Docker-equipped environment;
+      # they are excluded here so CI stays deterministic and does not depend on a container runtime.
+      - name: Test
+        run: dotnet test --configuration Release --no-build --verbosity normal --filter "Category!=RequiresDocker" --collect:"XPlat Code Coverage" --results-directory ./TestResults
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: TestResults/**/coverage.cobertura.xml
+
+      - name: Pack (verify packable on every CI)
+        run: dotnet pack --configuration Release --no-build --output ./artifacts
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: artifacts/*.nupkg

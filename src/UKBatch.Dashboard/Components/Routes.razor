@@ -1,0 +1,10 @@
+@* Root router for the UKBatch Dashboard.
+   AppAssembly = the Dashboard assembly so the Router discovers @page components inside
+   Components/Pages/. *@
+
+<Router AppAssembly="@typeof(App).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)" />
+        <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+    </Found>
+</Router>

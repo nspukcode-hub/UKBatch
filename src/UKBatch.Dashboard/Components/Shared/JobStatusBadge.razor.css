@@ -1,0 +1,22 @@
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xxs);
+    padding: var(--space-xxs) var(--space-xs);
+    border-radius: var(--radius-full);
+    font-family: var(--font-sans);
+    font-size: var(--font-label-md-size);
+    font-weight: var(--font-label-md-weight);
+    letter-spacing: var(--font-label-md-tracking);
+    line-height: var(--font-label-md-line);
+    text-transform: uppercase;
+}
+.status-badge__icon { font-size: 14px; line-height: 1; }
+.status-badge__label { line-height: 1; }
+
+.status-badge--pending   { background: color-mix(in srgb, var(--color-status-pending)   18%, transparent); color: var(--color-status-pending); }
+.status-badge--running   { background: color-mix(in srgb, var(--color-status-running)   18%, transparent); color: var(--color-status-running); }
+.status-badge--completed { background: color-mix(in srgb, var(--color-status-completed) 18%, transparent); color: var(--color-status-completed); }
+.status-badge--failed    { background: color-mix(in srgb, var(--color-status-failed)    18%, transparent); color: var(--color-status-failed); }
+.status-badge--cancelled { background: color-mix(in srgb, var(--color-status-cancelled) 18%, transparent); color: var(--color-status-cancelled); }
+.status-badge--approval  { background: color-mix(in srgb, var(--color-status-approval)  18%, transparent); color: var(--color-status-approval); }

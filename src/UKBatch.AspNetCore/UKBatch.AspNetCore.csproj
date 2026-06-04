@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>ASP.NET Core integration for UKBatch — HttpContext-aware TriggeredBy enrichment, W3C trace propagation, and a readiness IHealthCheck. Use AddUKBatchAspNetCore on IServiceCollection or WebApplicationBuilder.</Description>
+    <RootNamespace>UKBatch.AspNetCore</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\UKBatch.Core\UKBatch.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    NB: Microsoft.Extensions.DependencyInjection.Abstractions, Hosting.Abstractions, and Options
+    are intentionally NOT referenced directly — they are bundled by the AspNetCore framework ref
+    (NU1510 fires under TreatWarningsAsErrors when listed alongside it). The framework reference
+    subsumes them.
+  -->
+
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="UKBatch.AspNetCore.Tests" />
+  </ItemGroup>
+
+  <!-- Override the repo-root README pack from Directory.Build.props with the per-project README. -->
+  <ItemGroup>
+    <None Remove="$(MSBuildThisFileDirectory)..\..\README.md" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

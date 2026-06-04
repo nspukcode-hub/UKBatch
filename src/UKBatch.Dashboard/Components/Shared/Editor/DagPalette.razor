@@ -1,0 +1,34 @@
+@* DagPalette — draggable step tiles. The dragstart sets the drag payload in PLAIN JS via
+   a LITERAL HTML attribute (the string `ondragstart=`, NOT a Blazor binding) so there is ZERO C#
+   round-trip while dragging (a Blazor handler would round-trip to the server per drag event over SignalR).
+   dag-editor.js's drop handler reads
+   'application/x-ukbatch-step'. Pure presentational — no JS-interop, no injected services.
+   (This comment avoids writing the @-prefixed binding token so the G.3 source-grep stays a strict
+   literal scan — same discipline as DrawflowCanvas.razor.) *@
+<div class="dag-ed-palette">
+    <div class="dag-ed-palette__label">Drag onto the canvas</div>
+    <div class="dag-ed-palette__tile dag-ed-palette__tile--job" draggable="true"
+         ondragstart="event.dataTransfer.setData('application/x-ukbatch-step','Job'); event.dataTransfer.effectAllowed='copy';">
+        <span class="material-symbols-outlined">work</span>
+        <span>Job</span>
+    </div>
+    <div class="dag-ed-palette__tile dag-ed-palette__tile--parallel" draggable="true"
+         ondragstart="event.dataTransfer.setData('application/x-ukbatch-step','ParallelGroup'); event.dataTransfer.effectAllowed='copy';">
+        <span class="material-symbols-outlined">alt_route</span>
+        <span>Parallel group</span>
+    </div>
+    <div class="dag-ed-palette__tile dag-ed-palette__tile--approval" draggable="true"
+         ondragstart="event.dataTransfer.setData('application/x-ukbatch-step','ApprovalGate'); event.dataTransfer.effectAllowed='copy';">
+        <span class="material-symbols-outlined">rule</span>
+        <span>Approval gate</span>
+    </div>
+    @* Compensation (onFailure) tile — SAME MIME key, payload 'OnFailure'. dag-editor.js's onDrop reads
+       the raw string verbatim and forwards it; DrawflowCanvas.OnNodeDropped routes 'OnFailure' to a
+       Job draft with the onFailure LANE flag set (it is NOT a BatchStepType). 'undo' icon = roll-back /
+       compensate semantics; accent = --color-status-failed (matches the red-dashed branch). *@
+    <div class="dag-ed-palette__tile dag-ed-palette__tile--failure" draggable="true"
+         ondragstart="event.dataTransfer.setData('application/x-ukbatch-step','OnFailure'); event.dataTransfer.effectAllowed='copy';">
+        <span class="material-symbols-outlined">undo</span>
+        <span>Compensation</span>
+    </div>
+</div>

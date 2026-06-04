@@ -1,0 +1,25 @@
+@* Service drill-down picker — used on landing + secondary nav. *@
+
+<div class="service-selector">
+    <label for="@_selectId" class="form-field__label">Service</label>
+    <select id="@_selectId"
+            class="form-field__select"
+            value="@CurrentServiceName"
+            @onchange="OnSelected">
+        @foreach (var svc in Services)
+        {
+            <option value="@svc.Name">@(svc.DisplayName ?? svc.Name)</option>
+        }
+    </select>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<UKBatchServiceDescriptor> Services { get; set; } = [];
+    [Parameter] public string? CurrentServiceName { get; set; }
+    [Parameter] public EventCallback<string> OnServiceChanged { get; set; }
+
+    private readonly string _selectId = $"svc-{Guid.NewGuid():N}";
+
+    private Task OnSelected(ChangeEventArgs args)
+        => OnServiceChanged.InvokeAsync(args.Value as string ?? string.Empty);
+}

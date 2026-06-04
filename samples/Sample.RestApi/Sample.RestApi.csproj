@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Sample.RestApi</RootNamespace>
+    <UserSecretsId>sample-restapi-9b1d20e8</UserSecretsId>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\UKBatch.AspNetCore\UKBatch.AspNetCore.csproj" />
+    <ProjectReference Include="..\..\src\UKBatch.Api\UKBatch.Api.csproj" />
+    <!-- Enables the storage-provider flag (ef-sqlite / ef-pg) for the persistent storage swap demo. -->
+    <ProjectReference Include="..\..\src\UKBatch.Storage.EntityFrameworkCore\UKBatch.Storage.EntityFrameworkCore.csproj" />
+  </ItemGroup>
+</Project>

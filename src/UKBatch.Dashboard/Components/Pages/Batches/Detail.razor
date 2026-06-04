@@ -1,0 +1,325 @@
+@* Batch definition detail + run history (filtered by BatchDefinitionId). *@
+@page "/dashboard/{ServiceName}/batches/{BatchId}"
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject INotificationService Notifications
+@inject NavigationManager Nav
+
+<PageTitle>@(_definition?.Name ?? "Batch") - UKBatch</PageTitle>
+
+@if (_redirected) return;
+
+@if (_isLoading)
+{
+    <div class="page-loader">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading…</span>
+    </div>
+}
+else if (_definition is null)
+{
+    <EmptyState Title="Batch not found"
+                Detail=@($"Batch '{BatchId}' was not found on '{ServiceName}'.")
+                IconName="layers_clear">
+        <ActionContent>
+            <a class="btn btn--primary" href="/dashboard/@ServiceName/batches">Back to catalog</a>
+        </ActionContent>
+    </EmptyState>
+}
+else
+{
+    <h1 class="page-title">@_definition.Name</h1>
+
+    <section class="surface-card">
+        <div class="surface-card__header">
+            <h2 class="surface-card__title">Definition</h2>
+            <button class="btn btn--primary" @onclick="RunAsync" disabled="@_runInFlight">
+                <span class="material-symbols-outlined">play_arrow</span>
+                @(_runInFlight ? "Triggering…" : "Run")
+            </button>
+        </div>
+        <div class="surface-card__body">
+            <dl class="definition-list">
+                <dt>Id</dt><dd class="mono">@_definition.Id</dd>
+                <dt>Source</dt><dd>@_definition.Source</dd>
+                <dt>Schedule</dt><dd class="mono">@(_definition.Schedule ?? "—")</dd>
+                <dt>Failure policy</dt><dd>@_definition.FailurePolicy</dd>
+                <dt>Steps</dt><dd>@_definition.Steps.Count</dd>
+                <dt>Created</dt><dd class="mono">@_definition.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC</dd>
+                <dt>Created by</dt><dd>@(_definition.CreatedBy ?? "—")</dd>
+            </dl>
+        </div>
+    </section>
+
+    <section class="surface-card">
+        <div class="surface-card__header">
+            <h2 class="surface-card__title">Topology</h2>
+            <div class="surface-card__actions">
+                @if (_definition.Source != BatchSource.Code)
+                {
+                    @* Single Edit → the visual editor; it offers an "Open in form wizard" link of its
+                       own, so one button on Detail is enough. *@
+                    <a class="btn btn--secondary" href="/dashboard/@ServiceName/batches/@Uri.EscapeDataString(_definition.Id)/editor">
+                        <span class="material-symbols-outlined">edit</span> Edit
+                    </a>
+                    <button class="btn btn--danger" @onclick="@(() => _confirmDeleteOpen = true)" disabled="@_deleteInFlight">
+                        <span class="material-symbols-outlined">delete</span> Delete
+                    </button>
+                }
+            </div>
+        </div>
+        <div class="surface-card__body">
+            @* Detail OWNS the Tree/List toggle (DagStatusCanvas has no built-in toggle — unlike the old
+               DagView's ShowViewModeToggle). Always render the toggle; the active button reflects _treeMode. *@
+            <div class="dag-toolbar">
+                <div class="dag-toolbar__group">
+                    <button class="dag-toolbar__btn @(_treeMode ? "dag-toolbar__btn--active" : null)" @onclick="@(() => _treeMode = true)">
+                        <span class="material-symbols-outlined">account_tree</span> Tree
+                    </button>
+                    <button class="dag-toolbar__btn @(_treeMode ? null : "dag-toolbar__btn--active")" @onclick="@(() => _treeMode = false)">
+                        <span class="material-symbols-outlined">view_list</span> List
+                    </button>
+                </div>
+            </div>
+            @if (_treeMode)
+            {
+                @* Q1 deferral closed: the static Tree view now uses the transform-safe Drawflow canvas
+                   (read-only, StatusByStepId="null" ⇒ no status classes, just clean topology). *@
+                <div class="dag-layout">
+                    <div class="dag-layout__canvas">
+                        <DagStatusCanvas Steps="@_definition.Steps"
+                                         OnFailureSteps="@_definition.OnFailureSteps"
+                                         StatusByStepId="null"
+                                         SelectedStepId="@_selectedStepId"
+                                         OnNodeSelected="OnNodeSelectedAsync" />
+                    </div>
+                    @if (_selectedStep is not null)
+                    {
+                        <DagNodeDetailPanel Step="@_selectedStep" OnClose="ClosePanel" />
+                    }
+                </div>
+            }
+            else
+            {
+                <BatchStepListView Steps="@_definition.Steps" />
+            }
+        </div>
+    </section>
+
+    <section class="surface-card">
+        <div class="surface-card__header">
+            <h2 class="surface-card__title">Recent runs</h2>
+        </div>
+        <div class="surface-card__body">
+            @* One row PER RUN (grouped by BatchId), NOT per execution. *@
+            @if (_runs.Count == 0)
+            {
+                <EmptyState Title="No runs yet" Detail="@($"No runs of '{_definition.Name}' yet. Click Run above.")" IconName="play_circle" />
+            }
+            else
+            {
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th class="data-table__header">Run</th>
+                            <th class="data-table__header">Status</th>
+                            <th class="data-table__header">Steps</th>
+                            <th class="data-table__header">Started</th>
+                            <th class="data-table__header">Duration</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in _runs)
+                        {
+                            <tr @key="r.BatchId" class="data-table__row">
+                                <td class="data-table__cell data-table__cell--id">
+                                    <a href="/dashboard/@ServiceName/runs/@r.BatchId">@r.BatchId.Substring(0, Math.Min(8, r.BatchId.Length))</a>
+                                </td>
+                                <td class="data-table__cell data-table__cell--status"><JobStatusBadge Status="@r.FinalStatus" /></td>
+                                <td class="data-table__cell">@r.StepCount</td>
+                                <td class="data-table__cell data-table__cell--id">@r.StartedAtUtc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                                <td class="data-table__cell data-table__cell--id">@FormatDuration(r.Duration)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </section>
+
+    <ConfirmDialog IsVisible="@_confirmDeleteOpen"
+                   Title="Delete batch?"
+                   ConfirmLabel="Delete"
+                   CancelLabel="Keep"
+                   IsDestructive="true"
+                   OnConfirm="ConfirmDeleteAsync"
+                   OnCancel="@(() => { _confirmDeleteOpen = false; return Task.CompletedTask; })">
+        <Body>
+            <p>This permanently deletes batch definition <span class="mono">@_definition.Name</span>.
+               Existing run history is not affected. This cannot be undone.</p>
+        </Body>
+    </ConfirmDialog>
+}
+
+@code {
+    [Parameter] public string ServiceName { get; set; } = default!;
+    [Parameter] public string BatchId { get; set; } = default!;
+
+    private IUKBatchClient? _client;
+    private BatchDefinitionDto? _definition;
+    private List<RunSummaryViewModel> _runs = new();   // D5: one entry per RUN (grouped by BatchId)
+    private bool _isLoading = true;
+    private bool _redirected;
+    private bool _runInFlight;
+
+    private bool _treeMode = true;             // DAG (Tree) is the default view
+    private string? _selectedStepId;
+    private BatchStep? _selectedStep;
+    private bool _confirmDeleteOpen;
+    private bool _deleteInFlight;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var descriptor = Registry.TryGet(ServiceName);
+        if (descriptor is null)
+        {
+            _redirected = true;
+            Nav.NavigateTo("/dashboard", replace: true);
+            return;
+        }
+        State.CurrentService = descriptor;
+
+        try
+        {
+            _client = ClientFactory.GetClient(ServiceName);
+            _definition = await _client.GetBatchByIdAsync(BatchId, CancellationToken.None);
+            if (_definition is null)
+            {
+                _isLoading = false;
+                return;
+            }
+            // Filter runs by BatchDefinitionId.
+            // D5: group the fetched executions into one summary PER RUN (BatchId). No new client
+            // method — reuses the same QueryExecutionsAsync(Limit=50) page (surface-lock).
+            var page = await _client.QueryExecutionsAsync(
+                new JobQueryRequest { BatchDefinitionId = BatchId, Limit = 50 },
+                CancellationToken.None);
+
+            // A run PAUSED at an approval gate has all its JOB executions Completed (gates have no
+            // execution row), so it would falsely roll up to "Completed". Cross-reference the live
+            // approvals feed: any run id with a pending approval is reported AwaitingApproval instead.
+            HashSet<string> runsAwaitingApproval;
+            try
+            {
+                var approvals = await _client.ListApprovalsAsync(null, CancellationToken.None);
+                runsAwaitingApproval = (approvals ?? [])
+                    .Select(a => a.BatchId)
+                    .ToHashSet(StringComparer.Ordinal);
+            }
+            catch (Exception)
+            {
+                runsAwaitingApproval = new HashSet<string>(StringComparer.Ordinal);   // feed hiccup → fall back to job-only rollup
+            }
+
+            _runs = page.Items
+                .Where(e => !string.IsNullOrEmpty(e.BatchId))
+                .GroupBy(e => e.BatchId!, StringComparer.Ordinal)
+                .Select(g => RunSummaryViewModel.FromExecutions(
+                    g.Key, g.ToList(), hasPendingApproval: runsAwaitingApproval.Contains(g.Key)))
+                .OrderByDescending(r => r.StartedAtUtc)
+                .ToList();
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Failed to load batch", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            await Notifications.ErrorAsync("Unexpected failure", ex.Message);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task RunAsync()
+    {
+        if (_client is null || _definition is null || _runInFlight) return;
+        _runInFlight = true;
+        try
+        {
+            var batchRunId = await _client.RunBatchByIdAsync(_definition.Id, null, null, CancellationToken.None);
+            await Notifications.SuccessAsync("Batch triggered", $"Run id: {batchRunId.Substring(0, Math.Min(8, batchRunId.Length))}");
+            Nav.NavigateTo($"/dashboard/{ServiceName}/runs/{batchRunId}");
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Run failed", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            await Notifications.ErrorAsync("Unexpected failure", ex.Message);
+        }
+        finally
+        {
+            _runInFlight = false;
+        }
+    }
+
+    private Task OnNodeSelectedAsync(BatchStep step)
+    {
+        _selectedStep = step;
+        _selectedStepId = step.StepId;
+        return Task.CompletedTask;
+    }
+
+    private Task ClosePanel()
+    {
+        _selectedStep = null;
+        _selectedStepId = null;
+        return Task.CompletedTask;
+    }
+
+    // D5: terse run-duration label. Running runs (null duration) read as an em-dash.
+    private static string FormatDuration(TimeSpan? d)
+    {
+        if (d is not { } span) return "—";
+        if (span < TimeSpan.FromSeconds(1)) return $"{span.TotalMilliseconds:F0} ms";
+        if (span < TimeSpan.FromMinutes(1)) return $"{span.TotalSeconds:F1} s";
+        if (span < TimeSpan.FromHours(1)) return $"{(int)span.TotalMinutes}m {span.Seconds}s";
+        return $"{(int)span.TotalHours}h {span.Minutes}m";
+    }
+
+    private async Task ConfirmDeleteAsync()
+    {
+        _confirmDeleteOpen = false;
+        if (_client is null || _definition is null || _deleteInFlight) return;
+        _deleteInFlight = true;
+        try
+        {
+            await _client.DeleteBatchAsync(_definition.Id, CancellationToken.None);
+            await Notifications.SuccessAsync("Batch deleted", _definition.Name);
+            Nav.NavigateTo($"/dashboard/{ServiceName}/batches");
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Delete failed", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            await Notifications.ErrorAsync("Unexpected failure", ex.Message);
+        }
+        finally
+        {
+            _deleteInFlight = false;
+        }
+    }
+}
+
+<style>
+    .definition-list { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-xs) var(--space-md); margin: 0; }
+    .definition-list dt { color: var(--color-text-tertiary); font-size: var(--font-label-md-size); text-transform: uppercase; letter-spacing: var(--font-label-md-tracking); }
+    .definition-list dd { margin: 0; color: var(--color-text-primary); }
+</style>

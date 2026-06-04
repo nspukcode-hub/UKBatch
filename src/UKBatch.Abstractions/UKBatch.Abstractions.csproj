@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Zero-dependency contract surface for UKBatch — interfaces, attributes, and DTOs only. Consumed by every other UKBatch.* package. Do not reference UKBatch.Core or any adapter from a consumer that just needs to define jobs or interact with the contract.</Description>
+    <RootNamespace>UKBatch.Abstractions</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+</Project>

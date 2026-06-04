@@ -1,0 +1,43 @@
+@* Shared operator warning about approval-role claim configuration. Default = Settings loud
+   production banner; Heuristic=true = Approvals "no
+   approvals — check claim config" copy. Both gated by the SAME root cause: the default
+   ApprovalRoleClaimTypes = [ClaimTypes.Role] does NOT match SAML 2.0 / Azure AD / Auth0 emissions. *@
+
+<div class="operator-claim-warning surface-card">
+    <div class="surface-card__header">
+        <h2 class="surface-card__title">
+            <span class="material-symbols-outlined">warning</span>
+            @(Heuristic ? "No approvals — claim configuration warning" : "Production deployment warning")
+        </h2>
+    </div>
+    <div class="surface-card__body">
+        @if (Heuristic)
+        {
+            <p>If you expected gates to appear here, check that
+               <code>UKBatchOptions.ApprovalRoleClaimTypes</code> on the server matches your
+               IdP's role claim. Default <code>ClaimTypes.Role</code> does NOT match Azure AD,
+               SAML 2.0, or Auth0 default emissions. See Settings page for the production warning.</p>
+        }
+        else
+        {
+            <p>Default <code>UKBatchOptions.ApprovalRoleClaimTypes = [ClaimTypes.Role]</code>
+               (<code>http://schemas.microsoft.com/ws/2008/06/identity/claims/role</code>)
+               <strong>DOES NOT MATCH</strong> SAML 2.0 / Azure AD / Auth0 default emissions.
+               Production deployment with any real auth provider MUST configure
+               <code>UKBatchOptions.ApprovalRoleClaimTypes</code> server-side — otherwise every
+               approval call surfaces empty <code>ApproverContext.Roles</code> and the server
+               returns 403 for every gated approve/reject.</p>
+            <p>See the README for IdentityServer / Azure AD / Auth0 example configs.</p>
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>True ⇒ Approvals heuristic copy; false ⇒ Settings full production banner.</summary>
+    [Parameter] public bool Heuristic { get; set; }
+}
+
+<style>
+    .operator-claim-warning { border-color: var(--color-status-cancelled); background: color-mix(in srgb, var(--color-status-cancelled) 8%, var(--color-surface-container)); margin-bottom: var(--space-md); }
+    .operator-claim-warning .surface-card__title { color: var(--color-status-cancelled); display: flex; align-items: center; gap: var(--space-xs); }
+</style>

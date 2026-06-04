@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Sample.Dashboard</RootNamespace>
+    <UserSecretsId>sample-dashboard-2c8af5e1</UserSecretsId>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- Razor Components framework assets (blazor.web.js + blazor.server.js + fingerprinted
+         variants) only enter the static-web-assets manifest when the host project is detected
+         as a Razor host. The Web SDK auto-detects via `.razor` Content items
+         (Microsoft.NET.Sdk.Web.ProjectSystem.targets:32). Sample.Dashboard hosts UKBatch.Dashboard's
+         App.razor by type reference (`MapRazorComponents<App>()`), not by owning any .razor file,
+         so the auto-detection misses. Setting RequiresAspNetWebAssets explicitly is the SDK's
+         supported escape hatch — see Microsoft.NET.Sdk.FrameworkReferenceResolution.targets:21
+         for the default-false fallback. -->
+    <RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\UKBatch.AspNetCore\UKBatch.AspNetCore.csproj" />
+    <ProjectReference Include="..\..\src\UKBatch.Api\UKBatch.Api.csproj" />
+    <ProjectReference Include="..\..\src\UKBatch.Dashboard\UKBatch.Dashboard.csproj" />
+  </ItemGroup>
+</Project>

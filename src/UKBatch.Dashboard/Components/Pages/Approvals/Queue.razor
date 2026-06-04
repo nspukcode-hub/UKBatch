@@ -1,0 +1,282 @@
+@* Approvals queue — list + approve/reject inline + operator claim-config warning. *@
+@page "/dashboard/{ServiceName}/approvals"
+@implements IAsyncDisposable
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject INotificationService Notifications
+@inject NavigationManager Nav
+
+<PageTitle>Approvals - @ServiceName - UKBatch</PageTitle>
+
+@if (_redirected) return;
+
+<h1 class="page-title">Pending approvals</h1>
+
+@* OPERATOR WARNING (shared component). Surface ONLY when the page renders no approvals;
+   if approvals exist the operator presumably has the right role configured. *@
+@if (_approvals.Count == 0 && !_isLoading && _errorMessage is null)
+{
+    <OperatorClaimWarning Heuristic="true" />
+}
+
+@if (_errorMessage is { } err)
+{
+    <ErrorBanner Message="@err" OnRetry="ReloadAsync" />
+}
+else if (_isLoading)
+{
+    <div class="page-loader">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading approvals…</span>
+    </div>
+}
+else if (_approvals.Count == 0)
+{
+    <EmptyState Title="No pending approvals" Detail="All caught up. Nice." IconName="check_circle" />
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th class="data-table__header">Title</th>
+                <th class="data-table__header">Batch</th>
+                <th class="data-table__header">Step</th>
+                <th class="data-table__header">Allowed roles</th>
+                <th class="data-table__header">Pending since</th>
+                <th class="data-table__header">Deadline</th>
+                <th class="data-table__header data-table__cell--actions">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var a in _approvals)
+            {
+                <tr @key="a.ApprovalId" class="data-table__row">
+                    <td class="data-table__cell">@a.Title</td>
+                    <td class="data-table__cell">
+                        <a href="/dashboard/@ServiceName/runs/@a.BatchId">@a.BatchName</a>
+                    </td>
+                    <td class="data-table__cell data-table__cell--id">@a.BatchStepId</td>
+                    <td class="data-table__cell">@(a.AllowedRoles.Count == 0 ? "(none)" : string.Join(", ", a.AllowedRoles))</td>
+                    <td class="data-table__cell data-table__cell--id">@a.PendingSinceUtc.ToString("HH:mm:ss")</td>
+                    <td class="data-table__cell data-table__cell--id">@DeadlineDisplay(a)</td>
+                    <td class="data-table__cell data-table__cell--actions">
+                        <button class="btn btn--primary btn--sm" @onclick="() => OpenApproveAsync(a)" disabled="@(_inFlight == a.ApprovalId)">
+                            <span class="material-symbols-outlined">check</span>
+                            Approve
+                        </button>
+                        <button class="btn btn--danger btn--sm" @onclick="() => OpenRejectAsync(a)" disabled="@(_inFlight == a.ApprovalId)">
+                            <span class="material-symbols-outlined">close</span>
+                            Reject
+                        </button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<ConfirmDialog IsVisible="@_approveDialogOpen"
+               Title="Approve gate?"
+               ConfirmLabel="Approve"
+               OnConfirm="ConfirmApproveAsync"
+               OnCancel="() => { _approveDialogOpen = false; return Task.CompletedTask; }">
+    <Body>
+        <p>This will approve the gate. Optionally add a note for audit.</p>
+        <div class="form-field">
+            <label class="form-field__label" for="approve-note">Note (optional)</label>
+            <textarea id="approve-note" class="form-field__textarea" rows="3" @bind="_actionNote"></textarea>
+        </div>
+    </Body>
+</ConfirmDialog>
+
+<ConfirmDialog IsVisible="@_rejectDialogOpen"
+               Title="Reject gate?"
+               ConfirmLabel="Reject"
+               IsDestructive="true"
+               OnConfirm="ConfirmRejectAsync"
+               OnCancel="() => { _rejectDialogOpen = false; return Task.CompletedTask; }">
+    <Body>
+        <p>This will reject the gate and fail the batch step. A reason is required.</p>
+        <div class="form-field">
+            <label class="form-field__label" for="reject-reason">Reason</label>
+            <textarea id="reject-reason" class="form-field__textarea" rows="3" required @bind="_actionReason"></textarea>
+        </div>
+    </Body>
+</ConfirmDialog>
+
+@code {
+    [Parameter] public string ServiceName { get; set; } = default!;
+
+    private IUKBatchClient? _client;
+    private List<ApprovalRowViewModel> _approvals = new();
+    private string? _errorMessage;
+    private bool _isLoading = true;
+    private bool _redirected;
+    private bool _subscribed;
+
+    private bool _approveDialogOpen;
+    private bool _rejectDialogOpen;
+    private ApprovalRowViewModel? _pendingAction;
+    private string? _actionNote;
+    private string _actionReason = string.Empty;
+    private string? _inFlight;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var descriptor = Registry.TryGet(ServiceName);
+        if (descriptor is null)
+        {
+            _redirected = true;
+            Nav.NavigateTo("/dashboard", replace: true);
+            return;
+        }
+        State.CurrentService = descriptor;
+        _client = ClientFactory.GetClient(ServiceName);
+
+        try
+        {
+            // R4 — subscribe FIRST.
+            _client.ApprovalRequested += OnApprovalRequestedAsync;
+            try
+            {
+                await _client.SubscribeAllAsync(CancellationToken.None);
+                _subscribed = true;
+            }
+            catch (Exception)
+            {
+                // Subscribe failure non-fatal — REST snapshot still loads.
+            }
+
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = ex.Message;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_client is null) return;
+        _errorMessage = null;
+        _isLoading = true;
+        try
+        {
+            var list = await _client.ListApprovalsAsync(null, CancellationToken.None);
+            _approvals = list.Select(ApprovalRowViewModel.FromDto).ToList();
+        }
+        catch (UKBatchClientException ex)
+        {
+            _errorMessage = $"Failed to load approvals: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unexpected failure: {ex.Message}";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task OnApprovalRequestedAsync(PendingApproval p)
+    {
+        if (_approvals.Any(a => a.ApprovalId == p.ApprovalId)) return;
+        _approvals.Insert(0, ApprovalRowViewModel.FromDto(PendingApprovalDto.FromModel(p)));
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private Task OpenApproveAsync(ApprovalRowViewModel a)
+    {
+        _pendingAction = a;
+        _actionNote = null;
+        _approveDialogOpen = true;
+        return Task.CompletedTask;
+    }
+
+    private Task OpenRejectAsync(ApprovalRowViewModel a)
+    {
+        _pendingAction = a;
+        _actionReason = string.Empty;
+        _rejectDialogOpen = true;
+        return Task.CompletedTask;
+    }
+
+    private async Task ConfirmApproveAsync()
+    {
+        _approveDialogOpen = false;
+        if (_client is null || _pendingAction is null) return;
+        var target = _pendingAction;
+        _inFlight = target.ApprovalId;
+        try
+        {
+            await _client.ApproveAsync(target.ApprovalId, _actionNote, CancellationToken.None);
+            _approvals.RemoveAll(a => a.ApprovalId == target.ApprovalId);
+            await Notifications.SuccessAsync("Approved", target.Title);
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Approve failed", ex.Message);
+        }
+        finally
+        {
+            _inFlight = null;
+            _pendingAction = null;
+        }
+    }
+
+    private async Task ConfirmRejectAsync()
+    {
+        _rejectDialogOpen = false;
+        if (_client is null || _pendingAction is null) return;
+        if (string.IsNullOrWhiteSpace(_actionReason))
+        {
+            await Notifications.WarningAsync("Reason required", "A reject reason is mandatory.");
+            return;
+        }
+        var target = _pendingAction;
+        _inFlight = target.ApprovalId;
+        try
+        {
+            await _client.RejectAsync(target.ApprovalId, _actionReason, CancellationToken.None);
+            _approvals.RemoveAll(a => a.ApprovalId == target.ApprovalId);
+            await Notifications.SuccessAsync("Rejected", target.Title);
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Reject failed", ex.Message);
+        }
+        finally
+        {
+            _inFlight = null;
+            _pendingAction = null;
+        }
+    }
+
+    private static string DeadlineDisplay(ApprovalRowViewModel a)
+    {
+        if (a.DeadlineUtc is not { } dl) return "—";
+        var now = DateTimeOffset.UtcNow;
+        if (dl <= now) return "OVERDUE";
+        var remaining = dl - now;
+        return remaining.TotalHours >= 1
+            ? $"{remaining.TotalHours:F1}h"
+            : $"{remaining.TotalMinutes:F0}m";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_client is not null)
+        {
+            _client.ApprovalRequested -= OnApprovalRequestedAsync;
+            if (_subscribed)
+            {
+                try { await _client.UnsubscribeAllAsync(CancellationToken.None); }
+                catch (Exception) { /* ignore */ }
+            }
+        }
+    }
+}
+

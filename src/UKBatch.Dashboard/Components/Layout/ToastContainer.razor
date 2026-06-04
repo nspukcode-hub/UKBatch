@@ -1,0 +1,71 @@
+@* Top-right toast stack. Subscribes to INotificationService.OnNotification;
+   auto-dismiss per Notification.AutoDismissAfter. *@
+@implements IDisposable
+@inject INotificationService Notifications
+
+<div class="dashboard-toast-container" role="status" aria-live="polite">
+    @foreach (var toast in _toasts)
+    {
+        <div @key="toast.Id" class="toast toast--@toast.LevelCssSuffix">
+            <div class="toast__title">@toast.Notification.Title</div>
+            @if (!string.IsNullOrEmpty(toast.Notification.Body))
+            {
+                <div class="toast__body">@toast.Notification.Body</div>
+            }
+            <button class="btn btn--icon toast__close" aria-label="Dismiss" @onclick="() => Dismiss(toast.Id)">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+    }
+</div>
+
+@code {
+    private readonly List<ToastEntry> _toasts = new();
+    private long _nextId;
+
+    protected override void OnInitialized()
+    {
+        Notifications.OnNotification += OnNotificationAsync;
+    }
+
+    private async Task OnNotificationAsync(Notification notification)
+    {
+        var id = Interlocked.Increment(ref _nextId);
+        var entry = new ToastEntry(id, notification, GetCssSuffix(notification.Level));
+        lock (_toasts) { _toasts.Add(entry); }
+        await InvokeAsync(StateHasChanged);
+        if (notification.AutoDismissAfter is { } delay)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(delay).ConfigureAwait(false);
+                    Dismiss(id);
+                }
+                catch (Exception) { /* circuit disposed during delay */ }
+            });
+        }
+    }
+
+    private void Dismiss(long id)
+    {
+        lock (_toasts) { _toasts.RemoveAll(t => t.Id == id); }
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private static string GetCssSuffix(NotificationLevel level) => level switch
+    {
+        NotificationLevel.Success => "success",
+        NotificationLevel.Warning => "warning",
+        NotificationLevel.Error => "error",
+        _ => "info",
+    };
+
+    public void Dispose()
+    {
+        Notifications.OnNotification -= OnNotificationAsync;
+    }
+
+    private sealed record ToastEntry(long Id, Notification Notification, string LevelCssSuffix);
+}

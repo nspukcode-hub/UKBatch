@@ -1,0 +1,57 @@
+/* Workers panel scoped styles. Reuses design tokens from dashboard.css (no hardcoded colors).
+   The online/offline status pill (.worker-badge*) lives in the GLOBAL dashboard.css (dashboard-wide
+   visual class taxonomy, like the DAG classes) — NOT here — so the served stylesheet is not coupled to
+   the page's scope attribute (a scoped-bundle skew can leave the badge unstyled). */
+
+.workers-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    margin-bottom: var(--space-xs);
+}
+
+.workers-header .page-title {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    margin: 0;
+}
+
+.workers-header__icon {
+    color: var(--color-text-secondary);
+}
+
+.workers-caption {
+    color: var(--color-text-secondary);
+    font-size: var(--font-body-sm-size);
+    margin: 0 0 var(--space-md) 0;
+    max-width: 720px;
+}
+
+.workers-muted {
+    color: var(--color-text-tertiary);
+}
+
+/* Job / tag chips */
+.worker-chip-row {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: var(--space-xxs);
+}
+
+.worker-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-xxs) var(--space-xs);
+    border-radius: var(--radius-full);
+    background: var(--color-surface-container-high);
+    border: 1px solid var(--color-border-subtle);
+    color: var(--color-text-secondary);
+    font-size: var(--font-body-sm-size);
+    font-family: var(--font-mono);
+}
+
+.worker-chip--tag {
+    font-family: var(--font-sans);
+}

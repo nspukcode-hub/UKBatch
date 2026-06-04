@@ -1,0 +1,190 @@
+@* Landing page — multi-service health + counts. Sequential fan-in (one slow/failed service must not block the rest). *@
+@page "/dashboard"
+@implements IDisposable
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject NavigationManager Nav
+
+<PageTitle>Dashboard - UKBatch</PageTitle>
+
+<h1 class="page-title">Services</h1>
+<p class="page-subtitle">@(_snapshot.Count) services registered. Click a card to drill in.</p>
+
+@if (_isLoading)
+{
+    <div class="page-loader">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading service summaries…</span>
+    </div>
+}
+else if (_snapshot.Count == 0)
+{
+    <EmptyState Title="No services configured"
+                Detail="Configure at least one service under UKBatch:Dashboard:Services in appsettings.json."
+                IconName="dns" />
+}
+else
+{
+    <div class="service-grid">
+        @foreach (var summary in _snapshot)
+        {
+            <article @key="summary.Service.Name"
+                     class="surface-card service-card @(GetCardModifier(summary))">
+                <div class="surface-card__header">
+                    <div class="service-card__name">
+                        <ServiceHealthDot State="@summary.State" />
+                        <a href="/dashboard/@summary.Service.Name/jobs">
+                            @(summary.Service.DisplayName ?? summary.Service.Name)
+                        </a>
+                    </div>
+                </div>
+                @if (summary.HasLoadError)
+                {
+                    var errMsg = summary.LoadError ?? string.Empty;
+                    <ErrorBanner Message="@errMsg" OnRetry="@(() => ReloadServiceAsync(summary.Service))" />
+                }
+                else
+                {
+                    <div class="service-card__counts">
+                        <a href="/dashboard/@summary.Service.Name/jobs" class="service-card__count-cell">
+                            <div class="service-card__count-value">@summary.JobsCount</div>
+                            <div class="service-card__count-label">Jobs</div>
+                        </a>
+                        <a href="/dashboard/@summary.Service.Name/batches" class="service-card__count-cell">
+                            <div class="service-card__count-value">@summary.BatchesCount</div>
+                            <div class="service-card__count-label">Batches</div>
+                        </a>
+                        <a href="/dashboard/@summary.Service.Name/approvals" class="service-card__count-cell">
+                            <div class="service-card__count-value">@summary.ApprovalsCount</div>
+                            <div class="service-card__count-label">Pending</div>
+                        </a>
+                    </div>
+                }
+            </article>
+        }
+    </div>
+}
+
+@code {
+    private readonly List<IUKBatchClient> _trackedClients = new();
+    private List<ServiceHealthViewModel> _snapshot = new();
+    private bool _isLoading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        foreach (var svc in Registry.All())
+        {
+            try
+            {
+                var client = ClientFactory.GetClient(svc.Name);
+                client.StateChanged += OnStateChangedAsync;
+                _trackedClients.Add(client);
+            }
+            catch (Exception)
+            {
+                // Factory failure is non-fatal — surface as a load-error card.
+            }
+        }
+        await LoadAsync(CancellationToken.None);
+    }
+
+    @* R2 invariant — sequential fan-in (NOT Task.WhenAll). One service down does not blank
+       the whole page. Per-service try/catch around the 3-fetch sequence. *@
+    private async Task LoadAsync(CancellationToken ct)
+    {
+        var snapshot = new List<ServiceHealthViewModel>();
+        foreach (var descriptor in Registry.All())
+        {
+            snapshot.Add(await LoadServiceAsync(descriptor, ct));
+        }
+        _snapshot = snapshot;
+        _isLoading = false;
+
+        // Auto-select the first registered service so the per-service
+        // Sidebar section (Jobs / Batches / Executions / Approvals) is visible immediately.
+        // Only set when null so re-entry into /dashboard after an explicit selection does not
+        // overwrite the operator's pick. Setter is event-free; the next render of this page
+        // re-runs MainLayout which forwards State.CurrentService to ServiceSidebar.
+        if (State.CurrentService is null && snapshot.Count > 0)
+        {
+            State.CurrentService = snapshot[0].Service;
+        }
+    }
+
+    private async Task<ServiceHealthViewModel> LoadServiceAsync(UKBatchServiceDescriptor descriptor, CancellationToken ct)
+    {
+        IUKBatchClient client;
+        try { client = ClientFactory.GetClient(descriptor.Name); }
+        catch (Exception ex)
+        {
+            return new ServiceHealthViewModel
+            {
+                Service = descriptor,
+                State = UKBatchClientState.Disconnected,
+                LoadError = $"Client init failed: {ex.Message}",
+            };
+        }
+
+        try
+        {
+            var jobs = await client.ListJobsAsync(0, 1, null, ct);
+            var batches = await client.ListBatchesAsync(0, 1, null, null, ct);
+            var approvals = await client.ListApprovalsAsync(null, ct);
+            return new ServiceHealthViewModel
+            {
+                Service = descriptor,
+                State = client.State,
+                JobsCount = (int)jobs.TotalCount,
+                BatchesCount = (int)batches.TotalCount,
+                ApprovalsCount = approvals.Count,
+            };
+        }
+        catch (Exception ex)
+        {
+            return new ServiceHealthViewModel
+            {
+                Service = descriptor,
+                State = client.State,
+                LoadError = ex.Message,
+            };
+        }
+    }
+
+    private async Task ReloadServiceAsync(UKBatchServiceDescriptor descriptor)
+    {
+        var refreshed = await LoadServiceAsync(descriptor, CancellationToken.None);
+        var idx = _snapshot.FindIndex(s => s.Service.Name == descriptor.Name);
+        if (idx >= 0) _snapshot[idx] = refreshed;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnStateChangedAsync(UKBatchClientState _)
+    {
+        // Re-derive each card's State from the live client; counts are stale-tolerant.
+        foreach (var card in _snapshot)
+        {
+            try
+            {
+                var c = ClientFactory.GetClient(card.Service.Name);
+                var idx = _snapshot.IndexOf(card);
+                if (idx >= 0) _snapshot[idx] = card with { State = c.State };
+            }
+            catch (Exception) { /* ignore */ }
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static string GetCardModifier(ServiceHealthViewModel s) => s.State switch
+    {
+        UKBatchClientState.Disconnected => "service-card--disconnected",
+        UKBatchClientState.PartiallyConnected => "service-card--partial",
+        _ => string.Empty,
+    };
+
+    public void Dispose()
+    {
+        foreach (var c in _trackedClients) c.StateChanged -= OnStateChangedAsync;
+        _trackedClients.Clear();
+    }
+}

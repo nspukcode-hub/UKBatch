@@ -1,0 +1,20 @@
+using UKBatch.Abstractions.Jobs;
+using UKBatch.AspNetCore.Tracing;
+
+namespace Sample.BatchWorkflow.Jobs;
+
+/// <summary>Parallel notification step — sends an SMS.</summary>
+public sealed class SmsNotificationJob : IJob
+{
+    /// <inheritdoc/>
+    public Task ExecuteAsync(JobContext context, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        using var _ = context.RestoreRequestActivity();
+        context.Logger.LogInformation(
+            "SmsNotificationJob ran (executionId={ExecutionId}, batchId={BatchId}).",
+            context.ExecutionId,
+            context.BatchId);
+        return Task.CompletedTask;
+    }
+}

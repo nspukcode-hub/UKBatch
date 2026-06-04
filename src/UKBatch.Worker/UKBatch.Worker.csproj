@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Worker-mode helper for UKBatch (Server + Workers deployment). One call — builder.UseWorkerMode(...) — turns a microservice into a worker that advertises itself to the UKBatch.Server over an HTTP heartbeat (observability only) and fail-fasts at startup unless a cross-service ITransport (RabbitMQ/HTTP) is registered. Adds NOTHING to the dispatch path; the orchestrator reaches the worker over the transport. References Abstractions + Core only — never UKBatch.Api.</Description>
+    <RootNamespace>UKBatch.Worker</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\UKBatch.Abstractions\UKBatch.Abstractions.csproj" />
+    <ProjectReference Include="..\UKBatch.Core\UKBatch.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- IHttpClientFactory + AddHttpClient for the heartbeat client. -->
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <!-- IHostedService / BackgroundService + AddHostedService (also transitive via Core, but
+         referenced explicitly so the DI surface does not rely on transitive flow). -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="UKBatch.Worker.Tests" />
+  </ItemGroup>
+
+</Project>

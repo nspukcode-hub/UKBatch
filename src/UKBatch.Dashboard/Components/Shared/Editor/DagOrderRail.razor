@@ -1,0 +1,68 @@
+@* DagOrderRail — explicit execution-order strip, docked canvas-top, full-width. Execution
+   order changes ONLY here (chevrons) — NEVER from node Y-position (silent-data-corruption guard).
+   Bidirectional selection-link with the canvas: a chip click raises OnSelect; the canvas re-renders
+   this rail's --selected modifier via the SelectedStepId param. @key on the chip @for is required
+   (bunit cannot catch the missing-key browser diff bug; G.3 source-grep enforces it). *@
+<div class="dag-ed-rail">
+    <span class="dag-ed-rail__label">Execution order</span>
+    @if (Steps.Count == 0)
+    {
+        <span class="dag-ed-rail__empty">Drag a step from the palette to begin.</span>
+    }
+    else
+    {
+        @for (var i = 0; i < Steps.Count; i++)
+        {
+            var idx = i;
+            var step = Steps[idx];
+            <div @key="step.StepId"
+                 class="dag-ed-rail__chip @(IsSelected(step) ? "dag-ed-rail__chip--selected" : "")"
+                 @onclick="@(() => OnSelect.InvokeAsync(step.StepId))">
+                <span class="dag-ed-rail__num">@(idx + 1)</span>
+                <span class="dag-ed-rail__name">@ChipLabel(step)</span>
+                <span class="dag-ed-rail__ctrls">
+                    <button class="btn--icon btn--sm" aria-label="Move earlier" disabled="@(idx == 0)"
+                            @onclick:stopPropagation="true"
+                            @onclick="@(() => OnMoveStep.InvokeAsync(new MoveStepArgs(idx, -1)))">
+                        <span class="material-symbols-outlined">chevron_left</span>
+                    </button>
+                    <button class="btn--icon btn--sm" aria-label="Move later" disabled="@(idx == Steps.Count - 1)"
+                            @onclick:stopPropagation="true"
+                            @onclick="@(() => OnMoveStep.InvokeAsync(new MoveStepArgs(idx, 1)))">
+                        <span class="material-symbols-outlined">chevron_right</span>
+                    </button>
+                </span>
+            </div>
+            @if (i < Steps.Count - 1)
+            {
+                <span class="dag-ed-rail__arrow material-symbols-outlined">arrow_forward</span>
+            }
+        }
+    }
+</div>
+
+@code {
+    /// <summary>The steps in execution order (the rail's source of truth — node geometry is irrelevant here).</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<WizardStepDraft> Steps { get; set; } = [];
+
+    /// <summary>The currently selected step id (drives the --selected chip; canvas → rail link).</summary>
+    [Parameter] public string? SelectedStepId { get; set; }
+
+    /// <summary>Raised on a chip click (rail → canvas selection link). Payload = <c>StepId</c>.</summary>
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+
+    /// <summary>Raised on a chevron click to shift a step's execution order (the ONLY reorder path).</summary>
+    [Parameter] public EventCallback<MoveStepArgs> OnMoveStep { get; set; }
+
+    private bool IsSelected(WizardStepDraft s)
+        => string.Equals(s.StepId, SelectedStepId, StringComparison.Ordinal);
+
+    // Short chip label — mirrors Wizard.StepSummary's intent (job name / branch count / approval title).
+    private static string ChipLabel(WizardStepDraft s) => s.StepType switch
+    {
+        BatchStepType.Job => string.IsNullOrWhiteSpace(s.JobName) ? "(job)" : s.JobName,
+        BatchStepType.ParallelGroup => $"{s.Children.Count} branches",
+        BatchStepType.ApprovalGate => string.IsNullOrWhiteSpace(s.ApprovalTitle) ? "(approval)" : s.ApprovalTitle,
+        _ => s.StepType.ToString(),
+    };
+}

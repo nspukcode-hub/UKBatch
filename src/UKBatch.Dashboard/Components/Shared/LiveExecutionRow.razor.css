@@ -1,0 +1,2 @@
+::deep .data-table__cell--muted { color: var(--color-text-tertiary); font-style: italic; }
+::deep .data-table__row--running td:first-child { border-left: 3px solid var(--color-status-running); }

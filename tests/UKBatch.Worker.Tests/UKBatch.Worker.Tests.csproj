@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>UKBatch.Worker.Tests</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CA1707;CA1812;CA2007;CA1303;CA1305;CA1031;CA1849;CA1051;CA1062;CA1859;CA1848;CA1822;CS1591;CS1574;CS1573;CA2227;CA1819;CA1816;IDE0005;CA1052;CA1063;CA1064;CA1826</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\UKBatch.Worker\UKBatch.Worker.csproj" />
+    <ProjectReference Include="..\..\src\UKBatch.Abstractions\UKBatch.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\UKBatch.Core\UKBatch.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="coverlet.collector" />
+  </ItemGroup>
+</Project>

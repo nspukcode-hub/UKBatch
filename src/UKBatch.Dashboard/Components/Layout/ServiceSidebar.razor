@@ -1,0 +1,152 @@
+@* Left navigation. Per-service health dot + section nav (Jobs / Batches /
+   Executions / Approvals). Subscribes to per-service StateChanged to refresh the health dot. *@
+@implements IDisposable
+@inject IUKBatchClientFactory ClientFactory
+@inject NavigationManager Nav
+
+<aside class="dashboard-sidebar" aria-label="Primary navigation">
+    <div class="dashboard-sidebar__brand">
+        <span class="material-symbols-outlined material-symbols-outlined--filled dashboard-sidebar__brand-icon">layers</span>
+        <span>UKBatch</span>
+    </div>
+
+    <nav class="dashboard-sidebar__section">
+        <div class="dashboard-sidebar__section-label">Services</div>
+        <ul class="dashboard-sidebar__nav">
+            @foreach (var svc in Services)
+            {
+                <li @key="svc.Name">
+                    <a class="dashboard-sidebar__nav-item @(IsActive(svc) ? "dashboard-sidebar__nav-item--active" : null)"
+                       href="/dashboard/@svc.Name/jobs">
+                        <div class="dashboard-sidebar__service-row">
+                            <div class="dashboard-sidebar__service-row-left">
+                                <span class="material-symbols-outlined">dns</span>
+                                <span>@(svc.DisplayName ?? svc.Name)</span>
+                            </div>
+                            <ServiceHealthDot State="@GetState(svc.Name)" />
+                        </div>
+                    </a>
+                </li>
+            }
+        </ul>
+    </nav>
+
+    @if (CurrentService is { } current)
+    {
+        <nav class="dashboard-sidebar__section">
+            <div class="dashboard-sidebar__section-label">@current.Name</div>
+            <ul class="dashboard-sidebar__nav">
+                <li>
+                    <a class="dashboard-sidebar__nav-item @(IsSectionActive("jobs") ? "dashboard-sidebar__nav-item--active" : null)"
+                       href="/dashboard/@current.Name/jobs">
+                        <span class="material-symbols-outlined">work</span>
+                        <span>Jobs</span>
+                    </a>
+                </li>
+                <li>
+                    <a class="dashboard-sidebar__nav-item @(IsSectionActive("batches") ? "dashboard-sidebar__nav-item--active" : null)"
+                       href="/dashboard/@current.Name/batches">
+                        <span class="material-symbols-outlined">layers</span>
+                        <span>Batches</span>
+                    </a>
+                </li>
+                <li>
+                    <a class="dashboard-sidebar__nav-item @(IsSectionActive("executions") ? "dashboard-sidebar__nav-item--active" : null)"
+                       href="/dashboard/@current.Name/executions">
+                        <span class="material-symbols-outlined">play_circle</span>
+                        <span>Executions</span>
+                    </a>
+                </li>
+                <li>
+                    <a class="dashboard-sidebar__nav-item @(IsSectionActive("approvals") ? "dashboard-sidebar__nav-item--active" : null)"
+                       href="/dashboard/@current.Name/approvals">
+                        <span class="material-symbols-outlined">rule</span>
+                        <span>Approvals</span>
+                    </a>
+                </li>
+                <li>
+                    <a class="dashboard-sidebar__nav-item @(IsSectionActive("workers") ? "dashboard-sidebar__nav-item--active" : null)"
+                       href="/dashboard/@current.Name/workers">
+                        <span class="material-symbols-outlined">lan</span>
+                        <span>Workers</span>
+                    </a>
+                </li>
+            </ul>
+        </nav>
+    }
+
+    <div class="dashboard-sidebar__footer">
+        <a class="dashboard-sidebar__nav-item @(IsSectionActive("settings") ? "dashboard-sidebar__nav-item--active" : null)"
+           href="/dashboard/settings">
+            <span class="material-symbols-outlined">settings</span>
+            <span>Settings</span>
+        </a>
+    </div>
+</aside>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<UKBatchServiceDescriptor> Services { get; set; } = [];
+    [Parameter] public UKBatchServiceDescriptor? CurrentService { get; set; }
+
+    private readonly Dictionary<string, IUKBatchClient> _trackedClients = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, UKBatchClientState> _stateCache = new(StringComparer.Ordinal);
+
+    protected override void OnInitialized()
+    {
+        Nav.LocationChanged += OnLocationChanged;
+    }
+
+    protected override void OnParametersSet()
+    {
+        // Track each service's state for the health dot. ONE client per service across the host
+        // (singleton from factory); we subscribe per-component and clean up in Dispose.
+        foreach (var svc in Services)
+        {
+            if (!_trackedClients.ContainsKey(svc.Name))
+            {
+                var client = ClientFactory.GetClient(svc.Name);
+                client.StateChanged += OnStateChangedAsync;
+                _trackedClients[svc.Name] = client;
+                _stateCache[svc.Name] = client.State;
+            }
+        }
+    }
+
+    private bool IsActive(UKBatchServiceDescriptor svc)
+        => CurrentService?.Name == svc.Name;
+
+    private bool IsSectionActive(string section)
+    {
+        var uri = Nav.ToBaseRelativePath(Nav.Uri);
+        return uri.Contains($"/{section}", StringComparison.OrdinalIgnoreCase)
+            || (section == "settings" && uri.Equals("dashboard/settings", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private UKBatchClientState GetState(string serviceName)
+        => _stateCache.TryGetValue(serviceName, out var s) ? s : UKBatchClientState.Disconnected;
+
+    private async Task OnStateChangedAsync(UKBatchClientState newState)
+    {
+        // Re-derive map: find the client whose State changed by querying the snapshot.
+        foreach (var kv in _trackedClients)
+        {
+            _stateCache[kv.Key] = kv.Value.State;
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Nav.LocationChanged -= OnLocationChanged;
+        foreach (var client in _trackedClients.Values)
+        {
+            client.StateChanged -= OnStateChangedAsync;
+        }
+        _trackedClients.Clear();
+    }
+}

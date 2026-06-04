@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "Sample.CrossServiceRabbitMQ.Orchestrator": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": false,
+      "applicationUrl": "http://localhost:5060",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}

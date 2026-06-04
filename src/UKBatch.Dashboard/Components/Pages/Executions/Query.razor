@@ -1,0 +1,220 @@
+@* Executions query — filter form + paginated results + optional tail mode. *@
+@page "/dashboard/{ServiceName}/executions"
+@implements IAsyncDisposable
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject NavigationManager Nav
+
+<PageTitle>Executions - @ServiceName - UKBatch</PageTitle>
+
+@if (_redirected) return;
+
+<h1 class="page-title">Executions</h1>
+
+<section class="surface-card">
+    <div class="surface-card__header">
+        <h2 class="surface-card__title">Filter</h2>
+        <div>
+            <label class="tail-mode-toggle">
+                <input type="checkbox" @bind="_tailMode" @bind:after="OnTailToggledAsync" />
+                <span>Tail mode (live)</span>
+            </label>
+        </div>
+    </div>
+    <div class="surface-card__body">
+        <div class="form-row">
+            <div class="form-field">
+                <label class="form-field__label" for="job-name">Job name</label>
+                <input id="job-name" class="form-field__input" type="text" @bind="_jobNameFilter" />
+            </div>
+            <div class="form-field">
+                <label class="form-field__label" for="batch-id">Batch run id</label>
+                <input id="batch-id" class="form-field__input" type="text" @bind="_batchIdFilter" />
+            </div>
+            <div class="form-field">
+                <label class="form-field__label" for="batch-def-id">Batch definition id</label>
+                <input id="batch-def-id" class="form-field__input" type="text" @bind="_batchDefIdFilter" />
+            </div>
+            <div class="form-field">
+                <label class="form-field__label" for="search-text">Search text</label>
+                <input id="search-text" class="form-field__input" type="search" @bind="_searchTextFilter" />
+            </div>
+        </div>
+        <div class="form-row" style="margin-top: var(--space-md);">
+            <button class="btn btn--primary" @onclick="ReloadAsync">
+                <span class="material-symbols-outlined">search</span>
+                Apply filter
+            </button>
+            <button class="btn btn--ghost" @onclick="ClearAsync">Clear</button>
+        </div>
+    </div>
+</section>
+
+@if (_errorMessage is { } err)
+{
+    <ErrorBanner Message="@err" OnRetry="ReloadAsync" />
+}
+else if (_envelope is null)
+{
+    <div class="page-loader">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading executions…</span>
+    </div>
+}
+else if (_envelope.Items.Count == 0)
+{
+    <EmptyState Title="No executions match" Detail="Adjust filters or trigger a job." IconName="search_off" />
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th class="data-table__header">ID</th>
+                <th class="data-table__header">Job</th>
+                <th class="data-table__header">Status</th>
+                <th class="data-table__header">Progress</th>
+                <th class="data-table__header">Enqueued</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var row in _displayed)
+            {
+                <LiveExecutionRow @key="row.ExecutionId"
+                                  ServiceName="@ServiceName"
+                                  InitialModel="@row"
+                                  SubscribeToLive="false" />
+            }
+        </tbody>
+    </table>
+    @if (!_tailMode)
+    {
+        <PageEnvelopePager Envelope="@_envelope" Limit="@_limit" OnOffsetChanged="OnOffsetChanged" T="JobExecution" />
+    }
+}
+
+@code {
+    [Parameter] public string ServiceName { get; set; } = default!;
+
+    private IUKBatchClient? _client;
+    private PageEnvelope<JobExecution>? _envelope;
+    private List<ExecutionRowViewModel> _displayed = new();
+    private int _offset;
+    private int _limit = 50;
+    private string? _jobNameFilter;
+    private string? _batchIdFilter;
+    private string? _batchDefIdFilter;
+    private string? _searchTextFilter;
+    private string? _errorMessage;
+    private bool _tailMode;
+    private bool _allSubscribed;
+    private bool _redirected;
+
+    private JobQueryRequest BuildQuery() => new()
+    {
+        JobName = string.IsNullOrWhiteSpace(_jobNameFilter) ? null : _jobNameFilter,
+        BatchId = string.IsNullOrWhiteSpace(_batchIdFilter) ? null : _batchIdFilter,
+        BatchDefinitionId = string.IsNullOrWhiteSpace(_batchDefIdFilter) ? null : _batchDefIdFilter,
+        SearchText = string.IsNullOrWhiteSpace(_searchTextFilter) ? null : _searchTextFilter,
+        Offset = _offset,
+        Limit = _limit,
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var descriptor = Registry.TryGet(ServiceName);
+        if (descriptor is null)
+        {
+            _redirected = true;
+            Nav.NavigateTo("/dashboard", replace: true);
+            return;
+        }
+        State.CurrentService = descriptor;
+        _client = ClientFactory.GetClient(ServiceName);
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_client is null) return;
+        _errorMessage = null;
+        try
+        {
+            _envelope = await _client.QueryExecutionsAsync(BuildQuery(), CancellationToken.None);
+            _displayed = _envelope.Items.Select(ExecutionRowViewModel.FromExecution).ToList();
+        }
+        catch (UKBatchClientException ex)
+        {
+            _errorMessage = $"Query failed: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unexpected failure: {ex.Message}";
+        }
+    }
+
+    private async Task ClearAsync()
+    {
+        _offset = 0;
+        _jobNameFilter = null;
+        _batchIdFilter = null;
+        _batchDefIdFilter = null;
+        _searchTextFilter = null;
+        await ReloadAsync();
+    }
+
+    private async Task OnOffsetChanged(int newOffset)
+    {
+        _offset = newOffset;
+        await ReloadAsync();
+    }
+
+    private async Task OnTailToggledAsync()
+    {
+        if (_client is null) return;
+        if (_tailMode && !_allSubscribed)
+        {
+            _client.ExecutionStateChanged += OnExecutionStateChangedAsync;
+            try { await _client.SubscribeAllAsync(CancellationToken.None); _allSubscribed = true; }
+            catch (Exception) { _tailMode = false; }
+        }
+        else if (!_tailMode && _allSubscribed)
+        {
+            _client.ExecutionStateChanged -= OnExecutionStateChangedAsync;
+            try { await _client.UnsubscribeAllAsync(CancellationToken.None); }
+            catch (Exception) { /* ignore */ }
+            _allSubscribed = false;
+        }
+    }
+
+    private async Task OnExecutionStateChangedAsync(JobExecution exec)
+    {
+        if (!_tailMode) return;
+        var idx = _displayed.FindIndex(r => r.ExecutionId == exec.ExecutionId);
+        if (idx >= 0)
+        {
+            _displayed[idx] = ExecutionRowViewModel.FromExecution(exec);
+        }
+        else
+        {
+            _displayed.Insert(0, ExecutionRowViewModel.FromExecution(exec));
+            if (_displayed.Count > 200) _displayed = _displayed.Take(200).ToList();
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_client is not null && _allSubscribed)
+        {
+            _client.ExecutionStateChanged -= OnExecutionStateChangedAsync;
+            try { await _client.UnsubscribeAllAsync(CancellationToken.None); }
+            catch (Exception) { /* ignore */ }
+        }
+    }
+}
+
+<style>
+    .tail-mode-toggle { display: inline-flex; align-items: center; gap: var(--space-xs); color: var(--color-text-secondary); cursor: pointer; }
+</style>

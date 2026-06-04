@@ -1,0 +1,32 @@
+@* Status pill. Pure presentational — no subscriptions. *@
+
+<span class="status-badge status-badge--@CssSuffix(Status)" title="@Status">
+    <span class="material-symbols-outlined status-badge__icon">@IconName(Status)</span>
+    <span class="status-badge__label">@Status.ToString().ToUpperInvariant()</span>
+</span>
+
+@code {
+    [Parameter, EditorRequired] public JobStatus Status { get; set; }
+
+    private static string CssSuffix(JobStatus s) => s switch
+    {
+        JobStatus.Pending or JobStatus.Scheduled => "pending",
+        JobStatus.Running or JobStatus.Retrying => "running",
+        JobStatus.Completed => "completed",
+        JobStatus.Failed => "failed",
+        JobStatus.Cancelled or JobStatus.Cancelling => "cancelled",
+        JobStatus.AwaitingApproval => "approval",
+        _ => "pending",
+    };
+
+    private static string IconName(JobStatus s) => s switch
+    {
+        JobStatus.Pending or JobStatus.Scheduled => "schedule",
+        JobStatus.Running or JobStatus.Retrying => "progress_activity",
+        JobStatus.Completed => "task_alt",
+        JobStatus.Failed => "error",
+        JobStatus.Cancelled or JobStatus.Cancelling => "block",
+        JobStatus.AwaitingApproval => "back_hand",
+        _ => "help",
+    };
+}

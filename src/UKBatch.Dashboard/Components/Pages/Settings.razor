@@ -1,0 +1,141 @@
+@* Settings page — registry + per-service state + theme toggle + operator claim-config warning. *@
+@page "/dashboard/settings"
+@implements IDisposable
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject IJSRuntime JsRuntime
+@inject INotificationService Notifications
+
+<PageTitle>Settings - UKBatch</PageTitle>
+
+<h1 class="page-title">Settings</h1>
+
+@* OPERATOR WARNING (shared component). Loud banner on top so operators reach the
+   production posture before getting confused by empty approval lists. *@
+<OperatorClaimWarning />
+
+<section class="surface-card">
+    <div class="surface-card__header">
+        <h2 class="surface-card__title">Theme</h2>
+    </div>
+    <div class="surface-card__body">
+        <div class="settings-theme-row">
+            <button class="btn @(State.Theme == DashboardTheme.Dark ? "btn--primary" : "btn--secondary")"
+                    @onclick="() => SetThemeAsync(DashboardTheme.Dark)">Dark</button>
+            <button class="btn @(State.Theme == DashboardTheme.Light ? "btn--primary" : "btn--secondary")"
+                    @onclick="() => SetThemeAsync(DashboardTheme.Light)">Light</button>
+        </div>
+    </div>
+</section>
+
+<section class="surface-card">
+    <div class="surface-card__header">
+        <h2 class="surface-card__title">Registered services</h2>
+    </div>
+    <div class="surface-card__body">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th class="data-table__header">Name</th>
+                    <th class="data-table__header">Display name</th>
+                    <th class="data-table__header">Base URL</th>
+                    <th class="data-table__header">Hub path</th>
+                    <th class="data-table__header">State</th>
+                    <th class="data-table__header data-table__cell--actions">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var svc in Registry.All())
+                {
+                    <tr @key="svc.Name" class="data-table__row">
+                        <td class="data-table__cell data-table__cell--id">@svc.Name</td>
+                        <td class="data-table__cell">@(svc.DisplayName ?? "—")</td>
+                        <td class="data-table__cell data-table__cell--id">@svc.BaseUrl</td>
+                        <td class="data-table__cell data-table__cell--id">@svc.HubPath</td>
+                        <td class="data-table__cell">
+                            <ServiceHealthDot State="@(_states.TryGetValue(svc.Name, out var s) ? s : UKBatchClientState.Disconnected)" />
+                            <span>@(_states.TryGetValue(svc.Name, out var s2) ? s2.ToString() : "Disconnected")</span>
+                        </td>
+                        <td class="data-table__cell data-table__cell--actions">
+                            @if ((_states.TryGetValue(svc.Name, out var s3) ? s3 : UKBatchClientState.Disconnected) is UKBatchClientState.Disconnected)
+                            {
+                                <button class="btn btn--ghost btn--sm" @onclick="() => RetryAsync(svc)">Connect</button>
+                            }
+                            else
+                            {
+                                <button class="btn btn--ghost btn--sm" @onclick="() => RetryAsync(svc)">Reconnect</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+@code {
+    private readonly Dictionary<string, IUKBatchClient> _clients = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, UKBatchClientState> _states = new(StringComparer.Ordinal);
+
+    protected override void OnInitialized()
+    {
+        State.CurrentService = null;
+        foreach (var svc in Registry.All())
+        {
+            try
+            {
+                var client = ClientFactory.GetClient(svc.Name);
+                client.StateChanged += OnStateChangedAsync;
+                _clients[svc.Name] = client;
+                _states[svc.Name] = client.State;
+            }
+            catch (Exception) { /* skip */ }
+        }
+    }
+
+    private async Task SetThemeAsync(DashboardTheme theme)
+    {
+        State.Theme = theme;
+        try
+        {
+            await JsRuntime.InvokeVoidAsync("UKBatchDashboard.setTheme", theme.ToString().ToLowerInvariant());
+        }
+        catch (Exception)
+        {
+            await Notifications.WarningAsync("Theme toggle failed", "JS interop unavailable; theme may not persist across reloads.");
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RetryAsync(UKBatchServiceDescriptor svc)
+    {
+        if (!_clients.TryGetValue(svc.Name, out var client)) return;
+        try
+        {
+            await client.DisconnectAsync(CancellationToken.None);
+            await client.ConnectAsync(CancellationToken.None);
+            await Notifications.SuccessAsync($"Reconnected to {svc.DisplayName ?? svc.Name}");
+        }
+        catch (Exception ex)
+        {
+            await Notifications.ErrorAsync($"Reconnect failed for {svc.Name}", ex.Message);
+        }
+    }
+
+    private async Task OnStateChangedAsync(UKBatchClientState _)
+    {
+        foreach (var kv in _clients) _states[kv.Key] = kv.Value.State;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        foreach (var c in _clients.Values) c.StateChanged -= OnStateChangedAsync;
+        _clients.Clear();
+    }
+}
+
+<style>
+    .settings-theme-row { display: flex; gap: var(--space-xs); }
+</style>

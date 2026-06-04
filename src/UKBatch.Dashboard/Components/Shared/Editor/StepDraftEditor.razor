@@ -1,0 +1,330 @@
+@* Shared per-step field editor. EXTRACTED verbatim from Wizard's
+   RenderJobEditor / RenderParallelEditor / RenderApprovalEditor so the Wizard (guided 5-step) and the
+   visual Editor's inspector edit the SAME draft through ONE markup — drift-proof round-trip parity.
+
+   Behaviour is byte-identical to the Wizard fragments; the only structural change is that the parent
+   must be notified of every mutation. After extraction a child @bind fires the CHILD's event, so the
+   parent's step summary / validation / canvas label would go stale unless we explicitly notify:
+     - every input/select the parent must react to carries @bind:after="OnChanged.InvokeAsync"
+     - every code-path mutation (AddChild / RemoveChild / AddRole / role-remove / KeyValueEditor.PairsChanged)
+       ends with `await OnChanged.InvokeAsync()`.
+
+   AllowTargetService passes through recursively: parallel children are always cross-service-capable
+   (true); OnFailure compensation steps are NOT (the Wizard passes false — a hard requirement).
+
+   JobCatalog likewise threads through recursively so a ParallelGroup child's Job picker is
+   ALSO worker-aware (parallel children can be cross-service). *@
+@using System.Globalization
+@using UKBatch.Dashboard.Models
+
+@switch (Step.StepType)
+{
+    case BatchStepType.Job:
+        @RenderJobEditor(Step);
+        break;
+    case BatchStepType.ParallelGroup:
+        @RenderParallelEditor(Step);
+        break;
+    case BatchStepType.ApprovalGate:
+        @RenderApprovalEditor(Step);
+        break;
+    default:
+        <span class="form-field__hint">Unsupported step.</span>
+        break;
+}
+
+@code {
+    /// <summary>The draft to edit (mutated in place via two-way binding).</summary>
+    [Parameter, EditorRequired] public WizardStepDraft Step { get; set; } = default!;
+
+    /// <summary>
+    /// Local job names. <b>Superseded by <see cref="JobCatalog"/></b> which folds these in as
+    /// local (this-service) entries — the Job picker now renders from <see cref="JobCatalog"/>. Retained
+    /// so the parent call sites and the recursion keep a stable signature; pass it through for parity.
+    /// </summary>
+    [Parameter] public IReadOnlyList<string> JobNames { get; set; } = [];
+
+    /// <summary>
+    /// Worker-aware "job @ service" catalog for the Job-step dropdown. The UNION of the
+    /// worker heartbeat advertisements and the local job lookup; selecting an entry sets BOTH
+    /// <see cref="WizardStepDraft.JobName"/> and <see cref="WizardStepDraft.TargetService"/>. Empty is
+    /// fine — the picker shows only the current value and the operator can still type via the override.
+    /// </summary>
+    [Parameter] public IReadOnlyList<JobCatalogEntry> JobCatalog { get; set; } = [];
+
+    /// <summary>Configured services for the cross-service target dropdown.</summary>
+    [Parameter] public IReadOnlyList<UKBatchServiceDescriptor> Services { get; set; } = [];
+
+    /// <summary>
+    /// When true, Job editors render the Target service dropdown. Parallel children pass <c>true</c>;
+    /// OnFailure compensation steps MUST pass <c>false</c> (compensation runs locally).
+    /// </summary>
+    [Parameter] public bool AllowTargetService { get; set; } = true;
+
+    /// <summary>Raised after ANY mutation so the parent can refresh its summary / validation / canvas label.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    // Component-local approval-role input buffer (was Wizard's shared _newRole — now per-editor).
+    private string _newRole = string.Empty;
+
+    // ── Job catalog picker ─────────────────────────────────────────────────────────
+
+    // Sentinel for the synthetic "keep current value" option (rendered only when the step's current
+    // (JobName, TargetService) isn't a catalog entry). A non-numeric token so it never collides with a
+    // catalog index. Empty string is the "— select a job —" placeholder; anything else is an index.
+    private const string CurrentToken = "current";
+
+    // Is the step's current (JobName, TargetService) NOT representable by any catalog entry? Then we
+    // render a "keep current" option so an edit on a typed/stale value doesn't silently drop it. A blank
+    // job name is the unset case (the placeholder covers it) — not "current".
+    private bool CurrentNotInCatalog(WizardStepDraft step)
+    {
+        if (string.IsNullOrWhiteSpace(step.JobName)) return false;
+        var svc = NormalizeService(step.TargetService);
+        return !JobCatalog.Any(e => e.JobName == step.JobName && NormalizeService(e.ServiceName) == svc);
+    }
+
+    // The <select> value: "" (unset → placeholder), CurrentToken (current value not in catalog), or the
+    // catalog index of the entry matching the step's (JobName, TargetService).
+    private string SelectedCatalogToken(WizardStepDraft step)
+    {
+        if (string.IsNullOrWhiteSpace(step.JobName)) return string.Empty;
+        var svc = NormalizeService(step.TargetService);
+        for (var i = 0; i < JobCatalog.Count; i++)
+        {
+            var e = JobCatalog[i];
+            if (e.JobName == step.JobName && NormalizeService(e.ServiceName) == svc)
+            {
+                return i.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+        return CurrentToken; // current value is real but not in the catalog → keep it selected
+    }
+
+    // Selecting a catalog entry sets BOTH JobName AND TargetService in one action (the whole point —
+    // a worker-mode operator can't typo the routing target). "" / CurrentToken leave the draft untouched
+    // (placeholder re-pick / keep-current). An out-of-range/garbage token is ignored defensively.
+    private async Task SelectFromCatalogAsync(WizardStepDraft step, ChangeEventArgs e)
+    {
+        var token = e.Value?.ToString();
+        if (string.IsNullOrEmpty(token) || token == CurrentToken) return;
+        if (!int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx)) return;
+        if (idx < 0 || idx >= JobCatalog.Count) return;
+
+        var entry = JobCatalog[idx];
+        step.JobName = entry.JobName;
+        // Set the routing target ONLY when this editor allows cross-service (top-level / parallel-child).
+        // When AllowTargetService=false (compensation runs LOCALLY), the catalog pick must take
+        // the job NAME but NOT its service: force local so picking "SendNotification — notification" in a
+        // compensation step doesn't silently make it a cross-service step (ToBatchStep doesn't know the
+        // lane). null ServiceName (local) → "" so the override <select> shows "Local (this service)".
+        step.TargetService = AllowTargetService ? (entry.ServiceName ?? string.Empty) : string.Empty;
+        await OnChanged.InvokeAsync();
+    }
+
+    // Dropdown label: "JobName — service" for a worker job, "JobName — Local" for a local one.
+    private static string CatalogLabel(JobCatalogEntry entry)
+        => entry.ServiceName is { Length: > 0 } svc ? $"{entry.JobName} — {svc}" : $"{entry.JobName} — Local";
+
+    // Label for the synthetic "keep current" option, reflecting the step's current target.
+    private static string CurrentJobLabel(WizardStepDraft step)
+        => step.TargetService is { Length: > 0 } svc ? $"{step.JobName} — {svc}" : $"{step.JobName} — Local";
+
+    // Treat null and "" target service as the same "local" key for catalog matching.
+    private static string NormalizeService(string? service)
+        => string.IsNullOrWhiteSpace(service) ? string.Empty : service;
+
+    // ── Job ──────────────────────────────────────────────────────────────────────
+    private RenderFragment RenderJobEditor(WizardStepDraft step) => @<div class="wizard-pane">
+        <div class="form-field">
+            <label class="form-field__label">Job name</label>
+            @* Catalog-driven select: each option is a "JobName @ service" pair from the worker
+               heartbeat + the local lookup. Selecting one sets BOTH JobName and TargetService in one
+               action (SelectFromCatalog) so a worker-mode operator can't typo the routing target. The
+               selected value is an opaque token (index into JobCatalog, or the "keep current" sentinel)
+               — NOT JobName — because the same job name can exist on multiple services. *@
+            <select class="form-field__select" value="@SelectedCatalogToken(step)"
+                    @onchange="@(e => SelectFromCatalogAsync(step, e))">
+                <option value="">— select a job —</option>
+                @* If the step's current (JobName, TargetService) isn't a catalog entry — a value typed
+                   before, or the catalog failed to load — keep it visible+selected so an edit doesn't
+                   silently drop it. *@
+                @if (CurrentNotInCatalog(step))
+                {
+                    <option value="@CurrentToken" selected>@CurrentJobLabel(step)</option>
+                }
+                @for (var ci = 0; ci < JobCatalog.Count; ci++)
+                {
+                    var entry = JobCatalog[ci];
+                    <option value="@ci.ToString(CultureInfo.InvariantCulture)">@CatalogLabel(entry)</option>
+                }
+            </select>
+            @if (JobCatalog.Count == 0)
+            {
+                <span class="form-field__hint">No advertised jobs yet — type the job name in the field below, or check that a worker is online.</span>
+            }
+        </div>
+        @if (AllowTargetService)
+        {
+            <div class="form-field">
+                <label class="form-field__label">Target service (override)</label>
+                <select class="form-field__select" @bind="step.TargetService" @bind:after="OnChanged.InvokeAsync">
+                    <option value="">Local (this service)</option>
+                    @foreach (var svc in Services)
+                    {
+                        <option value="@svc.Name">@(svc.DisplayName ?? svc.Name)</option>
+                    }
+                </select>
+                <span class="form-field__hint">Set by the job picker above; override here to route to another worker. Cross-service steps require the target to accept the job.</span>
+            </div>
+        }
+        <div class="form-field">
+            <label class="form-field__label">Parameters</label>
+            <KeyValueEditor @bind-Pairs="step.Parameters" @bind-Pairs:after="OnChanged.InvokeAsync" />
+        </div>
+        <div class="form-row">
+            <div class="form-field">
+                <label class="form-field__label">Max retries</label>
+                <input class="form-field__input" type="number" min="0" @bind="step.MaxRetries" @bind:after="OnChanged.InvokeAsync" />
+                <span class="form-field__hint">Empty = inherit.</span>
+            </div>
+            <div class="form-field">
+                <label class="form-field__label">Timeout (seconds)</label>
+                <input class="form-field__input" type="number" min="0" @bind="step.TimeoutSeconds" @bind:after="OnChanged.InvokeAsync" />
+                <span class="form-field__hint">0 = no timeout; empty = inherit.</span>
+            </div>
+        </div>
+    </div>;
+
+    // ── ParallelGroup ────────────────────────────────────────────────────────────
+    private RenderFragment RenderParallelEditor(WizardStepDraft step) => @<div class="wizard-pane">
+        <div class="form-field">
+            <label class="form-field__label">Join policy</label>
+            <select class="form-field__select" @bind="step.JoinPolicy" @bind:after="OnChanged.InvokeAsync">
+                <option value="@ParallelJoinPolicy.WaitAll">WaitAll</option>
+                <option value="@ParallelJoinPolicy.WaitAny">WaitAny</option>
+                <option value="@ParallelJoinPolicy.WaitMajority">WaitMajority</option>
+            </select>
+            @if (step.JoinPolicy == ParallelJoinPolicy.WaitMajority && step.Children.Count < 3)
+            {
+                <span class="form-field__error">WaitMajority requires &gt;=3 children (degenerate with fewer; use WaitAll instead).</span>
+            }
+            else if (step.Children.Count < 2)
+            {
+                <span class="form-field__error">A parallel group needs at least 2 branches.</span>
+            }
+        </div>
+        <div class="wizard-children">
+            @for (var c = 0; c < step.Children.Count; c++)
+            {
+                var cidx = c;
+                var child = step.Children[cidx];
+                <div @key="child.StepId" class="wizard-child">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span class="wizard-step-row__type wizard-step-row__type--job">
+                            <span class="material-symbols-outlined">work</span>Branch @(cidx + 1)
+                        </span>
+                        <button class="btn--icon" aria-label="Remove branch" @onclick="@(() => RemoveChildAsync(step, cidx))">
+                            <span class="material-symbols-outlined">close</span>
+                        </button>
+                    </div>
+                    @* Children are always cross-service-capable; recurse through StepDraftEditor so the
+                       Job editor markup stays single-source. JobCatalog threads through so the child
+                       picker is worker-aware too. *@
+                    <StepDraftEditor Step="child" JobNames="JobNames" JobCatalog="JobCatalog" Services="Services"
+                                     AllowTargetService="true" OnChanged="OnChanged" />
+                </div>
+            }
+        </div>
+        <button class="btn btn--secondary btn--sm" @onclick="@(() => AddChildAsync(step))">
+            <span class="material-symbols-outlined">add</span> Add branch
+        </button>
+    </div>;
+
+    // ── ApprovalGate ─────────────────────────────────────────────────────────────
+    private RenderFragment RenderApprovalEditor(WizardStepDraft step) => @<div class="wizard-pane">
+        <div class="form-field">
+            <label class="form-field__label">Title</label>
+            <input class="form-field__input" @bind="step.ApprovalTitle" @bind:event="oninput" @bind:after="OnChanged.InvokeAsync" />
+        </div>
+        <div class="form-field">
+            <label class="form-field__label">Description</label>
+            <textarea class="form-field__textarea" rows="2" @bind="step.ApprovalDescription" @bind:after="OnChanged.InvokeAsync"></textarea>
+        </div>
+        <div class="form-field">
+            <label class="form-field__label">
+                <input type="checkbox" @bind="step.AnyAuthenticatedUser" @bind:after="OnChanged.InvokeAsync" /> Any authenticated user can approve
+            </label>
+        </div>
+        @if (!step.AnyAuthenticatedUser)
+        {
+            <div class="form-field">
+                <label class="form-field__label">Allowed roles</label>
+                <div class="dag-node-detail__chips">
+                    @for (var r = 0; r < step.AllowedRoles.Count; r++)
+                    {
+                        var ridx = r;
+                        <span class="dag-node-detail__chip">
+                            @step.AllowedRoles[ridx]
+                            <button class="btn--icon btn--sm" aria-label="Remove role" @onclick="@(() => RemoveRoleAsync(step, ridx))">
+                                <span class="material-symbols-outlined">close</span>
+                            </button>
+                        </span>
+                    }
+                </div>
+                <div style="display:flex; gap:var(--space-xs); margin-top:var(--space-xxs);">
+                    <input class="form-field__input" placeholder="role name" @bind="_newRole" @bind:event="oninput" />
+                    <button class="btn btn--secondary btn--sm" @onclick="@(() => AddRoleAsync(step))">Add role</button>
+                </div>
+                @if (step.AllowedRoles.Count == 0)
+                {
+                    <span class="form-field__hint">Empty roles = nobody can approve (gate dead-locks).</span>
+                }
+            </div>
+        }
+        <div class="form-row">
+            <div class="form-field">
+                <label class="form-field__label">Timeout (seconds)</label>
+                <input class="form-field__input" type="number" min="0" @bind="step.TimeoutSecondsApproval" @bind:after="OnChanged.InvokeAsync" />
+                <span class="form-field__hint">Empty = wait indefinitely.</span>
+            </div>
+            <div class="form-field">
+                <label class="form-field__label">On timeout</label>
+                <select class="form-field__select" @bind="step.OnTimeout" @bind:after="OnChanged.InvokeAsync">
+                    <option value="@ApprovalTimeoutAction.Fail">Fail</option>
+                    <option value="@ApprovalTimeoutAction.AutoApprove">AutoApprove</option>
+                    <option value="@ApprovalTimeoutAction.Hold">Hold</option>
+                </select>
+            </div>
+        </div>
+    </div>;
+
+    // ── code-path mutations (each ends with OnChanged so the parent re-renders) ──
+
+    private async Task AddChildAsync(WizardStepDraft group)
+    {
+        group.Children.Add(new WizardStepDraft { StepType = BatchStepType.Job });
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task RemoveChildAsync(WizardStepDraft group, int cidx)
+    {
+        if (cidx >= 0 && cidx < group.Children.Count) group.Children.RemoveAt(cidx);
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task AddRoleAsync(WizardStepDraft step)
+    {
+        var role = _newRole.Trim();
+        if (role.Length == 0 || step.AllowedRoles.Contains(role, StringComparer.Ordinal)) return;
+        step.AllowedRoles.Add(role);
+        _newRole = string.Empty;
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task RemoveRoleAsync(WizardStepDraft step, int ridx)
+    {
+        if (ridx >= 0 && ridx < step.AllowedRoles.Count) step.AllowedRoles.RemoveAt(ridx);
+        await OnChanged.InvokeAsync();
+    }
+}

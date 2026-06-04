@@ -1,0 +1,373 @@
+@* Read-only Drawflow live-status canvas. Used instead of DagView on the live RunDetail page —
+   Drawflow renders nodes as absolutely-positioned <div>s in a precanvas it pans/zooms via `transform`,
+   so the foreignObject+transform:scale displacement that broke DagView under zoom cannot occur.
+
+   SOLE JS-interop owner of dag-status.js. Read-only TOPOLOGY: NO node drag, NO connection edit, NO
+   palette/drop. Two discrete JS→C# callbacks, both via ONE delegated container click listener:
+   OnNodeSelected (open the inspector) and OnApproveClicked (the in-node Approve button on a
+   pending gate, which reuses the parent's existing REST approve path). Reuses DagLayout.Compute (X,Y) +
+   DagStatusEdges.Build (structural topology) + DagStatusClasses (status tokens). Container has NO Blazor
+   pointer handlers; pan/zoom is Drawflow-native + the three discrete toolbar buttons. *@
+@implements IAsyncDisposable
+@inject IJSRuntime JsRuntime
+@inject ILogger<DagStatusCanvas> Logger
+@using UKBatch.Dashboard.Models.DagStatus
+
+@if (Steps.Count == 0)
+{
+    <EmptyState Title="No steps" Detail="This batch has no steps configured." IconName="device_hub" />
+}
+else if (_jsFailed)
+{
+    @* Graceful-degradation fallback: a static node list with status pills. Fully usable, and
+       because each <li> binds its class + badge to StatusByStepId, it keeps updating live with no JS. *@
+    <ul class="dag-status-fallback">
+        @foreach (var n in _layout.Nodes)
+        {
+            <li class="dag-status-fallback__item dag-status-fallback__item--@FallbackStatus(n)"
+                @key="n.StepId" @onclick="@(() => SelectAsync(n.StepId))">
+                <span class="dag-status-fallback__title mono">@n.Title</span>
+                @if (StatusByStepId is not null && StatusFor(n.StepId) is { } st)
+                {
+                    <JobStatusBadge Status="st" />
+                }
+            </li>
+        }
+    </ul>
+}
+else
+{
+    <div class="dag-toolbar">
+        <div class="dag-toolbar__group">
+            <button class="btn--icon" @onclick="ZoomOut" aria-label="Zoom out">
+                <span class="material-symbols-outlined">remove</span>
+            </button>
+            <button class="btn--icon" @onclick="ZoomIn" aria-label="Zoom in">
+                <span class="material-symbols-outlined">add</span>
+            </button>
+            <button class="btn--icon" @onclick="ResetView" aria-label="Reset view">
+                <span class="material-symbols-outlined">fit_screen</span>
+            </button>
+        </div>
+    </div>
+    <div class="dag-status-canvas" @ref="_containerEl"></div>
+}
+
+@code {
+    /// <summary>Ordered top-level steps (== <c>DagView.Steps</c>).</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<BatchStep> Steps { get; set; } = [];
+
+    /// <summary>Compensating steps rendered as a dashed side branch (== <c>DagView.OnFailureSteps</c>).</summary>
+    [Parameter] public IReadOnlyList<BatchStep> OnFailureSteps { get; set; } = [];
+
+    /// <summary>
+    /// Live status keyed by <see cref="BatchStep.StepId"/> (== <c>JobExecution.BatchStepId</c>). Non-null
+    /// ⇒ live mode; nodes without an entry render "not-started" (muted). (== <c>DagView.StatusByStepId</c>.)
+    /// </summary>
+    [Parameter] public IReadOnlyDictionary<string, JobStatus>? StatusByStepId { get; set; }
+
+    /// <summary>Raised when the operator clicks a node (read-only selection → inspector panel).</summary>
+    [Parameter] public EventCallback<BatchStep> OnNodeSelected { get; set; }
+
+    // NOTE: the [JSInvokable] callbacks are named *FromJs (the JS bridge invokes those exact names) so
+    // they do not collide with the EventCallback parameters — mirrors DrawflowCanvas's
+    // OnNodeSelected(method)/OnNodeSelectedCb(parameter) split.
+
+    /// <summary>
+    /// Raised when the operator clicks the in-node Approve button on a pending approval gate.
+    /// The parent (RunDetail) reuses its existing approve path: select the gate (opens the inspector — the
+    /// error surface) then run the same ApproveAsync → re-list flow as the panel's Approve button. No new
+    /// approve code path. Fired only for gates currently in <see cref="PendingStepIds"/> (the button is
+    /// hidden otherwise), but the parent re-derives the approval id from its own pending map, so a stale
+    /// click that races a resolution simply no-ops there.
+    /// </summary>
+    [Parameter] public EventCallback<BatchStep> OnApproveClicked { get; set; }
+
+    /// <summary>
+    /// StepIds of approval gates currently awaiting a decision (== RunDetail's <c>_awaitingGates</c>).
+    /// Pushed to JS as a <c>data-pending</c> flag so a gate's in-node Approve button appears <b>only</b>
+    /// while it is decidable. Derived from the approvals feed — NOT inferred from <see cref="StatusByStepId"/>
+    /// (AwaitingApproval is visually mapped to the "running" amber pulse, which is too indirect).
+    /// </summary>
+    [Parameter] public IReadOnlyCollection<string> PendingStepIds { get; set; } = [];
+
+    /// <summary>StepId of the currently-selected node, or <c>null</c> — drives the canvas highlight.</summary>
+    [Parameter] public string? SelectedStepId { get; set; }
+
+    private DagLayout _layout = new() { Nodes = [], Edges = [], Width = 0, Height = 0 };
+    private IReadOnlyList<BatchStep>? _lastSteps;
+    private IReadOnlyList<BatchStep>? _lastOnFailure;
+    private string? _lastPushedSelection;
+
+    private IJSObjectReference? _module;
+    private IJSObjectReference? _controller;        // the object returned by init()
+    private DotNetObjectReference<DagStatusCanvas>? _selfRef;
+    private ElementReference _containerEl;
+    private bool _initStarted;                      // latched before first await → blocks re-entrant init
+    private bool _jsReady;                          // init() succeeded → controller usable
+    private bool _jsFailed;                         // import/init failed → render the fallback list
+    private bool _topologyDirty;                    // forces a re-buildGraph on the next render
+    private bool _statusDirty;                      // status changed → push setStatuses on the next render
+    private bool _pendingDirty;                     // pending-gate set changed → push setPending on the next render
+    private string? _lastPendingKey;                // order-insensitive signature of the last pushed pending set
+
+    // Recompute the layout ONLY when topology parameters change (NOT on every status tick). Status
+    // changes set _statusDirty so a cheap setStatuses fires; topology changes additionally set _topologyDirty.
+    protected override void OnParametersSet()
+    {
+        if (!ReferenceEquals(_lastSteps, Steps) || !ReferenceEquals(_lastOnFailure, OnFailureSteps))
+        {
+            _lastSteps = Steps;
+            _lastOnFailure = OnFailureSteps;
+            _layout = DagLayout.Compute(Steps, OnFailureSteps);
+            _topologyDirty = true;
+        }
+        _statusDirty = true;   // status may have changed; idempotent, cheap to push
+
+        // RunDetail rebuilds the pending HashSet on every refresh, so reference equality can't gate this;
+        // diff an order-insensitive signature instead and push only on a real change (the set is tiny).
+        var pendingKey = PendingSignature(PendingStepIds);
+        if (!string.Equals(_lastPendingKey, pendingKey, StringComparison.Ordinal))
+        {
+            _lastPendingKey = pendingKey;
+            _pendingDirty = true;
+        }
+    }
+
+    // Order-insensitive signature of the pending set (sorted-join). Cheap; the set is at most a handful
+    // of gate StepIds per run.
+    private static string PendingSignature(IReadOnlyCollection<string> ids)
+        => ids.Count == 0 ? string.Empty : string.Join("", ids.OrderBy(x => x, StringComparer.Ordinal));
+
+    // "component first render" ≠ "canvas first render". A fresh run has Steps=[] ⇒ the
+    // EmptyState branch renders and the @ref div is NOT in the DOM, so init MUST be deferred. We key
+    // init/buildGraph off `_containerEl is not null` (canvas branch rendered) + `!_jsReady`, NOT firstRender.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_jsFailed) return;                          // already degraded — nothing to drive
+        if (Steps.Count == 0) return;                   // EmptyState branch — no canvas yet
+
+        if (!_jsReady)
+        {
+            // Single-shot latch: _jsReady is only set AFTER the awaited
+            // import+init complete. Without this guard, a debounced status StateHasChanged landing while
+            // the first OnAfterRenderAsync is still awaiting `import` would re-enter this block on a
+            // subsequent render(firstRender:false) ⇒ two init() calls on the same container = two Drawflow
+            // editors + two delegated click listeners (doubled selection) + the first module/controller/
+            // selfRef leaked. Set the latch BEFORE the first await so re-entry returns early.
+            if (_initStarted) return;
+            _initStarted = true;
+            try
+            {
+                // Leading "./" is REQUIRED — a bare "_content/..." specifier is rejected by strict module
+                // resolvers (Safari/WebKit) even though Chrome tolerates it. "./_content/..." is the
+                // Microsoft-documented RCL JS-interop pattern (base-href relative).
+                _module = await JsRuntime.InvokeAsync<IJSObjectReference>(
+                    "import", "./_content/UKBatch.Dashboard/js/dag-status.js");
+                _selfRef = DotNetObjectReference.Create(this);
+                _controller = await _module.InvokeAsync<IJSObjectReference>(
+                    "init", _containerEl, _selfRef, new { zoomMin = 0.4, zoomMax = 2.0 });
+                _jsReady = true;
+            }
+            catch (JSException ex)
+            {
+                // GRACEFUL DEGRADATION: asset 404 / Drawflow ctor missing / prerender. Render the
+                // static fallback list (which keeps updating live). Do NOT surface a hard error.
+                Logger.LogWarning(ex, "DagStatusCanvas import/init failed; degrading to fallback list. JS error: {Message}", ex.Message);
+                _jsFailed = true;
+                StateHasChanged();
+                return;
+            }
+        }
+
+        if (_controller is null) return;
+
+        if (_topologyDirty)
+        {
+            _topologyDirty = false;
+            await BuildGraphAsync();
+            // A fresh build re-emits node HTML with no data-status / data-pending and clears any selection
+            // highlight — re-push current live status, pending flags + selection.
+            _statusDirty = true;
+            _pendingDirty = true;
+            _lastPushedSelection = null;
+        }
+
+        if (_statusDirty)
+        {
+            _statusDirty = false;
+            await SetStatusesAsync();
+        }
+
+        if (_pendingDirty)
+        {
+            _pendingDirty = false;
+            await SetPendingAsync();
+        }
+
+        if (!string.Equals(_lastPushedSelection, SelectedStepId, StringComparison.Ordinal))
+        {
+            _lastPushedSelection = SelectedStepId;
+            await SelectNodeAsync(SelectedStepId);
+        }
+    }
+
+    // ── C# → JS (each guarded — a torn-down circuit must not throw) ──
+
+    private async Task BuildGraphAsync()
+    {
+        if (!_jsReady || _controller is null) return;
+        var graph = BuildGraph();
+        try { await _controller.InvokeVoidAsync("buildGraph", graph); }
+        catch (JSException) { /* circuit gone */ }
+    }
+
+    private async Task SetStatusesAsync()
+    {
+        if (!_jsReady || _controller is null) return;
+        var nodeClasses = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var n in _layout.Nodes)
+            nodeClasses[n.StepId] = DagStatusClasses.NodeClass(n, StatusByStepId);
+
+        var edgeClasses = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var e in _structuralEdges)
+            edgeClasses[$"{e.FromStepId}->{e.ToStepId}"] = DagStatusClasses.EdgeClass(e, StatusByStepId);
+
+        try { await _controller.InvokeVoidAsync("setStatuses", new { nodes = nodeClasses, edges = edgeClasses }); }
+        catch (JSException) { /* circuit gone */ }
+    }
+
+    private async Task SetPendingAsync()
+    {
+        if (!_jsReady || _controller is null) return;
+        // Full-set push: JS clears the flag on every other node, so an approved gate's button disappears.
+        try { await _controller.InvokeVoidAsync("setPending", PendingStepIds); }
+        catch (JSException) { /* circuit gone */ }
+    }
+
+    private async Task SelectNodeAsync(string? stepId)
+    {
+        if (!_jsReady || _controller is null) return;
+        try { await _controller.InvokeVoidAsync("selectNode", stepId); }
+        catch (JSException) { }
+    }
+
+    private Task ZoomIn() => InvokeControllerAsync("zoomIn");
+    private Task ZoomOut() => InvokeControllerAsync("zoomOut");
+    private Task ResetView() => InvokeControllerAsync("resetView");
+
+    private async Task InvokeControllerAsync(string method)
+    {
+        if (!_jsReady || _controller is null) return;
+        try { await _controller.InvokeVoidAsync(method); }
+        catch (JSException) { }
+    }
+
+    // ── JS → C# (exactly TWO discrete callbacks, both via the one delegated container click) ──
+
+    [JSInvokable]
+    public Task OnNodeSelectedFromJs(string stepId) => SelectAsync(stepId);
+
+    // The in-node Approve button (delegated container click in dag-status.js, checked
+    // BEFORE the generic node-select branch). Resolves the StepId via the same FindStep map the selection
+    // path uses and raises OnApproveClicked. The parent re-derives the approval id + runs its existing
+    // approve flow (select → ApproveAsync → re-list); an unresolved id simply no-ops here.
+    [JSInvokable]
+    public Task OnApproveClickedFromJs(string stepId)
+    {
+        var step = FindStep(stepId);
+        return step is null ? Task.CompletedTask : OnApproveClicked.InvokeAsync(step);
+    }
+
+    private Task SelectAsync(string stepId)
+    {
+        var step = FindStep(stepId);
+        return step is null ? Task.CompletedTask : OnNodeSelected.InvokeAsync(step);
+    }
+
+    // ── graph + helper building ──
+
+    // Cached structural edges (computed alongside the graph) so SetStatusesAsync can map the live status
+    // without re-walking the topology. Refreshed on every BuildGraph (topology change).
+    private IReadOnlyList<StatusEdge> _structuralEdges = [];
+
+    private DagStatusGraph BuildGraph()
+    {
+        // POSITION OVERRIDE: keep DagLayout for node METADATA
+        // (Title/Subtitle/Kind/TargetService — it already expands ParallelGroup children) but OVERRIDE
+        // X/Y from DagStatusLayout's LEFT-TO-RIGHT, parallel-EXPANDED map so the taller live cards never
+        // overlap (DagLayout's vertical-spine coords assume an 80px card; the real cards are ~130px).
+        // Mirrors Editor.razor exactly. A node absent from the map (defensive — never for well-formed
+        // input) keeps its DagLayout coordinate.
+        var pos = DagStatusLayout.Compute(Steps, OnFailureSteps);
+        var nodes = _layout.Nodes.Select(n => new DagStatusNode
+        {
+            StepId = n.StepId,
+            Kind = n.Kind.ToString(),
+            Title = n.Title,
+            Subtitle = n.Subtitle,
+            TargetService = n.TargetService,
+            X = pos.TryGetValue(n.StepId, out var p) ? p.X : n.X,
+            Y = pos.TryGetValue(n.StepId, out var p2) ? p2.Y : n.Y,
+            IsFailureBranch = n.IsFailureBranch,
+            StatusClass = DagStatusClasses.NodeClass(n, StatusByStepId),
+        }).ToList();
+
+        _structuralEdges = DagStatusEdges.Build(Steps, OnFailureSteps, _layout);
+        var edges = _structuralEdges.Select(e => new DagStatusEdge
+        {
+            FromStepId = e.FromStepId,
+            ToStepId = e.ToStepId,
+            Kind = e.Kind,
+            StatusClass = DagStatusClasses.EdgeClass(e, StatusByStepId),
+        }).ToList();
+
+        return new DagStatusGraph { Nodes = nodes, Edges = edges };
+    }
+
+    // Live status for a node, or null when not in live mode / not yet dispatched.
+    private JobStatus? StatusFor(string stepId)
+        => StatusByStepId is not null && StatusByStepId.TryGetValue(stepId, out var s) ? s : null;
+
+    // Fallback-list status token (mirrors DagStatusClasses.NodeClass; "muted" when no entry).
+    private string FallbackStatus(DagLayoutNode n) => DagStatusClasses.NodeClass(n, StatusByStepId) is { Length: > 0 } c ? c : "none";
+
+    private BatchStep? FindStep(string stepId)
+    {
+        foreach (var s in Steps)
+        {
+            if (string.Equals(s.StepId, stepId, StringComparison.Ordinal)) return s;
+            if (s is { StepType: BatchStepType.ParallelGroup, ParallelGroup: { } pg })
+            {
+                foreach (var c in pg.Steps)
+                    if (string.Equals(c.StepId, stepId, StringComparison.Ordinal)) return c;
+            }
+        }
+        foreach (var s in OnFailureSteps)
+            if (string.Equals(s.StepId, stepId, StringComparison.Ordinal)) return s;
+        return null;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_module is not null) await _module.InvokeVoidAsync("dispose", _containerEl);
+        }
+        catch (JSException) { /* circuit already torn down */ }
+        catch (InvalidOperationException) { /* prerender / JS not available */ }
+        finally
+        {
+            if (_controller is not null) await SafeDisposeAsync(_controller);
+            if (_module is not null) await SafeDisposeAsync(_module);
+            _selfRef?.Dispose();
+        }
+    }
+
+    private static async ValueTask SafeDisposeAsync(IJSObjectReference jsRef)
+    {
+        try { await jsRef.DisposeAsync(); }
+        catch (JSException) { /* circuit gone */ }
+        catch (InvalidOperationException) { /* prerender */ }
+    }
+}

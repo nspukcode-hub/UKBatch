@@ -1,0 +1,47 @@
+@* Root layout. Sidebar + header + content + connection banner + toasts. *@
+@inherits LayoutComponentBase
+@inject IUKBatchServiceRegistry Registry
+@inject IDashboardState State
+
+<div class="dashboard-shell">
+    <ServiceSidebar Services="@Registry.All()" CurrentService="@State.CurrentService" />
+    <div class="dashboard-main">
+        <header class="dashboard-header">
+            <div class="dashboard-header__breadcrumb">
+                @if (State.CurrentService is { } svc)
+                {
+                    <span class="dashboard-header__breadcrumb-service">@(svc.DisplayName ?? svc.Name)</span>
+                }
+                else
+                {
+                    <span class="dashboard-header__breadcrumb-service">UKBatch</span>
+                }
+                <span class="dashboard-header__breadcrumb-sep">/</span>
+                <span class="dashboard-header__breadcrumb-current">Dashboard</span>
+            </div>
+            <div class="dashboard-header__actions">
+                <a class="btn btn--icon" href="/dashboard/settings" title="Settings" aria-label="Settings">
+                    <span class="material-symbols-outlined">settings</span>
+                </a>
+                <a class="btn btn--icon" href="/dashboard" title="Home" aria-label="Home">
+                    <span class="material-symbols-outlined">home</span>
+                </a>
+            </div>
+        </header>
+        @if (State.CurrentService is { } currentSvc)
+        {
+            <ConnectionBanner CurrentService="@currentSvc" />
+        }
+        <main class="dashboard-content">
+            @Body
+        </main>
+        <ToastContainer />
+    </div>
+</div>
+
+@code {
+    // The theme initial bootstrap moved to App.razor <head> inline script
+    // so the user's preferred theme is applied BEFORE first paint. The theme TOGGLE handler
+    // lives on Settings.razor (page-scoped @inject IJSRuntime). The layout itself stays free
+    // of JS interop — it only consumes the registry + state.
+}

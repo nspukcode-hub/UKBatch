@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <PropertyGroup>
+    <Description>Blazor Server centralized dashboard for UKBatch services — monitoring, triggering, approvals, and a visual batch editor. Multi-service via IUKBatchServiceRegistry; subscribes to REST + SignalR endpoints exposed by UKBatch.Api.</Description>
+    <RootNamespace>UKBatch.Dashboard</RootNamespace>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <!-- Razor Components + Interactive Server. -->
+    <StaticWebAssetBasePath>_content/UKBatch.Dashboard</StaticWebAssetBasePath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
+    <!-- Microsoft.Extensions.Http.Polly is intentionally NOT referenced. v0.1 ships without
+         REST client-side retry. v0.2 may add Microsoft.Extensions.Http.Resilience (Polly v8
+         API was incompatible with the central package management snapshot — no PackageVersion
+         entry in Directory.Packages.props for Microsoft.Extensions.Http.Polly). -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\UKBatch.Api\UKBatch.Api.csproj" />
+    <!-- Transitively brings: UKBatch.AspNetCore + UKBatch.Core + UKBatch.Abstractions -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="UKBatch.Dashboard.Tests" />
+  </ItemGroup>
+
+  <!-- Override the repo-root README pack from Directory.Build.props with the per-package README. -->
+  <ItemGroup>
+    <None Remove="$(MSBuildThisFileDirectory)..\..\README.md" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <!-- build/UKBatch.Dashboard.props is auto-included in the NuGet package
+       by the SDK's build-folder convention — any file under <project>/build/*.props matching the
+       package id is shipped at the package's build/ path and applied to PackageReference
+       consumers automatically. Without it the Web SDK skips emitting _framework/blazor.web.js
+       into the host's static asset manifest and dashboard interactivity (button clicks, SignalR
+       live updates) silently fails. ProjectReference does NOT propagate this — solution-internal
+       hosts (samples, integration tests) must set the prop manually in their own csproj. -->
+
+</Project>

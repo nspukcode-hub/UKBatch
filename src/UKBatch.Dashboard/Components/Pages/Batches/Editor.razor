@@ -1,0 +1,866 @@
+@* Visual drag-drop batch editor — the orchestrator. An alternative to the
+   Wizard's guided 5-step form; both share BatchWizardModel + StepDraftEditor so they never drift.
+   Drawflow owns free node (x,y); EXECUTION ORDER is the C# Steps list, edited via the order-rail —
+   NEVER derived from node geometry.
+
+   SAVE MODEL (explicit-Save-ONLY): every mutation (drop / move / remove / reorder / inspector
+   edit) updates the in-memory model + local hints and sets _dirty. There is NO write-on-drag — the
+   single write path is SaveAsync. (EfBatchDefinitionStore.UpdateAsync bumps Version unconditionally,
+   so auto-persisting on drag would 409 the operator on their OWN subsequent Save.) The
+   mental model is the standard editor one: "your changes are saved when you click Save."
+
+   NO Blazor pointer handlers anywhere here — the canvas component owns all drag/drop via
+   dag-editor.js (a Blazor handler would round-trip per event over SignalR). Antiforgery is inherited
+   from MapRazorComponents<App> — the host MUST also call app.UseAntiforgery(). *@
+@page "/dashboard/{ServiceName}/batches/editor"
+@page "/dashboard/{ServiceName}/batches/{BatchId}/editor"
+@using System.Globalization
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject INotificationService Notifications
+@inject NavigationManager Nav
+
+@* Drawflow's bundled stylesheet — page-level link (NOT App.razor) so it loads lazily only on the
+   editor route, keeping non-editor pages free of the Drawflow weight. *@
+<link rel="stylesheet" href="_content/UKBatch.Dashboard/lib/drawflow/drawflow.min.css" />
+
+<PageTitle>@(_model.Id is null ? "New batch (visual)" : "Edit batch (visual)") - UKBatch</PageTitle>
+
+@if (_redirected) return;
+
+@if (_notFound)
+{
+    <EmptyState Title="Batch not found"
+                Detail="@($"Batch '{BatchId}' was not found on '{ServiceName}'.")"
+                IconName="layers_clear">
+        <ActionContent>
+            <a class="btn btn--primary" href="/dashboard/@ServiceName/batches">Back to catalog</a>
+        </ActionContent>
+    </EmptyState>
+}
+else if (_unsupported)
+{
+    <EmptyState Title="Cannot edit this batch"
+                Detail="This batch contains step types this dashboard version can't edit. Editing would discard that data."
+                IconName="block">
+        <ActionContent>
+            <a class="btn btn--primary" href="/dashboard/@ServiceName/batches/@Uri.EscapeDataString(BatchId ?? string.Empty)">View read-only</a>
+        </ActionContent>
+    </EmptyState>
+}
+else if (_loading)
+{
+    <div class="page-loader">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading…</span>
+    </div>
+}
+else
+{
+    <h1 class="page-title">
+        @(_model.Id is null ? "Create batch" : "Edit batch")
+        <span class="page-title__sub">@ServiceName · visual</span>
+    </h1>
+
+    @if (_concurrencyConflict)
+    {
+        <div class="surface-card wizard-conflict">
+            <div class="surface-card__body">
+                <p><span class="material-symbols-outlined">sync_problem</span>
+                   This batch changed since you opened it. Reload to get the latest version, then re-apply your edits.</p>
+                <button class="btn btn--primary" @onclick="ReloadAsync">
+                    <span class="material-symbols-outlined">refresh</span> Reload
+                </button>
+            </div>
+        </div>
+    }
+
+    <div class="dag-ed-layout">
+        @* Name lives in a thin header strip (the canvas has no obvious place for it). *@
+        <div class="dag-ed-namebar">
+            <div class="form-field">
+                <label class="form-field__label" for="batch-name">Name</label>
+                <input id="batch-name" class="form-field__input" @bind="_model.Name" @bind:event="oninput" @bind:after="MarkDirty" />
+                @if (_nameError is { } err)
+                {
+                    <span class="form-field__error">@err</span>
+                }
+            </div>
+        </div>
+
+        <DagOrderRail Steps="_model.Steps"
+                      SelectedStepId="_selectedStepId"
+                      OnSelect="HandleRailSelectAsync"
+                      OnMoveStep="HandleMoveStepAsync" />
+
+        @* Second rail for the compensation (onFailure) lane — rendered ONLY when there are compensation
+           steps. Reuses DagOrderRail (chevron-reorder + chip-select) but binds _model.OnFailureSteps and
+           routes its callbacks to the failure-targeted handlers. Same _selectedStepId binding: StepIds
+           are globally unique so there is no cross-lane highlight bleed. *@
+        @if (_model.OnFailureSteps.Count > 0)
+        {
+            <DagOrderRail Steps="_model.OnFailureSteps"
+                          SelectedStepId="_selectedStepId"
+                          OnSelect="HandleRailSelectAsync"
+                          OnMoveStep="HandleMoveFailureStepAsync" />
+        }
+
+        @* Two columns: palette | canvas. Node editing lives in a MODAL (StepEditorModal) opened on
+           drop / hover-Edit-button / rail-click — NOT an always-on side panel — so a ParallelGroup's
+           branches scroll inside the modal, never pushing the page down. A node-BODY click only
+           selects (the body is the drag handle; n8n decouple move/edit). *@
+        <div class="dag-ed-layout__cols">
+            <DagPalette />
+
+            @if (_editorUnavailable)
+            {
+                <div class="surface-card dag-ed-fallback">
+                    <span class="material-symbols-outlined">visibility_off</span>
+                    <p>Visual editor couldn't load. Use the form wizard instead.</p>
+                    <a class="btn btn--primary" href="@WizardUrl()">Open in form wizard</a>
+                </div>
+            }
+            else
+            {
+                @* DrawflowCanvas is a DIRECT grid child of .dag-ed-layout__cols so `align-items: stretch`
+                   gives .dag-ed-canvas a DEFINITE height — which Drawflow's precanvas (.drawflow,
+                   height:100%) resolves against. Without that definite height precanvas.clientHeight
+                   collapses to 0, and Drawflow's node-move + connection-anchor math (both divide by
+                   clientHeight → NaN→0) freeze vertical drag and collapse the flow lines to the top-left.
+                   Do NOT reintroduce a height-less wrapper around the canvas (that regression cost us the
+                   free-drag + connection rendering). *@
+                <DrawflowCanvas @ref="_canvas"
+                                Graph="GraphSpec()"
+                                ReadOnly="false"
+                                OnNodeMovedCb="HandleNodeMoved"
+                                OnNodeSelectedCb="HandleCanvasSelectAsync"
+                                OnNodeEditRequestedCb="HandleEditRequested"
+                                OnNodeDroppedCb="HandleDropAsync"
+                                OnNodeRemovedCb="HandleNodeRemovedAsync"
+                                JsUnavailable="@(() => { _editorUnavailable = true; return InvokeAsync(StateHasChanged); })" />
+            }
+        </div>
+
+        <StepEditorModal IsVisible="_modalOpen"
+                         Step="SelectedDraft()"
+                         AllowTargetService="@(!IsSelectedOnFailure())"
+                         JobNames="_jobNames" JobCatalog="_jobCatalog" Services="_services"
+                         OnChanged="HandlePropertyChangedAsync"
+                         OnClose="CloseModal" />
+
+        <div class="dag-ed-actionbar">
+            @if (_dirty)
+            {
+                <span class="dag-ed-actionbar__dirty"><span class="material-symbols-outlined">edit_note</span> Unsaved changes</span>
+            }
+            <a class="btn btn--ghost" href="/dashboard/@ServiceName/batches">Cancel</a>
+            <a class="btn btn--secondary" href="@WizardUrl()">Open in form wizard</a>
+            <button class="btn btn--primary" @onclick="SaveAsync" disabled="@_saving">
+                <span class="material-symbols-outlined">save</span>
+                @(_saving ? "Saving…" : (_model.Id is null ? "Create batch" : "Save changes"))
+            </button>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string ServiceName { get; set; } = default!;
+    [Parameter] public string? BatchId { get; set; }
+
+    private BatchWizardModel _model = new();
+    private readonly Dictionary<string, DagLayoutHint> _localHints = new(StringComparer.Ordinal);
+    private string? _selectedStepId;
+    private IUKBatchClient? _client;
+    private IReadOnlyList<string> _jobNames = [];
+    private IReadOnlyList<JobCatalogEntry> _jobCatalog = [];
+    private IReadOnlyList<UKBatchServiceDescriptor> _services = [];
+
+    // B-3: the canvas ref (deref'd by drop / reorder / remove / selection handlers).
+    private DrawflowCanvas? _canvas;
+
+    // The DagGraphSpec is cached and rebuilt ONLY on a structural change (drop / remove /
+    // reorder / load) — NOT on every render/selection/property edit. Mirrors DagView's OnParametersSet
+    // ref-equality discipline (don't re-run DagLayout.Compute on a re-render). DrawflowCanvas only
+    // consumes Graph on first render; later structural changes are pushed imperatively (AddNode etc.).
+    private DagGraphSpec? _graph;
+
+    private string? _nameError;
+    private bool _loading = true, _notFound, _unsupported, _redirected, _editorUnavailable, _saving, _concurrencyConflict;
+
+    // Round-2: node editing moved from the always-on side panel into a modal. _modalOpen is set when a
+    // node is dropped / its hover Edit button is clicked / a rail chip is clicked, and cleared by
+    // Done/X/backdrop. A node-BODY click only SELECTS (does NOT open the modal — the body is the drag
+    // handle). The modal binds SelectedDraft() (driven by _selectedStepId), so opening it just requires
+    // a selection + this flag.
+    private bool _modalOpen;
+
+    // Pure dirty flag — there is NO debounce/auto-persist; Save is the only write path.
+    private bool _dirty;
+    private void MarkDirty() => _dirty = true;
+
+    // OnInitializedAsync — structurally identical to Wizard (Registry guard → State → client → edit
+    // load → Code redirect → unsupported gate), plus the layout-hint hydration line.
+    protected override async Task OnInitializedAsync()
+    {
+        var descriptor = Registry.TryGet(ServiceName);
+        if (descriptor is null)
+        {
+            _redirected = true;
+            Nav.NavigateTo("/dashboard", replace: true);
+            return;
+        }
+        State.CurrentService = descriptor;
+        _services = Registry.All();
+
+        try
+        {
+            _client = ClientFactory.GetClient(ServiceName);
+
+            if (BatchId is not null)
+            {
+                var def = await _client.GetBatchByIdAsync(BatchId, CancellationToken.None);
+                if (def is null) { _notFound = true; return; }
+                if (def.Source == BatchSource.Code)
+                {
+                    // Code-defined batches cannot be edited from the dashboard (parity with Wizard).
+                    await Notifications.InfoAsync("Read-only", "Code-defined batches cannot be edited from the dashboard.");
+                    _redirected = true;
+                    Nav.NavigateTo($"/dashboard/{ServiceName}/batches/{Uri.EscapeDataString(BatchId)}", replace: true);
+                    return;
+                }
+                _model = BatchWizardModel.FromDefinition(def); // carries Id + Version + Source + Metadata
+                if (_model.ContainsUnsupportedStep)
+                {
+                    _unsupported = true;
+                    return;
+                }
+                // Hydrate operator-set layout hints from the definition's Metadata (the canvas opens
+                // where the operator left nodes; hint-less nodes fall back to the auto-layout). The DTO
+                // carries the raw Metadata dict — use the dict overload (the BatchDefinition overload is
+                // for the Abstractions type the EF store round-trips).
+                foreach (var (k, v) in DagLayoutHintsSerializer.Parse(def.Metadata)) _localHints[k] = v;
+            }
+
+            // Job catalog — two INDEPENDENT best-effort fetches (mirrors Wizard): local jobs +
+            // the worker heartbeat snapshot, so an orchestrator (server + workers mode, no local jobs) still offers the
+            // worker-advertised jobs. GetWorkersAsync is REST-only — a down hub doesn't block it.
+            IReadOnlyList<string> localJobNames = [];
+            try
+            {
+                var jobs = await _client.ListJobsAsync(0, 500, null, CancellationToken.None);
+                localJobNames = jobs.Items.Select(j => j.Name).ToList();
+            }
+            catch (Exception) { /* no local jobs — the worker catalog (below) still populates the picker */ }
+
+            IReadOnlyList<WorkerInfo> workers = [];
+            try
+            {
+                workers = await _client.GetWorkersAsync(CancellationToken.None);
+            }
+            catch (Exception) { /* no worker snapshot — local jobs (above) still populate the picker */ }
+
+            _jobNames = localJobNames.OrderBy(n => n, StringComparer.Ordinal).ToList();
+            _jobCatalog = JobCatalogEntry.Build(workers, localJobNames);
+            _services = JobCatalogEntry.MergeTargetServices(_services, workers);
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Failed to load", ex.Message);
+            _notFound = BatchId is not null;
+        }
+        catch (Exception ex)
+        {
+            await Notifications.ErrorAsync("Unexpected failure", ex.Message);
+        }
+        finally
+        {
+            RebuildGraph();   // build the cached spec once, after load
+            _loading = false;
+        }
+    }
+
+    // ── selection ────────────────────────────────────────────────────────────────
+
+    // Searches BOTH the main flow AND the compensation lane (StepIds are globally unique, so at most one
+    // match across the two lists — no cross-lane bleed). Returns null gracefully if neither matches.
+    private WizardStepDraft? SelectedDraft()
+        => _selectedStepId is null
+            ? null
+            : _model.Steps.FirstOrDefault(s => s.StepId == _selectedStepId)
+              ?? _model.OnFailureSteps.FirstOrDefault(s => s.StepId == _selectedStepId);
+
+    // True when the current selection resolves in the compensation lane → the modal renders Job-only,
+    // local-only (AllowTargetService=false): compensation steps always run locally.
+    private bool IsSelectedOnFailure()
+        => _selectedStepId is not null
+           && _model.OnFailureSteps.Any(s => s.StepId == _selectedStepId);
+
+    // rail chip click → select + highlight the canvas node (rail → canvas link) + open the edit modal.
+    // The rail chip has NO drag affordance (it is not draggable), so a click here is an UNAMBIGUOUS edit
+    // intent — opening the modal directly is correct (no drag-vs-edit conflict to decouple, unlike the
+    // canvas body).
+    private async Task HandleRailSelectAsync(string stepId)
+    {
+        _selectedStepId = stepId;
+        _modalOpen = true;
+        if (_canvas is not null) await _canvas.SelectNodeAsync(stepId);
+    }
+
+    // canvas node-BODY click → SELECT ONLY (highlight the canvas node + the rail chip via param). The
+    // node body is the DRAG handle (n8n decouple move/edit): clicking it to drag must NOT pop the modal.
+    // Editing is a separate, explicit gesture — the hover Edit button on the node (→ HandleEditRequested).
+    private async Task HandleCanvasSelectAsync(string stepId)
+    {
+        _selectedStepId = stepId;
+        // Keep the canvas highlight authoritative + in sync with the rail (which re-renders via param).
+        if (_canvas is not null) await _canvas.SelectNodeAsync(stepId);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // node hover Edit button click → open the edit modal for that step (the EXPLICIT edit gesture,
+    // decoupled from the node-body drag/select above). A discrete button click, NOT a per-pixel event.
+    private Task HandleEditRequested(string stepId)
+    {
+        _selectedStepId = stepId;
+        _modalOpen = true;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    // Close the edit modal (Done / X / backdrop). The selection (and canvas highlight) persists so the
+    // rail chip stays marked; only the dialog dismisses.
+    private void CloseModal() => _modalOpen = false;
+
+    // ── palette drop (two-step add) ────────────────────────────────────────────────
+
+    private async Task HandleDropAsync(NodeDropIntent intent)
+    {
+        // Gate drops until the canvas finished its initial import — a drop that races the first
+        // importGraph would be wiped by its clear(). (Realistically unreachable, but cheap to guard.)
+        if (_canvas is null || !_canvas.CanvasReady) return;
+
+        // Compensation lane: the 'OnFailure' palette tile mints a Job draft that lives in
+        // _model.OnFailureSteps (a different LIST, not a different step type). Adding the first
+        // compensation step flips the failure policy to Compensate (warn-don't-revert on the last
+        // removal). The lower failure lane + the red-dashed branch are computed in BuildGraph.
+        if (intent.IsOnFailure)
+        {
+            await HandleFailureDropAsync(intent);
+            return;
+        }
+
+        var draft = new WizardStepDraft { StepType = intent.Kind };
+        if (intent.Kind == BatchStepType.ParallelGroup)
+        {
+            // Seed 2 Job children (matches Wizard.AddStep) — a parallel group needs >=2 branches.
+            draft.Children.Add(new WizardStepDraft { StepType = BatchStepType.Job });
+            draft.Children.Add(new WizardStepDraft { StepType = BatchStepType.Job });
+        }
+        // Was the drop on an EMPTY spot (top-left default 0,0 region) or a deliberate placement? A
+        // brand-new node should flow LEFT-TO-RIGHT: if the operator dropped near the canvas origin (the
+        // common "just drop it" gesture lands at small x/y after the pan/zoom translate), snap it to the
+        // right of the last placed node so a drop-sequence reads as a horizontal chain (matches the
+        // left-to-right auto-layout for hint-less nodes). A deliberate drop further into the canvas
+        // keeps the operator's chosen spot.
+        var (dropX, dropY) = (intent.X, intent.Y);
+        if (dropX < LtrStartX && dropY < LtrRowY + LtrNodeHeight)
+        {
+            (dropX, dropY) = NextLtrSlot();
+        }
+        // De-overlap: if the drop still lands on top of an existing node (operator dropped repeatedly at
+        // the same spot), cascade by a small fixed offset until clear so fresh nodes don't perfectly stack.
+        while (_localHints.Values.Any(h => Math.Abs(h.X - dropX) < 24 && Math.Abs(h.Y - dropY) < 24))
+        {
+            dropX += 28;
+            dropY += 28;
+        }
+        _model.Steps.Add(draft);
+        _localHints[draft.StepId] = new DagLayoutHint { X = dropX, Y = dropY };
+        _selectedStepId = draft.StepId;
+        _modalOpen = true;                                               // open the modal to configure the fresh node
+        RebuildGraph();                                                  // one layout pass; refreshes the cache
+        var spec = _graph!.Nodes.First(n => n.StepId == draft.StepId);
+        await _canvas.AddNodeAsync(spec);                                // step 2: place the node (reuse the spec)
+        await SyncConnectionsAsync();                                    // redraw flow lines incl. the new node
+        MarkDirty();
+    }
+
+    // Compensation drop: append a Job draft to the OnFailure lane + auto-set Compensate. The node is
+    // placed on the LOWER failure lane (BuildGraph's ToFailureNodeSpec formula), and the red-dashed
+    // branch is drawn by SyncConnectionsAsync (typed OnFailure edges). AllowTargetService=false is
+    // enforced by the modal via IsSelectedOnFailure() (compensation runs locally).
+    private async Task HandleFailureDropAsync(NodeDropIntent intent)
+    {
+        if (_canvas is null) return;
+
+        // Flip StopOnFailure→Compensate on the FIRST compensation step, notify the operator.
+        if (_model.EnsureCompensatePolicy())
+        {
+            await Notifications.InfoAsync("Failure policy",
+                "Set to Compensate because a compensation step was added.");
+        }
+
+        var draft = new WizardStepDraft { StepType = BatchStepType.Job };
+
+        // Snap to the next free failure-lane slot when dropped near origin (mirror the main lane, but on
+        // the failure subset + the LOWER lane Y). A deliberate placement keeps the operator's spot.
+        var (dropX, dropY) = (intent.X, intent.Y);
+        if (dropX < LtrStartX && dropY < LtrFailureLaneY + LtrNodeHeight)
+        {
+            (dropX, dropY) = NextFailureLtrSlot();
+        }
+        while (_localHints.Values.Any(h => Math.Abs(h.X - dropX) < 24 && Math.Abs(h.Y - dropY) < 24))
+        {
+            dropX += 28;
+            dropY += 28;
+        }
+        _model.OnFailureSteps.Add(draft);
+        _localHints[draft.StepId] = new DagLayoutHint { X = dropX, Y = dropY };
+        _selectedStepId = draft.StepId;
+        _modalOpen = true;
+        RebuildGraph();
+        var spec = _graph!.Nodes.First(n => n.StepId == draft.StepId);
+        await _canvas.AddNodeAsync(spec);
+        await SyncConnectionsAsync();   // redraw incl. the red-dashed branch
+        MarkDirty();
+    }
+
+    // The next free left-to-right slot for a brand-new node: to the RIGHT of the right-most hinted node
+    // (or the start position if none), at the standard row Y. Keeps a drop-sequence a clean horizontal
+    // chain so output→input edges are short forward curves (the whole point of the LTR layout).
+    private (double X, double Y) NextLtrSlot()
+    {
+        if (_localHints.Count == 0) return (LtrStartX, LtrRowY);
+        var maxX = _localHints.Values.Max(h => h.X);
+        return (maxX + LtrNodeWidth + LtrGapX, LtrRowY);
+    }
+
+    // The next free slot on the LOWER compensation lane: to the RIGHT of the right-most already-placed
+    // failure node (by index in OnFailureSteps), at LtrFailureLaneY. Mirrors NextLtrSlot but on the
+    // failure subset + the lower lane Y so a compensation drop-sequence reads as a horizontal chain.
+    private (double X, double Y) NextFailureLtrSlot()
+    {
+        var index = _model.OnFailureSteps.Count;   // 0-based index the new node WILL occupy
+        return (LtrStartX + index * (LtrNodeWidth + LtrGapX), LtrFailureLaneY);
+    }
+
+    // ── node moved (geometry ONLY — order is untouched, invariant #2) ───────────────
+
+    private void HandleNodeMoved(NodeMovedArgs e)
+    {
+        _localHints[e.StepId] = new DagLayoutHint { X = e.X, Y = e.Y };
+        MarkDirty();
+        // No RebuildGraph: geometry-only; the canvas already reflects the new position.
+    }
+
+    // ── canvas delete key ──────────────────────────────────────────────────────────
+
+    private async Task HandleNodeRemovedAsync(string stepId)
+    {
+        var idx = _model.Steps.FindIndex(s => s.StepId == stepId);
+        if (idx >= 0)
+        {
+            _model.Steps.RemoveAt(idx);
+            _localHints.Remove(stepId);
+            if (string.Equals(_selectedStepId, stepId, StringComparison.Ordinal)) _selectedStepId = null;
+            await ResyncOrderBadgesAsync(); // remaining indices shifted
+            await SyncConnectionsAsync();   // redraw flow lines minus the removed node
+            RebuildGraph();
+            MarkDirty();
+            return;
+        }
+
+        // Compensation lane delete. When the LAST compensation step is removed under a Compensate
+        // policy, WARN but do NOT auto-revert — the server degrades Compensate→StopOnFailure on save;
+        // silently flipping the operator's explicit policy mid-edit would surprise them.
+        var fidx = _model.OnFailureSteps.FindIndex(s => s.StepId == stepId);
+        if (fidx < 0) return;
+        _model.OnFailureSteps.RemoveAt(fidx);
+        _localHints.Remove(stepId);
+        if (string.Equals(_selectedStepId, stepId, StringComparison.Ordinal)) _selectedStepId = null;
+        if (_model.ShouldWarnEmptyCompensate())
+        {
+            await Notifications.InfoAsync("Failure policy",
+                "No compensation steps — Compensate will degrade to StopOnFailure on save.");
+        }
+        await ResyncFailureBadgesAsync();
+        await SyncConnectionsAsync();
+        RebuildGraph();
+        MarkDirty();
+    }
+
+    // ── order-rail reorder (the ONLY reorder path) ─────────────────────────────────
+
+    private async Task HandleMoveStepAsync(MoveStepArgs e)
+    {
+        var (idx, delta) = (e.Index, e.Delta);
+        var t = idx + delta;
+        if (idx < 0 || idx >= _model.Steps.Count || t < 0 || t >= _model.Steps.Count) return;
+        (_model.Steps[idx], _model.Steps[t]) = (_model.Steps[t], _model.Steps[idx]);
+        await ResyncOrderBadgesAsync(); // push new badges + titles to the canvas
+        await SyncConnectionsAsync();   // reorder changes the flow-line chain
+        RebuildGraph();
+        MarkDirty();
+    }
+
+    // Mirrors HandleMoveStepAsync but swaps within _model.OnFailureSteps (the compensation lane) — the
+    // 2nd DagOrderRail's chevrons. Re-chains the red-dashed branch (the OnFailure edge order follows the
+    // OnFailureSteps list order, exactly as the main flow follows Steps).
+    private async Task HandleMoveFailureStepAsync(MoveStepArgs e)
+    {
+        var (idx, delta) = (e.Index, e.Delta);
+        var t = idx + delta;
+        if (idx < 0 || idx >= _model.OnFailureSteps.Count || t < 0 || t >= _model.OnFailureSteps.Count) return;
+        (_model.OnFailureSteps[idx], _model.OnFailureSteps[t]) = (_model.OnFailureSteps[t], _model.OnFailureSteps[idx]);
+        await ResyncFailureBadgesAsync();
+        await SyncConnectionsAsync();
+        RebuildGraph();
+        MarkDirty();
+    }
+
+    // ── inspector property change ───────────────────────────────────────────────────
+
+    private async Task HandlePropertyChangedAsync()
+    {
+        // A field change (job name / target service / approval title) may alter the node label, so
+        // re-push titles+badges. Cheap (<50 nodes) and keeps the canvas in sync without a full reimport.
+        await ResyncOrderBadgesAsync();
+
+        // A ParallelGroup edit can ALSO change the node's BODY (add/remove a branch, rename a child job)
+        // — the in-card branch chips must reflect it without opening the modal again. UpdateLabelAsync
+        // (above) only patches the title/badge; for a group we re-render the whole card from a fresh
+        // spec via RefreshNodeAsync (which also reflows the connection anchors after the card resizes).
+        // Re-render on every OnChanged is fine at this scale (<50 nodes, one DOM swap). The cached
+        // _graph is left to the structural-change rebuilds (drop/remove/reorder) — a child-field edit is
+        // NOT a top-level structural change, so RebuildGraph is intentionally not called here.
+        var sel = SelectedDraft();
+        if (sel is { StepType: BatchStepType.ParallelGroup } && _canvas is not null)
+        {
+            var idx = _model.Steps.IndexOf(sel);
+            if (idx >= 0)
+            {
+                var byId = DagLayout.Compute(_model.StepsAsBatchSteps(), _model.OnFailureAsBatchSteps(), _localHints)
+                    .Nodes.ToDictionary(n => n.StepId, StringComparer.Ordinal);
+                await _canvas.RefreshNodeAsync(ToNodeSpec(sel, idx, byId));
+            }
+        }
+
+        MarkDirty();
+    }
+
+    // ── canvas <-> model sync helpers ───────────────────────────────────────────────
+
+    private async Task ResyncOrderBadgesAsync()
+    {
+        if (_canvas is null) return;
+        for (int i = 0; i < _model.Steps.Count; i++)
+        {
+            var s = _model.Steps[i];
+            await _canvas.UpdateLabelAsync(s.StepId, NodeTitle(s), (i + 1).ToString(CultureInfo.InvariantCulture));
+        }
+    }
+
+    // Compensation-lane equivalent: re-push the C{n} badges + titles after a failure-lane reorder/remove.
+    private async Task ResyncFailureBadgesAsync()
+    {
+        if (_canvas is null) return;
+        for (int i = 0; i < _model.OnFailureSteps.Count; i++)
+        {
+            var s = _model.OnFailureSteps[i];
+            await _canvas.UpdateLabelAsync(s.StepId, NodeTitle(s), FailureBadge(i));
+        }
+    }
+
+    // Redraw the n8n-style flow lines from the TYPED edge set — main flow Sequential + the red-dashed
+    // OnFailure compensation branch. Edges are visual-only (the C# Steps / OnFailureSteps lists are the
+    // source of truth); call after every structural change (drop/remove/reorder).
+    private async Task SyncConnectionsAsync()
+    {
+        if (_canvas is null) return;
+        var edges = EditorEdges.Build(_model.Steps, _model.OnFailureSteps);
+        await _canvas.SyncConnectionsAsync(edges);
+    }
+
+    // ── graph cache ────────────────────────────────────────────────────────────────
+
+    // Editor-local LEFT-TO-RIGHT auto-layout constants (NOT DagLayout.cs — that stays VERTICAL for the
+    // read-only DagView). A hint-less top-level step is placed at x = StartX + i * (NodeWidth + GapX),
+    // y = constant, so each node sits to the RIGHT of the previous one. Then output(right)→input(left)
+    // edges are short forward curves instead of the loopy big sweeps a vertical stack produces. A node
+    // WITH a saved hint keeps its hint position (operator-dragged). Stride = NodeWidth + GapX = 320.
+    private const double LtrStartX = 40;
+    private const double LtrRowY = 60;
+    private const double LtrNodeWidth = 230;   // matches the .dag-ed-node / Drawflow wrapper width
+    private const double LtrGapX = 90;
+    private const double LtrNodeHeight = 90;    // approx card height — used only for the drop "near origin" test
+
+    // Compensation (onFailure) nodes render on a LOWER lane, left→right, below the spine row (LtrRowY=60).
+    // 320 clears a normal ~90px job/approval node with headroom. CAVEAT: a spine ParallelGroup node grows
+    // with its child chips and can exceed ~260px tall for 4+ children, so the dashed branch MAY overlap a
+    // tall PG that sits on the spine — acceptable (the operator can drag the compensation node clear; a
+    // saved hint then wins). Computing the lane Y from the max spine-node bottom would avoid this but adds
+    // a measurement coupling we don't need at the realistic step ceiling.
+    private const double LtrFailureLaneY = 320;
+
+    private DagGraphSpec GraphSpec() => _graph ??= BuildGraph();
+
+    private void RebuildGraph() => _graph = BuildGraph();
+
+    private DagGraphSpec BuildGraph()
+    {
+        // Compute the deterministic auto-layout ONCE (honoring hints) so we inherit DagView's
+        // Title/Subtitle/TargetService for free (round-trip parity with the read-only view). We then
+        // OVERRIDE X/Y with the editor's LEFT-TO-RIGHT formula for hint-less nodes (see ToNodeSpec) —
+        // DagLayout's coords stay VERTICAL (shared with DagView) and are not used for placement here.
+        // BuildGraph iterates TOP-LEVEL steps only: a ParallelGroup is ONE canvas node (its children
+        // are edited in the modal, not shown as separate nodes).
+        // OVERRIDE-2: DagLayout.Compute ALREADY emits a DagLayoutNode for EVERY onFailure step (keyed by
+        // StepId, IsFailureBranch=true, Subtitle="compensation"), honoring _localHints — so byId is
+        // populated for BOTH lanes and the onFailure ToFailureNodeSpec reuse is NON-null (no dead branch).
+        var auto = DagLayout.Compute(_model.StepsAsBatchSteps(), _model.OnFailureAsBatchSteps(), _localHints);
+        var byId = auto.Nodes.ToDictionary(n => n.StepId, StringComparer.Ordinal);
+        var specs = new List<DagNodeSpec>(_model.Steps.Count + _model.OnFailureSteps.Count);
+        for (int i = 0; i < _model.Steps.Count; i++)
+        {
+            specs.Add(ToNodeSpec(_model.Steps[i], i, byId));
+        }
+        // Second loop: the compensation lane. Appended AFTER the main flow so the import order places the
+        // spine first; each onFailure node sits on the LOWER LtrFailureLaneY lane (or its saved hint).
+        for (int i = 0; i < _model.OnFailureSteps.Count; i++)
+        {
+            specs.Add(ToFailureNodeSpec(_model.OnFailureSteps[i], i, byId));
+        }
+        var edges = EditorEdges.Build(_model.Steps, _model.OnFailureSteps);
+        return new DagGraphSpec { Nodes = specs, Edges = edges };
+    }
+
+    private DagNodeSpec ToNodeSpec(WizardStepDraft step, int index, IReadOnlyDictionary<string, DagLayoutNode> byId)
+    {
+        // Read Title/Subtitle/TargetService straight off the matched DagLayoutNode — it already
+        // computes exactly what read-only DagView shows (free visual round-trip parity).
+        var n = byId.GetValueOrDefault(step.StepId);
+
+        // Placement: a saved hint (operator-dragged position) WINS; otherwise the editor's LEFT-TO-RIGHT
+        // formula (NOT DagLayout's vertical coords) so hint-less nodes — e.g. a Wizard-created batch
+        // never dragged — open as a clean horizontal chain.
+        double x, y;
+        if (_localHints.TryGetValue(step.StepId, out var h))
+        {
+            (x, y) = (h.X, h.Y);
+        }
+        else
+        {
+            (x, y) = (LtrStartX + index * (LtrNodeWidth + LtrGapX), LtrRowY);
+        }
+
+        return new DagNodeSpec
+        {
+            StepId = step.StepId,
+            Kind = step.StepType.ToString(),
+            Title = n?.Title ?? NodeTitle(step),
+            // A ParallelGroup has no read-only layout node (DagLayout fans its children out instead of
+            // emitting a container node), so n is null and n?.Subtitle would be null — give the group a
+            // "Parallel · {JoinPolicy}" subheading for the branches block (mirrors Wizard.StepSummary).
+            Subtitle = n?.Subtitle ?? (step.StepType == BatchStepType.ParallelGroup
+                ? $"Parallel · {step.JoinPolicy}"
+                : null),
+            OrderBadge = (index + 1).ToString(CultureInfo.InvariantCulture),
+            TargetService = n?.TargetService ?? (step.StepType == BatchStepType.Job ? step.TargetService : null),
+            // A ParallelGroup renders its children as branch chips INSIDE the node (display-only;
+            // WizardStepDraft.Children stays the editable model). Pass the FULL job name — dag-editor.js
+            // displayTitle() shortens it (the same last-dotted-segment rule the title uses) so the chip
+            // label matches the node title, and the full name stays in the chip's tooltip. A blank child
+            // job → "(unset)" placeholder. Non-group nodes carry null (no branches container).
+            Children = step.StepType == BatchStepType.ParallelGroup
+                ? step.Children.Select(c => string.IsNullOrWhiteSpace(c.JobName) ? "(unset)" : c.JobName).ToList()
+                : null,
+            X = x,
+            Y = y,
+        };
+    }
+
+    // Compensation (onFailure) node spec. The matched DagLayoutNode (byId[step.StepId]) is NON-null —
+    // DagLayout.Compute emits an onFailure node for every step (OVERRIDE-2), so Title/Subtitle come from
+    // it for free (same "compensation" subtitle the read-only DagView shows). Placement uses the
+    // editor-local LOWER failure lane (a saved hint still wins). Kind stays "Job" (the modal renders the
+    // Job-only editor); IsOnFailure=true makes dag-editor.js paint the dag-ed-node--failure accent.
+    private DagNodeSpec ToFailureNodeSpec(WizardStepDraft step, int index, IReadOnlyDictionary<string, DagLayoutNode> byId)
+    {
+        var n = byId.GetValueOrDefault(step.StepId);
+        double x, y;
+        if (_localHints.TryGetValue(step.StepId, out var h))
+        {
+            (x, y) = (h.X, h.Y);
+        }
+        else
+        {
+            (x, y) = (LtrStartX + index * (LtrNodeWidth + LtrGapX), LtrFailureLaneY);
+        }
+        return new DagNodeSpec
+        {
+            StepId = step.StepId,
+            Kind = BatchStepType.Job.ToString(),   // Job-only modal; the lane is carried by IsOnFailure
+            Title = n?.Title ?? NodeTitle(step),
+            Subtitle = n?.Subtitle ?? "compensation",
+            OrderBadge = FailureBadge(index),
+            // Compensation runs LOCALLY: never a cross-service target, regardless of the draft.
+            TargetService = null,
+            IsOnFailure = true,
+            X = x,
+            Y = y,
+        };
+    }
+
+    // Compensation order badge: "C1", "C2"… so the lower lane reads as an ordered chain. The integer is
+    // InvariantCulture-stringified (tr-TR comma-decimal guard, same discipline as the main order badge).
+    private static string FailureBadge(int index)
+        => $"C{(index + 1).ToString(CultureInfo.InvariantCulture)}";
+
+    // Title used for in-place label updates (reorder/remove/property change) without a full relayout.
+    private static string NodeTitle(WizardStepDraft s) => s.StepType switch
+    {
+        BatchStepType.Job => string.IsNullOrWhiteSpace(s.JobName) ? "(unknown job)" : s.JobName,
+        BatchStepType.ApprovalGate => string.IsNullOrWhiteSpace(s.ApprovalTitle) ? "(approval gate)" : s.ApprovalTitle,
+        BatchStepType.ParallelGroup => $"{s.Children.Count} branches",
+        _ => s.StepId,
+    };
+
+    // ── validation feedback (the canvas has no inline per-field error UI → a clear summary + highlight) ──
+
+    // First "Steps[i]" error path → the step index, to select/highlight the first invalid step.
+    private static int? FirstInvalidStepIndex(IReadOnlyDictionary<string, string[]> errs)
+    {
+        foreach (var key in errs.Keys)
+        {
+            if (!key.StartsWith("Steps[", StringComparison.Ordinal)) continue;
+            var close = key.IndexOf(']');
+            if (close > 6 && int.TryParse(key.AsSpan(6, close - 6), out var i)) return i;
+        }
+        return null;
+    }
+
+    // Human-readable per-step summary for the notification (e.g. "Step 1 (Job): job name is required.").
+    private string BuildValidationSummary(IReadOnlyDictionary<string, string[]> errs)
+    {
+        var parts = new List<string>();
+        foreach (var (path, msgs) in errs)
+        {
+            var msg = string.Join("; ", msgs);
+            if (path == "Name") parts.Add($"Batch name {msg}.");
+            else if (path == "Steps") parts.Add($"Steps {msg}.");
+            else if (path.StartsWith("Steps[", StringComparison.Ordinal))
+            {
+                var close = path.IndexOf(']');
+                var label = close > 6 && int.TryParse(path.AsSpan(6, close - 6), out var i) && i < _model.Steps.Count
+                    ? $"Step {i + 1} ({_model.Steps[i].StepType})"
+                    : "A step";
+                parts.Add($"{label}: {msg}.");
+            }
+            else if (path.StartsWith("OnFailureSteps[", StringComparison.Ordinal)) parts.Add($"Compensation step: {msg}.");
+            else parts.Add($"{path}: {msg}.");
+        }
+        var summary = string.Join(" ", parts.Take(5));
+        if (parts.Count > 5) summary += $" (+{parts.Count - 5} more)";
+        return summary;
+    }
+
+    // ── save (the single write path; mirrors Wizard.SubmitAsync catch ladder) ───────
+
+    private async Task SaveAsync()
+    {
+        _nameError = null;
+        var errs = BatchDefinitionClientValidator.Validate(_model);
+        if (errs.Count > 0)
+        {
+            // Name is the only inline slot on this page → surface it on the field. For step errors, give
+            // a SPECIFIC, per-step summary (the canvas has no inline error real estate) AND select the
+            // first invalid step so the rail + canvas highlight it — the operator clicks its Edit button
+            // to fix it. (Previously this was a generic "open the form wizard" with no detail.)
+            if (errs.TryGetValue("Name", out var nameMsgs) && nameMsgs.Length > 0) _nameError = string.Join("; ", nameMsgs);
+            var firstStep = FirstInvalidStepIndex(errs);
+            if (firstStep is { } idx && idx < _model.Steps.Count)
+            {
+                _selectedStepId = _model.Steps[idx].StepId;
+                if (_canvas is not null) await _canvas.SelectNodeAsync(_selectedStepId);
+            }
+            await Notifications.ErrorAsync("Cannot save", BuildValidationSummary(errs));
+            return;
+        }
+        if (_client is null || _saving) return;
+        _saving = true;
+        _concurrencyConflict = false;
+
+        // Serialize the local hints into Metadata (merging any foreign v0.2+ keys) — one write carries
+        // both the model and the layout (no separate drag-persist path, so no self-409).
+        _model.Metadata = DagLayoutHintsSerializer.Serialize(_localHints, _model.Metadata);
+
+        try
+        {
+            BatchDefinitionDto result = _model.Id is null
+                ? await _client.CreateBatchAsync(_model.ToCreateRequest(createdBy: null), CancellationToken.None)
+                : await _client.UpdateBatchAsync(_model.Id, _model.ToUpdateRequest(), CancellationToken.None);
+            _dirty = false;
+            await Notifications.SuccessAsync(_model.Id is null ? "Batch created" : "Batch saved", result.Name);
+            _redirected = true;
+            Nav.NavigateTo($"/dashboard/{ServiceName}/batches/{Uri.EscapeDataString(result.Id)}");
+        }
+        catch (UKBatchClientException ex) when (ex.StatusCode == System.Net.HttpStatusCode.BadRequest && ex.ValidationErrors is { Count: > 0 } v)
+        {
+            if (v.TryGetValue("Name", out var nameMsgs) && nameMsgs.Length > 0) _nameError = string.Join("; ", nameMsgs);
+            await Notifications.ErrorAsync("Validation failed", "Open the form wizard to fix the highlighted fields.");
+        }
+        catch (UKBatchClientException ex) when (ex.ProblemType == ProblemDetailsConventions.BatchDefinitionDuplicateName)
+        {
+            _nameError = ex.Detail ?? "A batch with this name already exists.";
+        }
+        catch (UKBatchClientException ex) when (ex.ProblemType == ProblemDetailsConventions.ConcurrencyConflict)
+        {
+            _concurrencyConflict = true; // renders the reload banner CTA
+        }
+        catch (UKBatchClientException ex) when (ex.ProblemType == ProblemDetailsConventions.BatchDefinitionNotFound)
+        {
+            _notFound = true;
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Save failed", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            await Notifications.ErrorAsync("Unexpected failure", ex.Message);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_client is null || _model.Id is null) return;
+        try
+        {
+            var def = await _client.GetBatchByIdAsync(_model.Id, CancellationToken.None);
+            if (def is null) { _notFound = true; return; }
+            _model = BatchWizardModel.FromDefinition(def); // fresh Version
+            _localHints.Clear();
+            foreach (var (k, v) in DagLayoutHintsSerializer.Parse(def.Metadata)) _localHints[k] = v;
+            _selectedStepId = null;
+            _concurrencyConflict = false;
+            _nameError = null;
+            _dirty = false;
+            RebuildGraph();
+            if (_canvas is not null) await _canvas.ImportAsync(_graph!); // re-place the fresh graph
+            await Notifications.InfoAsync("Reloaded", "Loaded the latest version. Re-apply your edits and save again.");
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Reload failed", ex.Message);
+        }
+    }
+
+    private string WizardUrl()
+        => _model.Id is null
+            ? $"/dashboard/{ServiceName}/batches/new"
+            : $"/dashboard/{ServiceName}/batches/{Uri.EscapeDataString(_model.Id)}/edit";
+}

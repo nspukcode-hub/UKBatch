@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>RabbitMQ (AMQP) transport adapter for UKBatch — cross-service ITransport over a broker with durable/persistent messaging, publisher confirms, manual ack, dead-letter queue and request/reply (direct-reply-to). Plug-in replacement for InProcessTransport / HttpTransport when microservices need to communicate over a broker. Security at the broker layer (user/pass + TLS); no application-level HMAC.</Description>
+    <RootNamespace>UKBatch.Transport.RabbitMQ</RootNamespace>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\UKBatch.Abstractions\UKBatch.Abstractions.csproj" />
+    <ProjectReference Include="..\UKBatch.Core\UKBatch.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="RabbitMQ.Client" />
+    <PackageReference Include="Polly" />
+    <PackageReference Include="Polly.Extensions" />
+    <!-- BindConfiguration / Configure(IConfigurationSection) for AddUKBatchRabbitMqTransport.
+         Hosting.Abstractions for IHostedService + AddHostedService (also transitive via Core, but
+         referenced explicitly so the DI surface does not rely on transitive flow). -->
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="UKBatch.Transport.RabbitMQ.Tests" />
+  </ItemGroup>
+
+  <!-- Override the repo-root README pack from Directory.Build.props with the per-package NuGet
+       README (mirrors UKBatch.Api / UKBatch.Dashboard / UKBatch.Transport.Http pattern). -->
+  <ItemGroup>
+    <None Remove="$(MSBuildThisFileDirectory)..\..\README.md" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,15 @@
+.service-health-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-circle);
+    flex-shrink: 0;
+}
+.service-health-dot--connected     { background: var(--color-health-connected); }
+.service-health-dot--reconnecting  { background: var(--color-health-reconnecting); }
+.service-health-dot--partial       { background: var(--color-health-partial); }
+.service-health-dot--disconnected  { background: var(--color-health-disconnected); }
+
+.pulse-animation {
+    animation: pulse var(--motion-pulse) ease-in-out infinite;
+}

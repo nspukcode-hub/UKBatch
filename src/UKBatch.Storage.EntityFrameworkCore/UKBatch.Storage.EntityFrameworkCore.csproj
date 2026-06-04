@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>EF Core 10 persistent storage adapter for UKBatch — IJobStore + IBatchDefinitionStore + durable approval gates over PostgreSQL (Npgsql) and SQLite. Plug-in replacement for the in-memory stores so batch definitions, execution history, and pending approvals survive host restarts.</Description>
+    <RootNamespace>UKBatch.Storage.EntityFrameworkCore</RootNamespace>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\UKBatch.Abstractions\UKBatch.Abstractions.csproj" />
+    <!-- Core reference is REQUIRED: reuse JobExecutionWatchHub, BatchStateMachine,
+         BatchConcurrencyConflictException, BatchDefinitionDuplicateNameException,
+         BatchDefinitionNotFoundException, InMemoryApprovalGateStore default lives in Core. -->
+    <ProjectReference Include="..\UKBatch.Core\UKBatch.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <!-- Design is build-time only (migrations + IDesignTimeDbContextFactory).
+         PrivateAssets="all" keeps it out of the consumer's transitive closure. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="UKBatch.Storage.EntityFrameworkCore.Tests" />
+  </ItemGroup>
+
+  <!-- Override the repo-root README pack (Directory.Build.props) with the per-package
+       NuGet README (mirrors UKBatch.Transport.Http / UKBatch.Api / UKBatch.Dashboard pattern). -->
+  <ItemGroup>
+    <None Remove="$(MSBuildThisFileDirectory)..\..\README.md" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,275 @@
+@* Workers panel — live snapshot of remote workers heartbeating to this service.
+   REST poll only (no SignalR): GET /workers every ~10s + a manual Refresh. Observability-only —
+   a worker missing here still receives dispatch via the transport. *@
+@page "/dashboard/{ServiceName}/workers"
+@using System.Globalization
+@implements IAsyncDisposable
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject NavigationManager Nav
+@inject TimeProvider Time
+
+<PageTitle>Workers - @ServiceName - UKBatch</PageTitle>
+
+@if (_redirected)
+{
+    return;
+}
+
+<div class="workers-header">
+    <h1 class="page-title">
+        <span class="material-symbols-outlined workers-header__icon">dns</span>
+        Workers
+    </h1>
+    <button class="btn btn--secondary" @onclick="RefreshAsync" disabled="@_loading">
+        <span class="material-symbols-outlined @(_loading ? "spin-animation" : null)">refresh</span>
+        Refresh
+    </button>
+</div>
+
+<p class="workers-caption">
+    Live worker heartbeats for <strong>@(_descriptorName ?? ServiceName)</strong>. This panel is
+    observability only — dispatch reaches a worker through the transport whether or not it appears here.
+</p>
+
+@if (_errorMessage is { } err)
+{
+    <ErrorBanner Message="@err" OnRetry="RefreshAsync" />
+}
+else if (_workers is null)
+{
+    <div class="page-loader">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading workers…</span>
+    </div>
+}
+else if (_workers.Count == 0)
+{
+    <EmptyState Title="No workers reporting"
+                Detail="Workers appear here when they heartbeat; dispatch works regardless."
+                IconName="lan" />
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th class="data-table__header">Name</th>
+                <th class="data-table__header">Status</th>
+                <th class="data-table__header">Jobs</th>
+                <th class="data-table__header">Tags</th>
+                <th class="data-table__header">Last seen</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var w in _workers)
+            {
+                <tr @key="w.Name" class="data-table__row">
+                    <td class="data-table__cell">@w.Name</td>
+                    <td class="data-table__cell">
+                        @if (w.Online)
+                        {
+                            <span class="worker-badge worker-badge--online" title="Online">
+                                <span class="worker-badge__dot"></span>
+                                <span>ONLINE</span>
+                            </span>
+                        }
+                        else
+                        {
+                            <span class="worker-badge worker-badge--offline" title="@w.LastSeenUtcLabel">
+                                <span class="worker-badge__dot"></span>
+                                <span>OFFLINE · @w.LastSeenAgo</span>
+                            </span>
+                        }
+                    </td>
+                    <td class="data-table__cell">
+                        @if (w.Jobs.Count == 0)
+                        {
+                            <span class="workers-muted">—</span>
+                        }
+                        else
+                        {
+                            <span class="worker-chip-row">
+                                @foreach (var job in w.Jobs)
+                                {
+                                    <span class="worker-chip" @key="job">@job</span>
+                                }
+                            </span>
+                        }
+                    </td>
+                    <td class="data-table__cell">
+                        @if (w.Tags.Count == 0)
+                        {
+                            <span class="workers-muted">—</span>
+                        }
+                        else
+                        {
+                            <span class="worker-chip-row">
+                                @foreach (var tag in w.Tags)
+                                {
+                                    <span class="worker-chip worker-chip--tag" @key="tag">@tag</span>
+                                }
+                            </span>
+                        }
+                    </td>
+                    <td class="data-table__cell data-table__cell--id" title="@w.LastSeenUtcLabel">
+                        @w.LastSeenAgo
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter] public string ServiceName { get; set; } = default!;
+
+    // ~10s poll. Workers are low-frequency; this is intentionally NOT a SignalR push in v0.1.
+    // v0.2 may add a WorkerChanged hub event on online/offline boundary crossings.
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
+
+    private IReadOnlyList<WorkerRowVm>? _workers;
+    private IUKBatchClient? _client;
+    private string? _descriptorName;
+    private string? _errorMessage;
+    private bool _redirected;
+    private bool _loading;
+
+    // Poll lifecycle — symmetric with DisposeAsync: the CTS cancels the
+    // loop, then DisposeAsync awaits the loop task before returning so no StateHasChanged fires after
+    // teardown.
+    private readonly CancellationTokenSource _cts = new();
+    private PeriodicTimer? _pollTimer;
+    private Task? _pollLoop;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var descriptor = Registry.TryGet(ServiceName);
+        if (descriptor is null)
+        {
+            _redirected = true;
+            Nav.NavigateTo("/dashboard", replace: true);
+            return;
+        }
+        State.CurrentService = descriptor;
+        _descriptorName = descriptor.DisplayName ?? descriptor.Name;
+        _client = ClientFactory.GetClient(ServiceName);
+
+        await LoadAsync(_cts.Token);
+
+        // Start the background poll AFTER the first load so the initial render is immediate.
+        _pollTimer = new PeriodicTimer(PollInterval, Time);
+        _pollLoop = PollLoopAsync(_cts.Token);
+    }
+
+    private async Task PollLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (await _pollTimer!.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                await LoadAsync(ct).ConfigureAwait(false);
+                // Hub callbacks fire off the render dispatcher; the poll loop runs on a thread-pool
+                // continuation. Hop to the dispatcher before mutating render state.
+                await InvokeAsync(StateHasChanged).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Normal teardown.
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        await LoadAsync(_cts.Token);
+        // RefreshAsync is invoked from an EventCallback (already on the dispatcher) — StateHasChanged
+        // is implicit, but LoadAsync awaits I/O so re-render explicitly for the post-await state.
+        StateHasChanged();
+    }
+
+    private async Task LoadAsync(CancellationToken ct)
+    {
+        if (_client is null) return;
+        _loading = true;
+        try
+        {
+            var workers = await _client.GetWorkersAsync(ct).ConfigureAwait(false);
+            var now = Time.GetUtcNow();
+            // Project the view-model ONCE per load (not per render) so the relative-time + label
+            // strings are not re-formatted on every diff pass over the row list.
+            _workers = workers.Select(w => WorkerRowVm.From(w, now)).ToArray();
+            _errorMessage = null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Teardown / navigation — leave the last good snapshot, do not surface an error.
+        }
+        catch (UKBatchClientException ex)
+        {
+            _errorMessage = $"Failed to load workers: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unexpected failure: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await _cts.CancelAsync().ConfigureAwait(false); } catch (ObjectDisposedException) { }
+        if (_pollLoop is not null)
+        {
+            try { await _pollLoop.ConfigureAwait(false); }
+            catch { /* loop already swallows OCE; ignore any teardown race */ }
+        }
+        _pollTimer?.Dispose();
+        _cts.Dispose();
+    }
+
+    /// <summary>
+    /// Per-render view-model for a worker row. The relative-time + UTC label are computed once in
+    /// <see cref="From"/> against a single "now" snapshot — InvariantCulture at every boundary
+    /// (tr-TR digit/grouping gotcha).
+    /// </summary>
+    private sealed record WorkerRowVm
+    {
+        public required string Name { get; init; }
+        public required bool Online { get; init; }
+        public required IReadOnlyList<string> Jobs { get; init; }
+        public required IReadOnlyList<string> Tags { get; init; }
+        public required string LastSeenAgo { get; init; }
+        public required string LastSeenUtcLabel { get; init; }
+
+        public static WorkerRowVm From(WorkerInfo w, DateTimeOffset now) => new()
+        {
+            Name = w.Name,
+            Online = w.Online,
+            Jobs = w.Jobs,
+            Tags = w.Tags,
+            LastSeenAgo = RelativeTime(now - w.LastSeenUtc),
+            LastSeenUtcLabel = w.LastSeenUtc.UtcDateTime.ToString(
+                "yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture),
+        };
+
+        private static string RelativeTime(TimeSpan elapsed)
+        {
+            if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero; // clock skew guard
+            // InvariantCulture on the integer so a tr-TR (or any) server emits ASCII digits — the
+            // tr-TR numeric/grouping gotcha. Unit suffix is literal ASCII.
+            var ic = CultureInfo.InvariantCulture;
+            if (elapsed.TotalSeconds < 60)
+                return ((int)elapsed.TotalSeconds).ToString(ic) + "s ago";
+            if (elapsed.TotalMinutes < 60)
+                return ((int)elapsed.TotalMinutes).ToString(ic) + "m ago";
+            if (elapsed.TotalHours < 24)
+                return ((int)elapsed.TotalHours).ToString(ic) + "h ago";
+            return ((int)elapsed.TotalDays).ToString(ic) + "d ago";
+        }
+    }
+}

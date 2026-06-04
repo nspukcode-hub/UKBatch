@@ -1,0 +1,69 @@
+@* Static string key/value editor for wizard Job-step Parameters. Add/remove rows;
+   string values only (Step Output Forwarding is v0.2). Supports @bind-Pairs two-way binding. *@
+
+<div class="kv-editor">
+    @if (Pairs.Count == 0)
+    {
+        <p class="form-field__hint">No parameters. Add a key/value pair below.</p>
+    }
+    else
+    {
+        @for (var i = 0; i < Pairs.Count; i++)
+        {
+            var idx = i; // capture for the lambda
+            <div class="kv-editor__row">
+                <input class="form-field__input" placeholder="key" value="@Pairs[idx].Key"
+                       @oninput="@(e => SetKey(idx, e.Value?.ToString() ?? string.Empty))" />
+                <input class="form-field__input" placeholder="value" value="@Pairs[idx].Value"
+                       @oninput="@(e => SetValue(idx, e.Value?.ToString() ?? string.Empty))" />
+                <button type="button" class="btn--icon" aria-label="Remove parameter" @onclick="@(() => RemoveAt(idx))">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+            </div>
+        }
+    }
+    <button type="button" class="btn--ghost btn--sm kv-editor__add" @onclick="AddRow">
+        <span class="material-symbols-outlined">add</span> Add parameter
+    </button>
+</div>
+
+@code {
+    /// <summary>Two-way bound key/value list. Pair with <c>@bind-Pairs</c>.</summary>
+    [Parameter, EditorRequired] public List<KeyValuePair<string, string>> Pairs { get; set; } = new();
+
+    /// <summary>Raised on every mutation so the parent's bound field updates (and re-renders).</summary>
+    [Parameter] public EventCallback<List<KeyValuePair<string, string>>> PairsChanged { get; set; }
+
+    private Task AddRow()
+    {
+        Pairs.Add(new KeyValuePair<string, string>(string.Empty, string.Empty));
+        return PairsChanged.InvokeAsync(Pairs);
+    }
+
+    private Task RemoveAt(int idx)
+    {
+        if (idx < 0 || idx >= Pairs.Count) return Task.CompletedTask;
+        Pairs.RemoveAt(idx);
+        return PairsChanged.InvokeAsync(Pairs);
+    }
+
+    private Task SetKey(int idx, string key)
+    {
+        if (idx < 0 || idx >= Pairs.Count) return Task.CompletedTask;
+        Pairs[idx] = new KeyValuePair<string, string>(key, Pairs[idx].Value);
+        return PairsChanged.InvokeAsync(Pairs);
+    }
+
+    private Task SetValue(int idx, string value)
+    {
+        if (idx < 0 || idx >= Pairs.Count) return Task.CompletedTask;
+        Pairs[idx] = new KeyValuePair<string, string>(Pairs[idx].Key, value);
+        return PairsChanged.InvokeAsync(Pairs);
+    }
+}
+
+<style>
+    .kv-editor { display: flex; flex-direction: column; gap: var(--space-xs); }
+    .kv-editor__row { display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--space-xs); align-items: center; }
+    .kv-editor__add { align-self: flex-start; }
+</style>

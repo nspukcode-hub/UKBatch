@@ -1,0 +1,125 @@
+@* Single execution row that subscribes to live ExecutionStateChanged + ProgressUpdated for
+   ITS execution id. Canonical subscribe-first-then-fetch pattern + a monotonic Status
+   rank guard. Used by Jobs/Detail, Batches/RunDetail, and Executions/Query tail mode. *@
+@implements IAsyncDisposable
+@inject IUKBatchClientFactory ClientFactory
+
+<tr class="data-table__row @(IsRunning(_vm.Status) ? "data-table__row--running" : null)">
+    <td class="data-table__cell data-table__cell--id">
+        <a href="/dashboard/@ServiceName/executions/@_vm.ExecutionId">
+            @_vm.ExecutionId.Substring(0, Math.Min(8, _vm.ExecutionId.Length))
+        </a>
+    </td>
+    <td class="data-table__cell">@_vm.JobName</td>
+    <td class="data-table__cell data-table__cell--status">
+        <JobStatusBadge Status="@_vm.Status" />
+    </td>
+    <td class="data-table__cell">
+        @if (_vm.Status == JobStatus.Running || _vm.Total is not null)
+        {
+            <ProgressBar Processed="_vm.Processed" Failed="_vm.Failed" Total="_vm.Total" />
+        }
+        else
+        {
+            <span class="data-table__cell--muted">—</span>
+        }
+    </td>
+    <td class="data-table__cell">
+        <span class="mono data-table__cell--id">@_vm.EnqueuedAtUtc.ToString("HH:mm:ss")</span>
+    </td>
+</tr>
+
+@code {
+    [Parameter, EditorRequired] public string ServiceName { get; set; } = default!;
+    [Parameter, EditorRequired] public ExecutionRowViewModel InitialModel { get; set; } = default!;
+    [Parameter] public bool SubscribeToLive { get; set; } = true;
+
+    private ExecutionRowViewModel _vm = default!;
+    private IUKBatchClient? _client;
+    private bool _subscribed;
+
+    // Monotonic Status rank guard via JobStatusRank.Rank (the single source of truth).
+    // Without this, the subscribe-first pattern races: events queued
+    // before Fetch returns can arrive with an older Status than the snapshot. Rejecting stale
+    // events prevents the UI flickering backward (Completed → Pending → Running → Completed).
+
+    protected override async Task OnInitializedAsync()
+    {
+        _vm = InitialModel;
+        if (!SubscribeToLive) return;
+        try
+        {
+            _client = ClientFactory.GetClient(ServiceName);
+            // Subscribe FIRST then trust the dedupe/monotonic guard to reconcile.
+            _client.ExecutionStateChanged += OnExecutionStateChangedAsync;
+            _client.ProgressUpdated += OnProgressUpdatedAsync;
+            _subscribed = true;
+            await _client.SubscribeToExecutionAsync(_vm.ExecutionId, CancellationToken.None);
+        }
+        catch (Exception)
+        {
+            // Subscribe failure (PartiallyConnected branch) is non-fatal — row stays static.
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        // The parent may push a refreshed InitialModel for the SAME execution (its @key is the
+        // ExecutionId, so a same-key re-render reuses this instance). Two cases:
+        //
+        //   1. ID changed (or first set) ⇒ adopt verbatim. (With @key=ExecutionId this is really
+        //      only the first OnParametersSet; a key change spins up a fresh component → OnInit.)
+        //
+        //   2. SAME id, refreshed model ⇒ adopt only if it does NOT regress status (monotonic
+        //      rank, same guard as the live handler). This is THE fix for the cross-service
+        //      stuck-Running bug (RunDetail, SubscribeToLive=false): the page mints a Running shadow
+        //      row then UPDATES it to Completed, re-rendering this row with a new InitialModel of the
+        //      same ExecutionId. The old `id-equal ⇒ skip` rule froze the row at Running while the
+        //      DAG (which reads the page's row list directly) advanced to Completed. The page already
+        //      applies its own page-level monotonic guard, so forward updates flow; a stale snapshot
+        //      (live mode, where this row's own hub handler may have advanced past the parent) is
+        //      still rejected here, preserving the no-backward-flicker invariant.
+        if (_vm is null || _vm.ExecutionId != InitialModel.ExecutionId)
+        {
+            _vm = InitialModel;
+        }
+        else if (JobStatusRank.Rank(InitialModel.Status) >= JobStatusRank.Rank(_vm.Status))
+        {
+            _vm = InitialModel;
+        }
+    }
+
+    private async Task OnExecutionStateChangedAsync(JobExecution exec)
+    {
+        if (exec.ExecutionId != _vm.ExecutionId) return;
+
+        // B1 monotonic guard.
+        if (JobStatusRank.Rank(exec.Status) < JobStatusRank.Rank(_vm.Status)) return;
+        if (exec.Status == _vm.Status && exec.AttemptNumber < _vm.AttemptNumber) return;
+
+        _vm = ExecutionRowViewModel.FromExecution(exec);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnProgressUpdatedAsync(ProgressBeat beat)
+    {
+        if (beat.ExecutionId != _vm.ExecutionId) return;
+        _vm = _vm with { Processed = beat.Processed, Failed = beat.Failed, Total = beat.Total };
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static bool IsRunning(JobStatus s)
+        => s is JobStatus.Running or JobStatus.Retrying or JobStatus.AwaitingApproval;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_client is not null && _subscribed)
+        {
+            _client.ExecutionStateChanged -= OnExecutionStateChangedAsync;
+            _client.ProgressUpdated -= OnProgressUpdatedAsync;
+            try { await _client.UnsubscribeFromExecutionAsync(_vm.ExecutionId, CancellationToken.None); }
+            catch (Exception) { /* logged by client */ }
+            _subscribed = false;
+        }
+    }
+}

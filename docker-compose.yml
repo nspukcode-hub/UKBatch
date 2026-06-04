@@ -1,0 +1,163 @@
+# UKBatch — full server + workers topology.
+#
+# One `ukbatch-server` (orchestrator + dashboard + worker-registry) + three worker microservices
+# (`worker-invoicing`, `worker-shipping`, `worker-notification`), backed by PostgreSQL (durable server
+# state) and RabbitMQ (cross-service transport). Cross-service batch steps route over the broker; a
+# worker can be stopped and the message waits durably in its quorum queue until the worker restarts
+# (durability demo — see samples/Sample.WorkerMode/README.md).
+#
+#   docker compose up --build
+#
+# Then open the dashboard Workers panel: http://localhost:5070/dashboard/self/workers (3 workers Online),
+# seed + trigger the cross-service batch with samples/Sample.WorkerMode/seed-batch.sh.
+#
+# Build context for every app image is the REPO ROOT (`.`) so the Dockerfiles COPY their own source
+# (the root .dockerignore does NOT exclude samples/). Host ports avoid the macOS
+# 12+ AirPlay/Control Center hold on :5000 (server 5070, workers 5170/5180/5190).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ukbatch-postgres
+    environment:
+      POSTGRES_DB: ukbatch
+      POSTGRES_USER: ukbatch
+      POSTGRES_PASSWORD: ukbatch
+    # Host access for DB tools (DBeaver / TablePlus / pgAdmin): 5433 on the host → 5432 in the
+    # container, so a pre-existing local PostgreSQL on :5432 never clashes. In-network consumers
+    # still use `postgres:5432`.
+    # Connect from the host: localhost:5433, db/user/pass = ukbatch/ukbatch/ukbatch.
+    ports:
+      - "5433:5432"
+    # Named volume: server state (batch definitions, run history, approval records) survives
+    # container recreates — without it the data would live in the container layer only and
+    # vanish on every recreate. `docker compose down -v` wipes it deliberately.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ukbatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: ukbatch-rabbitmq
+    ports:
+      # AMQP (5672) is internal-only (server/workers use `rabbitmq:5672` over the compose network) —
+      # avoids host clashes. Management UI kept for the durability demo (watch the quorum queue depth).
+      - "15672:15672"   # management UI (guest/guest)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ukbatch-server:
+    image: ukbatch/server:0.1.0-alpha
+    container_name: ukbatch-server
+    build:
+      context: .
+      dockerfile: src/UKBatch.Server/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      UKBATCH_SERVICE_NAME: ukbatch-server
+      UKBATCH_STORAGE: ef-pg
+      UKBATCH_STORAGE_CONNECTION: "Host=postgres;Database=ukbatch;Username=ukbatch;Password=ukbatch"
+      UKBATCH_TRANSPORT: rabbitmq
+      UKBatch__Transport__RabbitMQ__HostName: rabbitmq
+      UKBATCH_ENABLE_DASHBOARD: "true"
+      # Opt-in DevAuth — registers the sample-local header-based DevAuth scheme so the
+      # approval-parallel-demo's ops-gated approval can be granted via curl (X-Dev-User +
+      # X-Dev-Roles: ops). Default off in production; ON here only because this is the demo stack.
+      UKBATCH_DEV_AUTH: "true"
+      # Dashboard self-loopback — the server's own /api. TRAILING SLASH MANDATORY (HttpClient strips
+      # the last path segment per RFC 3986). localhost here = inside the server container.
+      UKBatch__Dashboard__SelfBaseUrl: "http://localhost:8080/api/"
+    ports:
+      - "5070:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker-invoicing:
+    image: ukbatch/sample-worker-invoicing:0.1.0-alpha
+    container_name: ukbatch-worker-invoicing
+    build:
+      context: .
+      dockerfile: samples/Sample.WorkerMode.Invoicing/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      ukbatch-server:
+        condition: service_started
+    environment:
+      # WorkerName IS the routing key — MUST match (Ordinal) the batch step's OnService("invoicing").
+      UKBatch__Worker__WorkerName: invoicing
+      UKBatch__Worker__ServerUrl: "http://ukbatch-server:8080"
+      UKBatch__Transport__RabbitMQ__HostName: rabbitmq
+    ports:
+      - "5170:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker-shipping:
+    image: ukbatch/sample-worker-shipping:0.1.0-alpha
+    container_name: ukbatch-worker-shipping
+    build:
+      context: .
+      dockerfile: samples/Sample.WorkerMode.Shipping/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      ukbatch-server:
+        condition: service_started
+    environment:
+      # WorkerName IS the routing key — MUST match (Ordinal) the batch step's OnService("shipping").
+      UKBatch__Worker__WorkerName: shipping
+      UKBatch__Worker__ServerUrl: "http://ukbatch-server:8080"
+      UKBatch__Transport__RabbitMQ__HostName: rabbitmq
+    ports:
+      - "5180:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker-notification:
+    image: ukbatch/sample-worker-notification:0.1.0-alpha
+    container_name: ukbatch-worker-notification
+    build:
+      context: .
+      dockerfile: samples/Sample.WorkerMode.Notification/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      ukbatch-server:
+        condition: service_started
+    environment:
+      # WorkerName IS the routing key — MUST match (Ordinal) the batch step's OnService("notification").
+      UKBatch__Worker__WorkerName: notification
+      UKBatch__Worker__ServerUrl: "http://ukbatch-server:8080"
+      UKBatch__Transport__RabbitMQ__HostName: rabbitmq
+    ports:
+      - "5190:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  # Durable PostgreSQL data — survives `docker compose up -d` recreates; removed by `down -v`.
+  pgdata:

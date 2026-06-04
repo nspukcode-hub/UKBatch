@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>In-process runtime for UKBatch — dispatcher, scheduler, executors, in-memory stores and transport. Reference this from UKBatch.AspNetCore consumers; adapter packages reference Abstractions only.</Description>
+    <RootNamespace>UKBatch</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\UKBatch.Abstractions\UKBatch.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <PackageReference Include="Cronos" />
+    <PackageReference Include="Polly" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="UKBatch.Core.Tests" />
+    <!--
+      Grant friend access to UKBatch.Api for the three SignalR fan-out seams:
+      - BatchStateMachine.IsTerminal (static)
+      - IApprovalGateEvents (channel of new approval registrations)
+      - IProgressBeatBroadcaster (channel of progress beats)
+      Api may consume ONLY these three types from Core internals. All other internals
+      are off-limits — use the public surface (IJobRunner, IApprovalGateService,
+      IJobExecutionReader, IBatchCatalogService, IJobDefinitionLookup, etc.).
+    -->
+    <InternalsVisibleTo Include="UKBatch.Api" />
+    <!--
+      Friend access for `LruDedupeCache<TKey>`, consumed by
+      `UKBatch.Dashboard.Clients.RestUKBatchClient` for client-side SignalR dedupe
+      (mirrors the server-side fan-out's completed-batch tracking).
+    -->
+    <InternalsVisibleTo Include="UKBatch.Dashboard" />
+    <!--
+      Friend access for `LruDedupeCache<TKey>`, consumed by
+      `UKBatch.Transport.Http.Auth.NonceDedupeCache` + `MessageIdDedupeCache` wrappers
+      for HMAC anti-replay and receiver-side MessageId dedupe.
+    -->
+    <InternalsVisibleTo Include="UKBatch.Transport.Http" />
+  </ItemGroup>
+
+</Project>

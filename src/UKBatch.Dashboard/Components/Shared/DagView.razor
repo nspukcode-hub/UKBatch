@@ -1,0 +1,318 @@
+@* Shared read-only DAG renderer. Static topology in Batches/Detail; live status in
+   Batches/RunDetail via the StatusByStepId map (keyed by BatchStep.StepId == JobExecution.BatchStepId).
+   Pure presentational — no client/registry injection. Pan/zoom works with ZERO JS (C# state + CSS
+   transform); the dag-canvas.js ES module only ADDS wheel-zoom + drag-pan (it degrades gracefully if absent).
+
+   Live events may arrive up to 4× per real change; the page's RebuildStatusMap +
+   JobStatusRank monotonic guard absorb the duplicates before they reach this component. *@
+@implements IAsyncDisposable
+@inject IJSRuntime JsRuntime
+@using System.Globalization
+
+@if (Steps.Count == 0)
+{
+    <EmptyState Title="No steps" Detail="This batch has no steps configured." IconName="device_hub" />
+}
+else
+{
+    <div class="dag-toolbar">
+        @if (ShowViewModeToggle)
+        {
+            <div class="dag-toolbar__group">
+                <button class="dag-toolbar__btn dag-toolbar__btn--active"
+                        @onclick="@(() => OnTreeModeChanged.InvokeAsync(true))">
+                    <span class="material-symbols-outlined">account_tree</span> Tree
+                </button>
+                <button class="dag-toolbar__btn"
+                        @onclick="@(() => OnTreeModeChanged.InvokeAsync(false))">
+                    <span class="material-symbols-outlined">view_list</span> List
+                </button>
+            </div>
+        }
+        <div class="dag-toolbar__group">
+            <button class="btn--icon" @onclick="ZoomOut" aria-label="Zoom out">
+                <span class="material-symbols-outlined">remove</span>
+            </button>
+            <span class="dag-toolbar__zoom mono">@($"{(int)(_zoom * 100)}%")</span>
+            <button class="btn--icon" @onclick="ZoomIn" aria-label="Zoom in">
+                <span class="material-symbols-outlined">add</span>
+            </button>
+            <button class="btn--icon" @onclick="ResetView" aria-label="Reset view">
+                <span class="material-symbols-outlined">fit_screen</span>
+            </button>
+        </div>
+    </div>
+
+    <div class="dag-canvas" @ref="_canvasEl">
+        <div class="dag-canvas__grid"></div>
+        <svg class="dag-canvas__svg" @ref="_svgEl"
+             viewBox="@($"0 0 {_layout.Width.ToString(Inv)} {_layout.Height.ToString(Inv)}")"
+             style="@($"transform: scale({_zoom.ToString(Inv)}) translate({_panX.ToString(Inv)}px, {_panY.ToString(Inv)}px);")"
+             preserveAspectRatio="xMidYMin meet">
+            @foreach (var e in _layout.Edges)
+            {
+                <path class="dag-edge @EdgeClass(e.Kind) @EdgeStatusClass(e)" d="@EdgePath(e)" />
+            }
+            @foreach (var n in _layout.Nodes)
+            {
+                @* Chrome DAG-render fix (2026-06): the approval node is now a RECTANGLE structurally
+                   IDENTICAL to the job node below — a bare <foreignObject> (full NodeW width) with a
+                   `dag-node`/`dag-node--approval` div in the standard head+meta layout. The previous
+                   hexagon (<polygon> + a narrow 100px foreignObject) mis-placed its centered content
+                   far to the LEFT under the canvas CSS transform in Chromium; the job-node rectangle
+                   provably renders correctly under the same transform, so converging onto it eliminates
+                   the displacement. The approval variant is distinguished by a purple left-border accent
+                   and the `rule` icon (see .dag-node--approval in dashboard.css), NOT a different shape. *@
+                <foreignObject width="@n.Width.ToString(Inv)" height="@n.Height.ToString(Inv)" x="@n.X.ToString(Inv)" y="@n.Y.ToString(Inv)">
+                    <div class="dag-node @KindClass(n) @ApprovalClass(n) @StatusClass(n) @SelectedClass(n)" @onclick="@(() => SelectAsync(n.StepId))">
+                        <div class="dag-node__head">
+                            @if (n.Kind == DagNodeKind.Approval)
+                            {
+                                <span class="material-symbols-outlined dag-node__icon">rule</span>
+                            }
+                            <span class="dag-node__title mono">@n.Title</span>
+                            @* Guard per-node — not-started nodes have no map entry; StatusFor returns JobStatus? *@
+                            @if (StatusByStepId is not null && StatusFor(n.StepId) is { } st)
+                            {
+                                <JobStatusBadge Status="st" />
+                            }
+                        </div>
+                        <div class="dag-node__meta">
+                            <span class="dag-node__subtitle">@(n.Subtitle ?? "—")</span>
+                            @if (n.TargetService is { } svc)
+                            {
+                                <span class="dag-node__badge" title="Runs on remote service">
+                                    <span class="material-symbols-outlined">cloud</span>@svc
+                                </span>
+                            }
+                        </div>
+                    </div>
+                </foreignObject>
+            }
+        </svg>
+        @* A mini-map (proportional sketch + viewport indicator) is a future enhancement;
+           there is intentionally no placeholder here. *@
+    </div>
+}
+
+@code {
+    // Invariant culture for ALL SVG coordinate strings (a tr-TR server must emit 12.5 not 12,5).
+    private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+
+    /// <summary>Ordered top-level steps (the batch's main flow).</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<BatchStep> Steps { get; set; } = [];
+
+    /// <summary>Compensating steps rendered as a dashed side branch. Empty = no branch.</summary>
+    [Parameter] public IReadOnlyList<BatchStep> OnFailureSteps { get; set; } = [];
+
+    /// <summary>
+    /// Live status keyed by <see cref="BatchStep.StepId"/> (== <c>JobExecution.BatchStepId</c>).
+    /// <c>null</c> ⇒ static topology mode (Detail). Non-null ⇒ live mode (RunDetail); nodes without
+    /// an entry render as "not started" (muted, badge omitted).
+    /// </summary>
+    [Parameter] public IReadOnlyDictionary<string, JobStatus>? StatusByStepId { get; set; }
+
+    /// <summary>Raised when the operator clicks a node. The page opens the detail panel.</summary>
+    [Parameter] public EventCallback<BatchStep> OnNodeSelected { get; set; }
+
+    /// <summary>StepId of the currently-selected node, or <c>null</c>. Drives node highlight + panel.</summary>
+    [Parameter] public string? SelectedStepId { get; set; }
+
+    /// <summary>True ⇒ render the Tree/List toggle in the toolbar (Detail only). RunDetail = false (always Tree).</summary>
+    [Parameter] public bool ShowViewModeToggle { get; set; }
+
+    /// <summary>Raised when the operator toggles Tree↔List (Detail owns the actual switch).</summary>
+    [Parameter] public EventCallback<bool> OnTreeModeChanged { get; set; }
+
+    private DagLayout _layout = new() { Nodes = [], Edges = [], Width = 0, Height = 0 };
+    private IReadOnlyList<BatchStep>? _lastSteps;
+    private IReadOnlyList<BatchStep>? _lastOnFailure;
+
+    private double _zoom = 1.0;
+    private double _panX;
+    private double _panY;
+
+    private IJSObjectReference? _module;
+    private IJSObjectReference? _controller;   // the object returned by init()
+    private DotNetObjectReference<DagView>? _selfRef;
+    private ElementReference _canvasEl;
+    private ElementReference _svgEl;
+    private bool _jsReady;
+
+    // Recompute the layout only when topology parameters change (NOT on every status tick under live
+    // mode — StatusByStepId changes must NOT trigger a relayout; hot-path discipline).
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_lastSteps, Steps) && ReferenceEquals(_lastOnFailure, OnFailureSteps)) return;
+        _lastSteps = Steps;
+        _lastOnFailure = OnFailureSteps;
+        _layout = DagLayout.Compute(Steps, OnFailureSteps);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || Steps.Count == 0) return;
+        try
+        {
+            // Leading "./" is REQUIRED — a bare "_content/..." specifier is rejected by strict module
+            // resolvers (Safari/WebKit: "does not resolve to a valid URL") even though Chrome tolerates
+            // it. "./_content/..." is the Microsoft-documented RCL JS-interop pattern (base-href relative).
+            _module = await JsRuntime.InvokeAsync<IJSObjectReference>(
+                "import", "./_content/UKBatch.Dashboard/js/dag-canvas.js");
+            _selfRef = DotNetObjectReference.Create(this);
+            _controller = await _module.InvokeAsync<IJSObjectReference>(
+                "init", _canvasEl, _svgEl, _selfRef,
+                new { minZoom = 0.25, maxZoom = 2.5, step = 0.1 });
+            _jsReady = true;
+        }
+        catch (JSException)
+        {
+            // GRACEFUL DEGRADATION: module failed to load (asset 404 / prerender / disabled).
+            // Toolbar +/-/reset buttons still work via C# state + CSS transform. Do NOT surface an
+            // error — the page is fully usable without wheel/drag.
+            _jsReady = false;
+        }
+    }
+
+    // Invoked BY the JS module (debounced) so the C# % indicator + ResetView stay authoritative.
+    [JSInvokable]
+    public Task OnViewChangedFromJs(double zoom, double panX, double panY)
+    {
+        _zoom = zoom; _panX = panX; _panY = panY;
+        return InvokeAsync(StateHasChanged);   // hop to render dispatcher — invoked off the render thread
+    }
+
+    private Task ZoomIn() => ApplyZoomAsync(Math.Clamp(_zoom + 0.1, 0.25, 2.5));
+    private Task ZoomOut() => ApplyZoomAsync(Math.Clamp(_zoom - 0.1, 0.25, 2.5));
+
+    private Task ResetView()
+    {
+        _panX = _panY = 0;
+        return ApplyZoomAsync(1.0);
+    }
+
+    private async Task ApplyZoomAsync(double z)
+    {
+        _zoom = z;
+        if (_jsReady && _controller is not null)
+        {
+            // Push C#-driven zoom into the JS controller so wheel + buttons share one source of truth.
+            try { await _controller.InvokeVoidAsync("setView", _zoom, _panX, _panY); }
+            catch (JSException) { /* controller gone (disposed) — CSS transform still applies */ }
+        }
+        StateHasChanged(); // on render thread (button handler) — bare call is fine here
+    }
+
+    private Task SelectAsync(string stepId)
+    {
+        var step = FindStep(stepId);
+        return step is null ? Task.CompletedTask : OnNodeSelected.InvokeAsync(step);
+    }
+
+    private BatchStep? FindStep(string stepId)
+    {
+        foreach (var s in Steps)
+        {
+            if (string.Equals(s.StepId, stepId, StringComparison.Ordinal)) return s;
+            if (s is { StepType: BatchStepType.ParallelGroup, ParallelGroup: { } pg })
+            {
+                foreach (var c in pg.Steps)
+                    if (string.Equals(c.StepId, stepId, StringComparison.Ordinal)) return c;
+            }
+        }
+        foreach (var s in OnFailureSteps)
+            if (string.Equals(s.StepId, stepId, StringComparison.Ordinal)) return s;
+        return null;
+    }
+
+    // Live status for a node, or null when not in live mode / not yet dispatched.
+    private JobStatus? StatusFor(string stepId)
+        => StatusByStepId is not null && StatusByStepId.TryGetValue(stepId, out var s) ? s : null;
+
+    private static string KindClass(DagLayoutNode n) => n.Kind switch
+    {
+        DagNodeKind.Unknown => "dag-node--unknown",
+        _ => string.Empty,
+    };
+
+    // Approval rectangle variant (purple left-border + icon). Separate from KindClass so the
+    // Unknown/Approval modifiers compose independently on the shared dag-node rectangle.
+    private static string ApprovalClass(DagLayoutNode n)
+        => n.Kind == DagNodeKind.Approval ? "dag-node--approval" : string.Empty;
+
+    private string StatusClass(DagLayoutNode n)
+    {
+        if (StatusByStepId is null) return string.Empty; // static mode — no status styling
+        if (StatusFor(n.StepId) is not { } s) return "dag-node--muted"; // not started yet
+        return s switch
+        {
+            JobStatus.Running or JobStatus.Retrying or JobStatus.AwaitingApproval => "dag-node--running",
+            JobStatus.Failed => "dag-node--failed",
+            JobStatus.Completed => "dag-node--completed",
+            JobStatus.Cancelled or JobStatus.Cancelling => "dag-node--cancelled",
+            _ => string.Empty,
+        };
+    }
+
+    private string SelectedClass(DagLayoutNode n)
+        => string.Equals(n.StepId, SelectedStepId, StringComparison.Ordinal) ? "dag-node--selected" : string.Empty;
+
+    private static string EdgeClass(DagEdgeKind kind) => kind switch
+    {
+        DagEdgeKind.Parallel => "dag-edge--parallel",
+        DagEdgeKind.OnFailure => "dag-edge--on-failure",
+        _ => string.Empty,
+    };
+
+    // Live-mode edge tint. A normal edge follows its DESTINATION node's
+    // status ONLY — a grey edge into a not-started grey node is the honest "not fired yet" signal,
+    // so there is NO source fallback for normal edges. Source-fallback applies ONLY to the synthetic
+    // fan-in anchor (ToStepId is null) → color by the child (FromStepId). Static mode
+    // (StatusByStepId is null) and OnFailure edges (both endpoints null) → empty (kind class wins).
+    private string EdgeStatusClass(DagLayoutEdge e)
+    {
+        if (StatusByStepId is null) return string.Empty;        // static topology mode (Detail)
+        // Destination-only; fall back to source ONLY for a synthetic-anchor destination (fan-in join).
+        var keyStepId = e.ToStepId ?? e.FromStepId;
+        if (keyStepId is null) return string.Empty;             // OnFailure (both null) → dashed-red kept
+        if (StatusFor(keyStepId) is not { } s) return string.Empty; // endpoint not started → no tint
+        return s switch
+        {
+            JobStatus.Running or JobStatus.Retrying or JobStatus.AwaitingApproval => "dag-edge--running",
+            JobStatus.Completed => "dag-edge--completed",
+            JobStatus.Failed => "dag-edge--failed",
+            JobStatus.Cancelled or JobStatus.Cancelling => "dag-edge--cancelled",
+            _ => string.Empty,
+        };
+    }
+
+    // Vertical-then-bezier path d; deterministic (no runtime measurement). InvariantCulture.
+    private static string EdgePath(DagLayoutEdge e)
+    {
+        var mid = (e.Y1 + e.Y2) / 2;
+        return string.Create(Inv, $"M {e.X1} {e.Y1} C {e.X1} {mid} {e.X2} {mid} {e.X2} {e.Y2}");
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_module is not null) await _module.InvokeVoidAsync("dispose", _canvasEl);
+        }
+        catch (JSException) { /* circuit already torn down */ }
+        catch (InvalidOperationException) { /* prerender / JS not available */ }
+        finally
+        {
+            if (_controller is not null) await SafeDisposeAsync(_controller);
+            if (_module is not null) await SafeDisposeAsync(_module);
+            _selfRef?.Dispose();
+        }
+    }
+
+    private static async ValueTask SafeDisposeAsync(IJSObjectReference jsRef)
+    {
+        try { await jsRef.DisposeAsync(); }
+        catch (JSException) { /* circuit gone */ }
+        catch (InvalidOperationException) { /* prerender */ }
+    }
+}

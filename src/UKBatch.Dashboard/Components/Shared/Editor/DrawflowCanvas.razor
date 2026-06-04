@@ -1,0 +1,238 @@
+@* The SOLE JS-interop owner of the drag-drop editor. Wraps dag-editor.js
+   (Drawflow bridge). Mirrors DagView's import/init + DisposeAsync ladder.
+
+   CRITICAL INVARIANTS:
+   - NO Blazor-bound pointer handlers on the container (mousemove / dragover / drag / drop). The
+     palette drop is handled entirely inside dag-editor.js (a Blazor handler would round-trip per
+     event over SignalR). A source-grep test (DragEditorSourceInvariantTests) pins their absence.
+     (Note: this comment deliberately avoids writing the @-prefixed binding tokens so the grep can
+     stay a strict literal scan.)
+   - C# owns the model + execution order; this canvas owns ONLY node (x,y). C#->JS position flows via
+     importGraph (first render) + addNode (step 2 of a drop). JS->C# position flows via OnNodeMoved
+     (drag-settle). No double-write — race-free.
+   - NO C#-side coordinate->string emission here: Drawflow owns its SVG DOM, and (x,y) cross the
+     boundary as doubles via JSON (culture-invariant). Any future C# coord->string MUST use
+     CultureInfo.InvariantCulture (the read-only DagView already does — G.3 grep). *@
+@implements IAsyncDisposable
+@inject IJSRuntime JsRuntime
+@inject ILogger<DrawflowCanvas> Logger
+
+<div class="dag-ed-canvas" @ref="_containerEl"></div>
+
+@code {
+    /// <summary>Initial nodes to place on first render (subsequent mutation is via the public methods).</summary>
+    [Parameter, EditorRequired] public DagGraphSpec Graph { get; set; } = default!;
+
+    /// <summary>True ⇒ Drawflow opens in <c>view</c> mode (no drag/edit). Editor passes <c>false</c>.</summary>
+    [Parameter] public bool ReadOnly { get; set; }
+
+    /// <summary>Raised when a node settles after a drag (~120ms JS debounce, pointer-up granularity).</summary>
+    [Parameter] public EventCallback<NodeMovedArgs> OnNodeMovedCb { get; set; }
+
+    /// <summary>Raised when a node is clicked (canvas → rail selection link). Payload = <c>StepId</c>.</summary>
+    [Parameter] public EventCallback<string> OnNodeSelectedCb { get; set; }
+
+    /// <summary>Raised when the operator clicks a node's hover Edit button (discrete click — NOT per-pixel). Payload = <c>StepId</c>. The parent opens the edit modal.</summary>
+    [Parameter] public EventCallback<string> OnNodeEditRequestedCb { get; set; }
+
+    /// <summary>Raised on a palette drop (step 1 of the two-step add). Parent mints the draft + calls <see cref="AddNodeAsync"/>.</summary>
+    [Parameter] public EventCallback<NodeDropIntent> OnNodeDroppedCb { get; set; }
+
+    /// <summary>Raised when the operator deletes a node on the canvas. Payload = <c>StepId</c>.</summary>
+    [Parameter] public EventCallback<string> OnNodeRemovedCb { get; set; }
+
+    /// <summary>Raised once if the JS module fails to import/init (asset 404 / prerender / disabled) so the parent can render a fallback banner.</summary>
+    [Parameter] public EventCallback JsUnavailable { get; set; }
+
+    private IJSObjectReference? _module;
+    private IJSObjectReference? _controller;     // the object returned by init()
+    private DotNetObjectReference<DrawflowCanvas>? _selfRef;
+    private ElementReference _containerEl;
+
+    // Module imported + Drawflow init succeeded → the controller is usable (mutations may be sent).
+    private bool _jsReady;
+
+    // The INITIAL importGraph completed. Until then a palette drop would race the import (the dropped
+    // node could be wiped by importGraph's clear()). Defer/ignore OnNodeDropped while this is
+    // false (the Editor's HandleDropAsync should early-return until the canvas has reported ready,
+    // OR re-issue the drop after first render). Exposed so the parent can gate.
+    private bool _canvasReady;
+
+    /// <summary>True once the canvas finished its initial import and is safe to receive palette drops.</summary>
+    public bool CanvasReady => _canvasReady;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        // TWO try-blocks. (1) module import + init — failure here means the editor genuinely
+        // cannot run → graceful-degrade to the parent's fallback banner. (2) the initial importGraph —
+        // failure here leaves an empty BUT USABLE editor (operator can still drag from the palette);
+        // we log and continue rather than blanking the whole feature.
+        try
+        {
+            // Leading "./" is REQUIRED — a bare "_content/..." specifier is rejected by strict module
+            // resolvers (Safari/WebKit: "does not resolve to a valid URL") even though Chrome tolerates
+            // it. "./_content/..." is the Microsoft-documented RCL JS-interop pattern (base-href relative).
+            _module = await JsRuntime.InvokeAsync<IJSObjectReference>(
+                "import", "./_content/UKBatch.Dashboard/js/dag-editor.js");
+            _selfRef = DotNetObjectReference.Create(this);
+            _controller = await _module.InvokeAsync<IJSObjectReference>(
+                "init", _containerEl, _selfRef,
+                new { readOnly = ReadOnly, zoomMin = 0.4, zoomMax = 2.0 });
+            _jsReady = true;
+        }
+        catch (JSException ex)
+        {
+            // GRACEFUL DEGRADATION: module 404 / Drawflow ctor missing / prerender. The Editor
+            // renders a fallback banner + a link to the form wizard. Do NOT surface a hard error.
+            // (Diagnostic log: surfaces the underlying JS error server-side during smoke debugging.)
+            Logger.LogWarning(ex, "DrawflowCanvas import/init failed; degrading to fallback. JS error: {Message}", ex.Message);
+            _jsReady = false;
+            await JsUnavailable.InvokeAsync();
+            return;
+        }
+
+        if (_controller is null) return;
+        try
+        {
+            await _controller.InvokeVoidAsync("importGraph", Graph);
+            _canvasReady = true;
+        }
+        catch (JSException ex)
+        {
+            // Init succeeded but the initial graph load failed. Editor stays usable (empty canvas);
+            // the operator can drag fresh nodes. _canvasReady stays false so drops are gated until a
+            // later re-import succeeds.
+            Logger.LogWarning(ex, "DrawflowCanvas initial importGraph failed; editor opens empty but usable.");
+        }
+    }
+
+    // ── C# → JS (public methods; each guarded — a torn-down circuit must not throw) ──
+
+    /// <summary>Step 2 of a palette drop: place the C#-minted node on the canvas.</summary>
+    public async Task AddNodeAsync(DagNodeSpec spec)
+    {
+        if (!_jsReady || _controller is null) return;
+        try { await _controller.InvokeVoidAsync("addNode", spec); }
+        catch (JSException) { /* circuit gone */ }
+    }
+
+    /// <summary>Remove a node by step id (C#-initiated; the resulting JS <c>nodeRemoved</c> is suppressed).</summary>
+    public async Task RemoveNodeAsync(string stepId)
+    {
+        if (!_jsReady || _controller is null) return;
+        try { await _controller.InvokeVoidAsync("removeNode", stepId); }
+        catch (JSException) { }
+    }
+
+    /// <summary>Update a node's title + order badge in place (e.g. after an inspector edit or a reorder).</summary>
+    public async Task UpdateLabelAsync(string stepId, string title, string orderBadge)
+    {
+        if (!_jsReady || _controller is null) return;
+        try { await _controller.InvokeVoidAsync("updateNodeLabel", stepId, title, orderBadge); }
+        catch (JSException) { }
+    }
+
+    /// <summary>
+    /// Re-render ONE node's inner card from a fresh spec, then recompute its connection anchors. Used
+    /// when a node's BODY shape changes (a <c>ParallelGroup</c> gaining/losing/renaming a branch grows
+    /// or shrinks the card) — <see cref="UpdateLabelAsync"/> only patches the title/badge text and would
+    /// leave a stale branch list + detached flow lines. Pure C# → JS DOM op (no .NET callback).
+    /// </summary>
+    public async Task RefreshNodeAsync(DagNodeSpec spec)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        if (!_jsReady || _controller is null) return;
+        try { await _controller.InvokeVoidAsync("refreshNode", spec); }
+        catch (JSException) { }
+    }
+
+    /// <summary>Re-place the whole graph (Drawflow <c>clear()</c> + re-add). Sets the canvas ready again on success.</summary>
+    public async Task ImportAsync(DagGraphSpec graph)
+    {
+        ArgumentNullException.ThrowIfNull(graph);
+        if (!_jsReady || _controller is null) return;
+        try
+        {
+            await _controller.InvokeVoidAsync("importGraph", graph);
+            _canvasReady = true;
+        }
+        catch (JSException) { }
+    }
+
+    /// <summary>Highlight a node (rail → canvas selection link).</summary>
+    public async Task SelectNodeAsync(string stepId)
+    {
+        if (!_jsReady || _controller is null) return;
+        try { await _controller.InvokeVoidAsync("selectNode", stepId); }
+        catch (JSException) { }
+    }
+
+    /// <summary>
+    /// Redraw the visual flow lines from the supplied TYPED edge set (<see cref="EditorEdge"/>): main
+    /// flow <c>Sequential</c> + the red-dashed <c>OnFailure</c> compensation branch. Edges are
+    /// presentation-only (they VISUALIZE the C# Steps / OnFailureSteps lists); call this after any
+    /// structural change (drop / remove / reorder). Pure C# → JS DOM op — no .NET callback, no per-pixel
+    /// SignalR (G.3). The JS side tags each <c>.connection</c> with <c>data-kind</c> via the authoritative
+    /// <c>node_out_node-</c>/<c>node_in_node-</c> class decode (NOT append order).
+    /// </summary>
+    public async Task SyncConnectionsAsync(IReadOnlyList<EditorEdge> edges)
+    {
+        if (!_jsReady || _controller is null) return;
+        try { await _controller.InvokeVoidAsync("syncConnections", edges); }
+        catch (JSException) { }
+    }
+
+    // ── JS → C# ([JSInvokable]; each forwards to an EventCallback, which hops to the render dispatcher) ──
+
+    [JSInvokable]
+    public Task OnNodeMoved(string stepId, double x, double y)
+        => OnNodeMovedCb.InvokeAsync(new NodeMovedArgs(stepId, x, y));
+
+    [JSInvokable]
+    public Task OnNodeSelected(string stepId) => OnNodeSelectedCb.InvokeAsync(stepId);
+
+    [JSInvokable]
+    public Task OnNodeEditRequested(string stepId) => OnNodeEditRequestedCb.InvokeAsync(stepId);
+
+    [JSInvokable]
+    public Task OnNodeDropped(string kind, double x, double y)
+    {
+        // onFailure is NOT a BatchStepType — it is a Job that lives in the OnFailureSteps LIST. Route the
+        // 'OnFailure' palette payload to a Job draft with the lane flag set, BEFORE the enum parse.
+        if (string.Equals(kind, "OnFailure", StringComparison.Ordinal))
+            return OnNodeDroppedCb.InvokeAsync(new NodeDropIntent(BatchStepType.Job, x, y, IsOnFailure: true));
+        return Enum.TryParse<BatchStepType>(kind, out var k)
+            ? OnNodeDroppedCb.InvokeAsync(new NodeDropIntent(k, x, y))
+            : Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task OnNodeRemoved(string stepId) => OnNodeRemovedCb.InvokeAsync(stepId);
+
+    // ── lifecycle (mirrors DagView.DisposeAsync exactly) ──
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_module is not null) await _module.InvokeVoidAsync("dispose", _containerEl);
+        }
+        catch (JSException) { /* circuit already torn down */ }
+        catch (InvalidOperationException) { /* prerender / JS not available */ }
+        finally
+        {
+            if (_controller is not null) await SafeDisposeAsync(_controller);
+            if (_module is not null) await SafeDisposeAsync(_module);
+            _selfRef?.Dispose();
+        }
+    }
+
+    private static async ValueTask SafeDisposeAsync(IJSObjectReference jsRef)
+    {
+        try { await jsRef.DisposeAsync(); }
+        catch (JSException) { /* circuit gone */ }
+        catch (InvalidOperationException) { /* prerender */ }
+    }
+}

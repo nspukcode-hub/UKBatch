@@ -1,0 +1,32 @@
+@* 8px health indicator. 5 states (incl. PartiallyConnected = amber). *@
+
+<span class="service-health-dot service-health-dot--@CssSuffix(State) @(IsReconnecting() ? "pulse-animation" : null)"
+      role="img"
+      aria-label="@Aria(State)"
+      title="@State"></span>
+
+@code {
+    [Parameter, EditorRequired] public UKBatchClientState State { get; set; }
+
+    private bool IsReconnecting() => State == UKBatchClientState.Reconnecting;
+
+    private static string CssSuffix(UKBatchClientState s) => s switch
+    {
+        UKBatchClientState.Connected => "connected",
+        UKBatchClientState.Connecting => "reconnecting",
+        UKBatchClientState.Reconnecting => "reconnecting",
+        UKBatchClientState.PartiallyConnected => "partial",
+        UKBatchClientState.Disconnected => "disconnected",
+        _ => "disconnected",
+    };
+
+    private static string Aria(UKBatchClientState s) => s switch
+    {
+        UKBatchClientState.Connected => "Service connected",
+        UKBatchClientState.Connecting => "Service connecting",
+        UKBatchClientState.Reconnecting => "Service reconnecting",
+        UKBatchClientState.PartiallyConnected => "Service partially connected — some subscriptions degraded",
+        UKBatchClientState.Disconnected => "Service disconnected",
+        _ => "Unknown state",
+    };
+}

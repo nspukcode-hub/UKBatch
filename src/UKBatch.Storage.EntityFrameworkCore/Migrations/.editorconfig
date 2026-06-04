@@ -1,0 +1,15 @@
+# EF Core design-time tooling generates the files in this folder (Initial migration + model
+# snapshot). They are tool-authored, not hand-written, so the repo's strict hand-written-code
+# analyzers (CA1062 null-validation, CA1861 const-array, IDE0005 unnecessary-using) MUST NOT apply —
+# regenerating a migration would otherwise break the build under TreatWarningsAsErrors. Scope these
+# rules off for generated migration code only; the rest of the package keeps full enforcement.
+
+[*.cs]
+generated_code = true
+
+# Null-argument validation — MigrationBuilder is never null from the EF runtime.
+dotnet_diagnostic.CA1062.severity = none
+# Const array argument — EF emits inline string[] for index columns by design.
+dotnet_diagnostic.CA1861.severity = none
+# Unnecessary using — EF emits a fixed using block.
+dotnet_diagnostic.IDE0005.severity = none

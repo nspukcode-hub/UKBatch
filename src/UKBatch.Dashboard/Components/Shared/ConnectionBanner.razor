@@ -1,0 +1,85 @@
+@* Top banner for non-Connected client states. PartiallyConnected amber + Retry forces a
+   clean DisconnectAsync → ConnectAsync cycle. *@
+@implements IDisposable
+@inject IUKBatchClientFactory ClientFactory
+
+@if (_state == UKBatchClientState.Reconnecting)
+{
+    <div class="dashboard-banner dashboard-banner--reconnecting" role="status">
+        <span class="material-symbols-outlined">progress_activity</span>
+        <span>Reconnecting to <strong>@DisplayName()</strong>…</span>
+    </div>
+}
+else if (_state == UKBatchClientState.PartiallyConnected)
+{
+    @* Amber banner for partial-resubscribe failure. *@
+    <div class="dashboard-banner dashboard-banner--warning" role="alert">
+        <span class="material-symbols-outlined">warning</span>
+        <span>Live updates degraded on <strong>@DisplayName()</strong>. Some subscriptions failed to re-establish.</span>
+        <button class="btn btn--inline" @onclick="RetryAsync">Retry</button>
+    </div>
+}
+else if (_state == UKBatchClientState.Disconnected)
+{
+    <div class="dashboard-banner dashboard-banner--error" role="alert">
+        <span class="material-symbols-outlined">cloud_off</span>
+        <span>Disconnected from <strong>@DisplayName()</strong>.</span>
+        <button class="btn btn--inline" @onclick="RetryAsync">Connect</button>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public UKBatchServiceDescriptor CurrentService { get; set; } = default!;
+
+    private UKBatchClientState _state = UKBatchClientState.Disconnected;
+    private UKBatchServiceDescriptor? _trackedService;
+    private IUKBatchClient? _client;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(CurrentService, _trackedService)) return;
+        DetachOld();
+        _trackedService = CurrentService;
+        _client = ClientFactory.GetClient(CurrentService.Name);
+        _client.StateChanged += OnStateChangedAsync;
+        _state = _client.State;
+    }
+
+    private string DisplayName() => _trackedService?.DisplayName ?? _trackedService?.Name ?? "service";
+
+    private async Task OnStateChangedAsync(UKBatchClientState newState)
+    {
+        _state = newState;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    @* Retry forces a clean Disconnect → Connect cycle. This MUST NOT be called from inside
+       a TransitionTo lock. We are in a UI click handler — safe. *@
+    private async Task RetryAsync()
+    {
+        if (_client is null) return;
+        try
+        {
+            await _client.DisconnectAsync(CancellationToken.None);
+            await _client.ConnectAsync(CancellationToken.None);
+        }
+        catch (Exception)
+        {
+            // Logged by client; state will surface via StateChanged.
+        }
+    }
+
+    private void DetachOld()
+    {
+        if (_client is not null)
+        {
+            _client.StateChanged -= OnStateChangedAsync;
+            _client = null;
+        }
+    }
+
+    public void Dispose()
+    {
+        DetachOld();
+    }
+}

@@ -1,0 +1,623 @@
+@* Create / Edit batch wizard — full-page, 5-step. Handles /new (Create) and
+   /{id}/edit (Edit, carrying Version for optimistic concurrency). Code-source is read-only (redirect).
+   Reorder = up/down arrows (NO drag-drop — that is the visual Editor). Parameters = static string
+   key/values (Step Output Forwarding is v0.2). Antiforgery is inherited from MapRazorComponents<App>
+   — the host MUST also call app.UseAntiforgery(). *@
+@page "/dashboard/{ServiceName}/batches/new"
+@page "/dashboard/{ServiceName}/batches/{BatchId}/edit"
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject INotificationService Notifications
+@inject NavigationManager Nav
+
+<PageTitle>@(_model.Id is null ? "New batch" : "Edit batch") - UKBatch</PageTitle>
+
+@if (_redirected) return;
+
+@if (_notFound)
+{
+    <EmptyState Title="Batch not found"
+                Detail="@($"Batch '{BatchId}' was not found on '{ServiceName}'.")"
+                IconName="layers_clear">
+        <ActionContent>
+            <a class="btn btn--primary" href="/dashboard/@ServiceName/batches">Back to catalog</a>
+        </ActionContent>
+    </EmptyState>
+}
+else if (_unsupported)
+{
+    <EmptyState Title="Cannot edit this batch"
+                Detail="This batch contains step types this dashboard version can't edit. Editing would discard that data."
+                IconName="block">
+        <ActionContent>
+            <a class="btn btn--primary" href="/dashboard/@ServiceName/batches/@Uri.EscapeDataString(BatchId ?? string.Empty)">View read-only</a>
+        </ActionContent>
+    </EmptyState>
+}
+else if (_loading)
+{
+    <div class="page-loader">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading…</span>
+    </div>
+}
+else
+{
+    <h1 class="page-title">@(_model.Id is null ? "Create batch" : "Edit batch") <span class="page-title__sub">@ServiceName</span></h1>
+
+    @if (_concurrencyConflict)
+    {
+        <div class="surface-card wizard-conflict">
+            <div class="surface-card__body">
+                <p><span class="material-symbols-outlined">sync_problem</span>
+                   This batch changed since you opened it. Reload to get the latest version, then re-apply your edits.</p>
+                <button class="btn btn--primary" @onclick="ReloadForEditAsync">
+                    <span class="material-symbols-outlined">refresh</span> Reload
+                </button>
+            </div>
+        </div>
+    }
+
+    @* ── Stepper ── *@
+    <div class="wizard-stepper">
+        @for (var i = 0; i < _stepOrder.Length; i++)
+        {
+            var ws = _stepOrder[i];
+            <button class="wizard-stepper__step @StepperClass(ws)" @onclick="@(() => TryJumpTo(ws))">
+                <span class="wizard-stepper__bullet">
+                    @if (IsComplete(ws))
+                    {
+                        <span class="material-symbols-outlined">check</span>
+                    }
+                    else
+                    {
+                        @((int)ws + 1)
+                    }
+                </span>
+                <span class="wizard-stepper__label">@StepLabel(ws)</span>
+            </button>
+            @if (i < _stepOrder.Length - 1)
+            {
+                <span class="wizard-stepper__sep"></span>
+            }
+        }
+    </div>
+
+    <section class="surface-card">
+        <div class="surface-card__body">
+            @switch (_current)
+            {
+                case WizardStep.Definition: @RenderDefinitionStep(); break;
+                case WizardStep.Steps: @RenderStepsStep(); break;
+                case WizardStep.FailurePolicy: @RenderFailureStep(); break;
+                case WizardStep.Schedule: @RenderScheduleStep(); break;
+                case WizardStep.Review: @RenderReviewStep(); break;
+            }
+        </div>
+    </section>
+
+    @* ── Action bar ── *@
+    <div class="wizard-action-bar">
+        <a class="btn btn--ghost" href="/dashboard/@ServiceName/batches">Cancel</a>
+        <div class="wizard-action-bar__right">
+            @if (_current > WizardStep.Definition)
+            {
+                <button class="btn btn--secondary" @onclick="Back">
+                    <span class="material-symbols-outlined">arrow_back</span> Back
+                </button>
+            }
+            @if (_current < WizardStep.Review)
+            {
+                <button class="btn btn--primary" @onclick="Next" disabled="@(!CanGoNext())">
+                    Next <span class="material-symbols-outlined">arrow_forward</span>
+                </button>
+            }
+            else
+            {
+                <button class="btn btn--primary" @onclick="SubmitAsync" disabled="@_submitting">
+                    <span class="material-symbols-outlined">save</span>
+                    @(_submitting ? "Saving…" : (_model.Id is null ? "Create batch" : "Save changes"))
+                </button>
+            }
+        </div>
+    </div>
+}
+
+@* ════════════════════════════════════ STEP RENDER FRAGMENTS ════════════════════════════════════ *@
+
+@code {
+    private RenderFragment RenderDefinitionStep() => @<div class="wizard-pane">
+        <div class="form-field">
+            <label class="form-field__label" for="batch-name">Name</label>
+            <input id="batch-name" class="form-field__input" @bind="_model.Name" @bind:event="oninput" />
+            @if (FieldError("Name") is { } err)
+            {
+                <span class="form-field__error">@err</span>
+            }
+            <span class="form-field__hint">A unique, human-readable name for this batch.</span>
+        </div>
+    </div>;
+
+    private RenderFragment RenderStepsStep() => @<div class="wizard-pane">
+        @if (FieldError("Steps") is { } topErr)
+        {
+            <span class="form-field__error">@topErr</span>
+        }
+        @for (var i = 0; i < _model.Steps.Count; i++)
+        {
+            var idx = i;
+            var step = _model.Steps[idx];
+            <div @key="step.StepId" class="wizard-step-row @StepRowClass(step.StepType)">
+                <div class="wizard-step-row__main">
+                    <span class="wizard-step-row__type @StepRowTypeClass(step.StepType)">
+                        <span class="material-symbols-outlined">@StepIcon(step.StepType)</span>@step.StepType
+                    </span>
+                    <div class="wizard-step-row__summary">@StepSummary(step)</div>
+                    @if (FieldError($"Steps[{idx}]") is { } rowErr)
+                    {
+                        <span class="form-field__error">@rowErr</span>
+                    }
+                    @if (_expandedStep == idx)
+                    {
+                        @* Shared field editor. Empty OnChanged still re-renders the
+                           Wizard via EventCallback → refreshes @StepSummary(step). Main-list steps are
+                           always cross-service-capable. *@
+                        <div class="wizard-step-editor">
+                            <StepDraftEditor Step="step" JobNames="_jobNames" JobCatalog="_jobCatalog" Services="_services"
+                                             AllowTargetService="true" OnChanged="@(() => { })" />
+                        </div>
+                    }
+                </div>
+                <div class="wizard-step-row__controls">
+                    <button class="btn--icon" aria-label="Move up" disabled="@(idx == 0)" @onclick="@(() => MoveStep(idx, -1))">
+                        <span class="material-symbols-outlined">arrow_upward</span>
+                    </button>
+                    <button class="btn--icon" aria-label="Move down" disabled="@(idx == _model.Steps.Count - 1)" @onclick="@(() => MoveStep(idx, 1))">
+                        <span class="material-symbols-outlined">arrow_downward</span>
+                    </button>
+                    <button class="btn--icon" aria-label="Edit" @onclick="@(() => ToggleExpand(idx))">
+                        <span class="material-symbols-outlined">@(_expandedStep == idx ? "expand_less" : "edit")</span>
+                    </button>
+                    <button class="btn--icon" aria-label="Delete" @onclick="@(() => RemoveStep(idx))">
+                        <span class="material-symbols-outlined">delete</span>
+                    </button>
+                </div>
+            </div>
+        }
+        <div class="wizard-add-step">
+            <span class="form-field__hint" style="align-self:center;">Add step:</span>
+            <button class="btn btn--secondary btn--sm" @onclick="@(() => AddStep(BatchStepType.Job))">
+                <span class="material-symbols-outlined">work</span> Job
+            </button>
+            <button class="btn btn--secondary btn--sm" @onclick="@(() => AddStep(BatchStepType.ParallelGroup))">
+                <span class="material-symbols-outlined">alt_route</span> Parallel group
+            </button>
+            <button class="btn btn--secondary btn--sm" @onclick="@(() => AddStep(BatchStepType.ApprovalGate))">
+                <span class="material-symbols-outlined">rule</span> Approval gate
+            </button>
+        </div>
+    </div>;
+
+    private RenderFragment RenderFailureStep() => @<div class="wizard-pane">
+        <div class="form-field">
+            <label class="form-field__label">Failure policy</label>
+            <select class="form-field__select" @bind="_model.FailurePolicy">
+                <option value="@BatchFailurePolicy.StopOnFailure">StopOnFailure</option>
+                <option value="@BatchFailurePolicy.ContinueOnFailure">ContinueOnFailure</option>
+                <option value="@BatchFailurePolicy.Compensate">Compensate</option>
+            </select>
+        </div>
+        @if (_model.FailurePolicy == BatchFailurePolicy.Compensate)
+        {
+            <div class="form-field">
+                <label class="form-field__label">Compensation steps (Job-only)</label>
+                <span class="form-field__hint">If empty, Compensate degrades to StopOnFailure.</span>
+            </div>
+            @for (var i = 0; i < _model.OnFailureSteps.Count; i++)
+            {
+                var idx = i;
+                var step = _model.OnFailureSteps[idx];
+                <div @key="step.StepId" class="wizard-step-row">
+                    <div class="wizard-step-row__main">
+                        <span class="wizard-step-row__type wizard-step-row__type--job">
+                            <span class="material-symbols-outlined">work</span>Compensation @(idx + 1)
+                        </span>
+                        @* Compensation steps run locally — AllowTargetService=false is a HARD
+                           requirement (no target-service dropdown). Source-grep G.3 asserts it. The
+                           JobCatalog still flows in so the compensation Job picker is worker-aware
+                           (the job NAMES are useful even though the routing stays local). *@
+                        <StepDraftEditor Step="step" JobNames="_jobNames" JobCatalog="_jobCatalog" Services="_services"
+                                         AllowTargetService="false" OnChanged="@(() => { })" />
+                    </div>
+                    <div class="wizard-step-row__controls">
+                        <button class="btn--icon" aria-label="Move up" disabled="@(idx == 0)" @onclick="@(() => MoveFailureStep(idx, -1))">
+                            <span class="material-symbols-outlined">arrow_upward</span>
+                        </button>
+                        <button class="btn--icon" aria-label="Move down" disabled="@(idx == _model.OnFailureSteps.Count - 1)" @onclick="@(() => MoveFailureStep(idx, 1))">
+                            <span class="material-symbols-outlined">arrow_downward</span>
+                        </button>
+                        <button class="btn--icon" aria-label="Delete" @onclick="@(() => _model.OnFailureSteps.RemoveAt(idx))">
+                            <span class="material-symbols-outlined">delete</span>
+                        </button>
+                    </div>
+                </div>
+            }
+            <button class="btn btn--secondary btn--sm" @onclick="AddFailureStep">
+                <span class="material-symbols-outlined">add</span> Add compensation step
+            </button>
+        }
+    </div>;
+
+    private RenderFragment RenderScheduleStep() => @<div class="wizard-pane">
+        <div class="form-field">
+            <label class="form-field__label">Cron expression</label>
+            <input class="form-field__input mono" @bind="_model.Schedule" @bind:event="oninput" />
+            <span class="form-field__hint">Leave empty for trigger-only. Cronos 6-field (seconds) supported. Validity is checked server-side.</span>
+        </div>
+    </div>;
+
+    private RenderFragment RenderReviewStep() => @<div class="wizard-pane">
+        <dl class="wizard-summary">
+            <dt>Name</dt><dd>@_model.Name</dd>
+            <dt>Source</dt><dd>@_model.Source</dd>
+            <dt>Schedule</dt><dd class="mono">@(string.IsNullOrWhiteSpace(_model.Schedule) ? "—" : _model.Schedule)</dd>
+            <dt>Failure policy</dt><dd>@_model.FailurePolicy</dd>
+            <dt>Steps</dt><dd>@_model.Steps.Count</dd>
+            <dt>Compensation steps</dt><dd>@_model.OnFailureSteps.Count</dd>
+        </dl>
+        <DagView Steps="@_model.StepsAsBatchSteps()"
+                 OnFailureSteps="@_model.OnFailureAsBatchSteps()"
+                 StatusByStepId="null"
+                 ShowViewModeToggle="false" />
+    </div>;
+}
+
+@* ════════════════════════════════════════ LOGIC ════════════════════════════════════════ *@
+
+@code {
+    [Parameter] public string ServiceName { get; set; } = default!;
+    [Parameter] public string? BatchId { get; set; }
+
+    private static readonly WizardStep[] _stepOrder =
+        [WizardStep.Definition, WizardStep.Steps, WizardStep.FailurePolicy, WizardStep.Schedule, WizardStep.Review];
+
+    private IUKBatchClient? _client;
+    private BatchWizardModel _model = new();
+    private readonly Dictionary<string, string[]> _serverFieldErrors = new(StringComparer.Ordinal);
+    private WizardStep _current = WizardStep.Definition;
+    private IReadOnlyList<string> _jobNames = [];
+    private IReadOnlyList<JobCatalogEntry> _jobCatalog = [];
+    private IReadOnlyList<UKBatchServiceDescriptor> _services = [];
+
+    private int? _expandedStep;
+    private bool _loading = true;
+    private bool _redirected;
+    private bool _notFound;
+    private bool _unsupported;
+    private bool _submitting;
+    private bool _concurrencyConflict;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var descriptor = Registry.TryGet(ServiceName);
+        if (descriptor is null)
+        {
+            _redirected = true;
+            Nav.NavigateTo("/dashboard", replace: true);
+            return;
+        }
+        State.CurrentService = descriptor;
+        _services = Registry.All();
+
+        try
+        {
+            _client = ClientFactory.GetClient(ServiceName);
+
+            if (BatchId is not null)
+            {
+                var def = await _client.GetBatchByIdAsync(BatchId, CancellationToken.None);
+                if (def is null) { _notFound = true; return; }
+                if (def.Source == BatchSource.Code)
+                {
+                    // Code-defined batches cannot be edited from the dashboard.
+                    await Notifications.InfoAsync("Read-only", "Code-defined batches cannot be edited from the dashboard.");
+                    _redirected = true;
+                    Nav.NavigateTo($"/dashboard/{ServiceName}/batches/{Uri.EscapeDataString(BatchId)}", replace: true);
+                    return;
+                }
+                _model = BatchWizardModel.FromDefinition(def); // carries Id + Version (optimistic concurrency)
+                if (_model.ContainsUnsupportedStep)
+                {
+                    // Definition contains step types this dashboard version can't edit.
+                    _unsupported = true;
+                    return;
+                }
+            }
+
+            // Job catalog for the Job-step dropdown. Two INDEPENDENT best-effort fetches (the form still
+            // works if either fails): local jobs (embedded / orchestrator-registered) + the worker heartbeat
+            // snapshot (server + workers mode — a pure orchestrator has NO local jobs, so without this the dropdown is
+            // empty and the operator must hand-type JobName+TargetService). GetWorkersAsync is
+            // REST-only (no hub gate), so a down hub doesn't block the catalog.
+            IReadOnlyList<string> localJobNames = [];
+            try
+            {
+                var jobs = await _client.ListJobsAsync(0, 500, null, CancellationToken.None);
+                localJobNames = jobs.Items.Select(j => j.Name).ToList();
+            }
+            catch (Exception) { /* no local jobs — the worker catalog (below) still populates the picker */ }
+
+            IReadOnlyList<WorkerInfo> workers = [];
+            try
+            {
+                workers = await _client.GetWorkersAsync(CancellationToken.None);
+            }
+            catch (Exception) { /* no worker snapshot — local jobs (above) still populate the picker */ }
+
+            _jobNames = localJobNames.OrderBy(n => n, StringComparer.Ordinal).ToList();
+            _jobCatalog = JobCatalogEntry.Build(workers, localJobNames);
+            // Server + workers mode: the worker service names aren't configured descriptors but ARE valid routing-key
+            // targets — fold them into the Target-service override dropdown (dedupe against config).
+            _services = JobCatalogEntry.MergeTargetServices(_services, workers);
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Failed to load", ex.Message);
+            _notFound = BatchId is not null;
+        }
+        catch (Exception ex)
+        {
+            await Notifications.ErrorAsync("Unexpected failure", ex.Message);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    // ── navigation + forward gating ───────────────────────────────────────────────
+
+    private bool CanGoNext() => ValidateStep(_current).Count == 0;
+
+    private void Back()
+    {
+        if (_current > WizardStep.Definition) _current--;
+    }
+
+    private void Next()
+    {
+        if (CanGoNext() && _current < WizardStep.Review) _current++;
+    }
+
+    private void TryJumpTo(WizardStep target)
+    {
+        if (target == _current) return;
+        if (target < _current) { _current = target; return; } // back is always allowed
+        if (IsComplete(target)) _current = target;            // forward only to a satisfied step
+    }
+
+    /// <summary>Per-step validation slice driving Next gating + stepper completeness.</summary>
+    private IReadOnlyDictionary<string, string[]> ValidateStep(WizardStep step) => step switch
+    {
+        WizardStep.Definition => string.IsNullOrWhiteSpace(_model.Name)
+            ? new Dictionary<string, string[]> { ["Name"] = ["must be non-empty"] }
+            : Empty,
+        WizardStep.Steps => StepListErrors(),
+        WizardStep.FailurePolicy => Empty, // dropdown is always a valid enum; OnFailure is optional
+        WizardStep.Schedule => Empty,      // cron validity is server-side
+        WizardStep.Review => BatchDefinitionClientValidator.Validate(_model),
+        _ => Empty,
+    };
+
+    private static readonly Dictionary<string, string[]> Empty = new(StringComparer.Ordinal);
+
+    private IReadOnlyDictionary<string, string[]> StepListErrors()
+    {
+        // Reuse the full validator but keep only the Steps/Steps[...] paths for this step's gating.
+        var all = BatchDefinitionClientValidator.Validate(_model);
+        return all
+            .Where(kv => kv.Key == "Steps" || kv.Key.StartsWith("Steps[", StringComparison.Ordinal))
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
+    }
+
+    // Complete = the operator has moved PAST this step AND the step itself is valid. Drives the
+    // stepper's green check and the TryJumpTo back-navigation. (Using `||` here was wrong — while on
+    // the Definition step, Failure Policy and Schedule, whose defaults are valid, got a false ✓.)
+    private bool IsComplete(WizardStep step) => step < _current && ValidateStep(step).Count == 0;
+
+    // ── step CRUD (main list) ─────────────────────────────────────────────────────
+
+    private void AddStep(BatchStepType type)
+    {
+        var draft = new WizardStepDraft { StepType = type };
+        if (type == BatchStepType.ParallelGroup)
+        {
+            draft.Children.Add(new WizardStepDraft { StepType = BatchStepType.Job });
+            draft.Children.Add(new WizardStepDraft { StepType = BatchStepType.Job });
+        }
+        _model.Steps.Add(draft);
+        _expandedStep = _model.Steps.Count - 1; // open the new row for editing
+    }
+
+    private void RemoveStep(int idx)
+    {
+        if (idx < 0 || idx >= _model.Steps.Count) return;
+        _model.Steps.RemoveAt(idx);
+        _expandedStep = null;
+    }
+
+    private void MoveStep(int idx, int delta)
+    {
+        var target = idx + delta;
+        if (idx < 0 || idx >= _model.Steps.Count || target < 0 || target >= _model.Steps.Count) return;
+        (_model.Steps[idx], _model.Steps[target]) = (_model.Steps[target], _model.Steps[idx]);
+        _expandedStep = null;
+    }
+
+    private void ToggleExpand(int idx) => _expandedStep = _expandedStep == idx ? null : idx;
+
+    // Parallel-children + approval-role CRUD moved into StepDraftEditor (extracted — shared with
+    // the visual Editor's inspector). The Wizard keeps only the main-list + OnFailure-list concerns.
+
+    // ── OnFailure (compensation) CRUD ───────────────────────────────────────────────
+
+    private void AddFailureStep()
+        => _model.OnFailureSteps.Add(new WizardStepDraft { StepType = BatchStepType.Job });
+
+    private void MoveFailureStep(int idx, int delta)
+    {
+        var target = idx + delta;
+        if (idx < 0 || idx >= _model.OnFailureSteps.Count || target < 0 || target >= _model.OnFailureSteps.Count) return;
+        (_model.OnFailureSteps[idx], _model.OnFailureSteps[target]) = (_model.OnFailureSteps[target], _model.OnFailureSteps[idx]);
+    }
+
+    // ── submit ─────────────────────────────────────────────────────────────────────
+
+    private async Task SubmitAsync()
+    {
+        var local = BatchDefinitionClientValidator.Validate(_model);
+        if (local.Count > 0) { ApplyServerErrors(local); return; }
+        if (_client is null || _submitting) return;
+        _submitting = true;
+        _concurrencyConflict = false;
+        try
+        {
+            BatchDefinitionDto result = _model.Id is null
+                ? await _client.CreateBatchAsync(_model.ToCreateRequest(createdBy: null), CancellationToken.None)
+                : await _client.UpdateBatchAsync(_model.Id, _model.ToUpdateRequest(), CancellationToken.None);
+            await Notifications.SuccessAsync(_model.Id is null ? "Batch created" : "Batch saved", result.Name);
+            _redirected = true;
+            Nav.NavigateTo($"/dashboard/{ServiceName}/batches/{Uri.EscapeDataString(result.Id)}");
+        }
+        // Discriminate the FIELD-validation case on the errors dict + 400, NOT ProblemType
+        // (the real type is the RFC 9110 URL, not ukbatch:validation-failed).
+        catch (UKBatchClientException ex) when (ex.StatusCode == System.Net.HttpStatusCode.BadRequest && ex.ValidationErrors is { Count: > 0 } v)
+        {
+            ApplyServerErrors(v);
+            await Notifications.ErrorAsync("Validation failed", "Please fix the highlighted fields.");
+        }
+        catch (UKBatchClientException ex) when (ex.ProblemType == ProblemDetailsConventions.BatchDefinitionDuplicateName)
+        {
+            _serverFieldErrors["Name"] = [ex.Detail ?? "A batch with this name already exists."];
+            _current = WizardStep.Definition;
+        }
+        catch (UKBatchClientException ex) when (ex.ProblemType == ProblemDetailsConventions.ConcurrencyConflict)
+        {
+            _concurrencyConflict = true; // renders the reload banner CTA
+        }
+        catch (UKBatchClientException ex) when (ex.ProblemType == ProblemDetailsConventions.BatchDefinitionNotFound)
+        {
+            _notFound = true;
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Save failed", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            await Notifications.ErrorAsync("Unexpected failure", ex.Message);
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private void ApplyServerErrors(IReadOnlyDictionary<string, string[]> errors)
+    {
+        _serverFieldErrors.Clear();
+        foreach (var kv in errors) _serverFieldErrors[kv.Key] = kv.Value;
+
+        var firstPath = errors.Keys.First();
+        _current = firstPath switch
+        {
+            "Name" => WizardStep.Definition,
+            // OnFailureSteps[i] paths route to the FailurePolicy step (the Compensate branch lives there).
+            var p when p.StartsWith("OnFailureSteps", StringComparison.Ordinal) => WizardStep.FailurePolicy,
+            var p when p.StartsWith("Steps", StringComparison.Ordinal) => WizardStep.Steps,
+            "FailurePolicy" => WizardStep.FailurePolicy,
+            _ => WizardStep.Review,
+        };
+    }
+
+    private async Task ReloadForEditAsync()
+    {
+        if (_client is null || _model.Id is null) return;
+        try
+        {
+            var def = await _client.GetBatchByIdAsync(_model.Id, CancellationToken.None);
+            if (def is null) { _notFound = true; return; }
+            _model = BatchWizardModel.FromDefinition(def); // fresh Version
+            _concurrencyConflict = false;
+            _serverFieldErrors.Clear();
+            _current = WizardStep.Definition;
+            await Notifications.InfoAsync("Reloaded", "Loaded the latest version. Re-apply your edits and save again.");
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync("Reload failed", ex.Message);
+        }
+    }
+
+    // ── view helpers ─────────────────────────────────────────────────────────────
+
+    private string? FieldError(string path)
+        => _serverFieldErrors.TryGetValue(path, out var msgs) && msgs.Length > 0 ? string.Join("; ", msgs) : null;
+
+    private string StepperClass(WizardStep step)
+    {
+        if (step == _current) return "wizard-stepper__step--current";
+        if (IsComplete(step)) return "wizard-stepper__step--complete";
+        return "wizard-stepper__step--future";
+    }
+
+    private static string StepLabel(WizardStep step) => step switch
+    {
+        WizardStep.Definition => "Definition",
+        WizardStep.Steps => "Steps",
+        WizardStep.FailurePolicy => "Failure Policy",
+        WizardStep.Schedule => "Schedule",
+        WizardStep.Review => "Review",
+        _ => step.ToString(),
+    };
+
+    private static string StepIcon(BatchStepType t) => t switch
+    {
+        BatchStepType.Job => "work",
+        BatchStepType.ParallelGroup => "alt_route",
+        BatchStepType.ApprovalGate => "rule",
+        _ => "circle",
+    };
+
+    private static string StepRowClass(BatchStepType t) => t switch
+    {
+        BatchStepType.ParallelGroup => "wizard-step-row--parallel",
+        BatchStepType.ApprovalGate => "wizard-step-row--approval",
+        _ => string.Empty,
+    };
+
+    private static string StepRowTypeClass(BatchStepType t) => t switch
+    {
+        BatchStepType.Job => "wizard-step-row__type--job",
+        BatchStepType.ParallelGroup => "wizard-step-row__type--parallel",
+        BatchStepType.ApprovalGate => "wizard-step-row__type--approval",
+        _ => string.Empty,
+    };
+
+    private static string StepSummary(WizardStepDraft step) => step.StepType switch
+    {
+        BatchStepType.Job => string.IsNullOrWhiteSpace(step.JobName)
+            ? "(no job selected)"
+            : step.TargetService is { Length: > 0 } svc ? $"{step.JobName} → {svc}" : step.JobName,
+        BatchStepType.ParallelGroup => $"{step.Children.Count} branches — {step.JoinPolicy}",
+        BatchStepType.ApprovalGate => string.IsNullOrWhiteSpace(step.ApprovalTitle) ? "(no title)" : step.ApprovalTitle,
+        _ => string.Empty,
+    };
+}
+
+<style>
+    .page-title__sub { color: var(--color-text-tertiary); font-size: var(--font-headline-sm-size); font-weight: 400; margin-left: var(--space-sm); }
+    .wizard-conflict { border-color: var(--color-status-cancelled); background: color-mix(in srgb, var(--color-status-cancelled) 8%, var(--color-surface-container)); margin-bottom: var(--space-md); }
+    .wizard-conflict p { display: flex; align-items: center; gap: var(--space-xs); margin: 0 0 var(--space-sm); }
+</style>

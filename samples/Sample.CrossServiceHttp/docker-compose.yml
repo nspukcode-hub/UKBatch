@@ -1,0 +1,32 @@
+version: "3.8"
+services:
+  orchestrator:
+    build:
+      context: ../..
+      dockerfile: samples/Sample.CrossServiceHttp.Orchestrator/Dockerfile
+    ports:
+      - "5050:5050"
+    environment:
+      - ASPNETCORE_URLS=http://+:5050
+      - ASPNETCORE_ENVIRONMENT=Production
+      - UKBatch__ThisServiceName=orchestrator
+      - UKBatch__Transport__Http__SharedSecret=${UKBATCH_SHARED_SECRET:-DEV-SECRET-NOT-FOR-PRODUCTION-32B-FILLER-ABCDEF}
+      - UKBatch__Transport__Http__Services__billing-worker__BaseUrl=http://worker:5150
+    depends_on:
+      - worker
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: samples/Sample.CrossServiceHttp.Worker/Dockerfile
+    ports:
+      - "5150:5150"
+    environment:
+      - ASPNETCORE_URLS=http://+:5150
+      - ASPNETCORE_ENVIRONMENT=Production
+      - UKBatch__ThisServiceName=billing-worker
+      - UKBatch__Transport__Http__SharedSecret=${UKBATCH_SHARED_SECRET:-DEV-SECRET-NOT-FOR-PRODUCTION-32B-FILLER-ABCDEF}
+
+# NOTE: this HTTP-transport sample does not ship per-service Dockerfiles, so `docker compose build`
+# fails with "Dockerfile not found"; the two-terminal `dotnet run` recipe in README.md is the
+# canonical path. (For a fully containerized server + workers stack, see Sample.WorkerMode.)

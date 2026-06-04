@@ -1,0 +1,60 @@
+version: "3.8"
+
+# RabbitMQ broker for Sample.CrossServiceRabbitMQ.
+#
+# Canonical path: run ONLY the broker here, then run the orchestrator + worker via
+# `dotnet run` (see README.md three-terminal recipe). The `orchestrator` / `worker` services below
+# require per-service Dockerfiles that this sample does not ship —
+# `docker compose up` (all services) fails with "Dockerfile not found".
+#
+#   docker compose up rabbitmq          # <- run this now
+#
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: ukbatch-rabbitmq
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # management UI (guest/guest)
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  orchestrator:
+    build:
+      context: ../..
+      dockerfile: samples/Sample.CrossServiceRabbitMQ.Orchestrator/Dockerfile
+    ports:
+      - "5060:5060"
+    environment:
+      - ASPNETCORE_URLS=http://+:5060
+      - ASPNETCORE_ENVIRONMENT=Production
+      - UKBatch__ThisServiceName=orchestrator
+      - UKBatch__Transport__RabbitMQ__HostName=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: samples/Sample.CrossServiceRabbitMQ.Worker/Dockerfile
+    ports:
+      - "5160:5160"
+    environment:
+      - ASPNETCORE_URLS=http://+:5160
+      - ASPNETCORE_ENVIRONMENT=Production
+      - UKBatch__ThisServiceName=billing-worker
+      - UKBatch__Transport__RabbitMQ__HostName=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+# NOTE: this sample does not ship Dockerfiles for the two app services, so
+# `docker compose up orchestrator worker` fails with "Dockerfile not found"; the three-terminal
+# recipe in README.md (broker in Docker + two `dotnet run`) is the canonical path.

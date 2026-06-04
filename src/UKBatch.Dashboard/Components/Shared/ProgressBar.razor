@@ -1,0 +1,42 @@
+@* Segmented progress bar — succeeded / failed / remaining + counter text. *@
+
+<div class="progress-bar" role="progressbar"
+     aria-valuemin="0"
+     aria-valuemax="@(Total ?? 0)"
+     aria-valuenow="@(Processed)">
+    <div class="progress-bar__track">
+        <div class="progress-bar__segment progress-bar__segment--succeeded"
+             style="width: @(_vm.PercentSucceeded)%"></div>
+        <div class="progress-bar__segment progress-bar__segment--failed"
+             style="width: @(_vm.PercentFailed)%"></div>
+        @if (_vm.PercentRemaining > 0)
+        {
+            <div class="progress-bar__segment progress-bar__segment--remaining"
+                 style="width: @(_vm.PercentRemaining)%"></div>
+        }
+    </div>
+    <div class="progress-bar__label">
+        <span class="mono">@(Processed.ToString())</span>
+        @if (Failed > 0)
+        {
+            <span class="mono progress-bar__failed">/@Failed failed</span>
+        }
+        @if (Total is { } t)
+        {
+            <span class="mono progress-bar__total">/ @t total</span>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public long Processed { get; set; }
+    [Parameter] public long Failed { get; set; }
+    [Parameter] public long? Total { get; set; }
+
+    private ProgressViewModel _vm = new() { Processed = 0, Failed = 0, Total = null };
+
+    protected override void OnParametersSet()
+    {
+        _vm = new ProgressViewModel { Processed = Processed, Failed = Failed, Total = Total };
+    }
+}

@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>UKBatch.Storage.EntityFrameworkCore.Tests</RootNamespace>
+    <!-- Tests use unawaited Task.Run + async lambdas + reflective assertions + EF probing.
+         Relax the analyzer-as-error rules that are unhelpful in test code (mirror Core.Tests). -->
+    <NoWarn>$(NoWarn);CA1707;CA1812;CA1861;CA2007;CA1816;CA1822;CA1303;CA1305;CA1819;CA1031;CA1849;CA2000;CS1591;CA1851;CA1859;CA1848;CA5394;CA1860;CA5350;CA1825;CA1854;CA1865;CA1866;CA1867;CA1868;CA1869;CA1870;CS0067;CA2254;CA2201;CA2008;CA1052;CA1051;CA1063;CA1064;CA1715;CA2227;CA1062;CA1056;CA1054;CA1055;CA1801;CA1802;CA1805;CA1806;CA1810;CA1815;CA1820;CA1830;CA1834;CA1835;CA1836;CA1837;CA1838;CA1839;CA1840;CA1841;CA1842;CA1843;CA1844;CA1845;CA1846;CA1847;CA1852;CA1853;CA1855;CA1856;CA1857;CA1858;CA1862;CA1863;CA1864;CA1871;CA1872;CA1873;xUnit1030;CA2211;IDE0005;CA1014;CA1308;CA2263;CA1872</NoWarn>
+    <!-- Tests don't ship docs and IDE0005 fails the build without GenerateDocumentationFile. -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\UKBatch.Storage.EntityFrameworkCore\UKBatch.Storage.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="..\..\src\UKBatch.Core\UKBatch.Core.csproj" />
+    <ProjectReference Include="..\..\src\UKBatch.Abstractions\UKBatch.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="NSubstitute.Analyzers.CSharp" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+  </ItemGroup>
+
+</Project>

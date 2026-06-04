@@ -1,0 +1,249 @@
+@* Jobs catalog — paged list of registered job definitions + worker-advertised jobs. *@
+@page "/dashboard/{ServiceName}/jobs"
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject NavigationManager Nav
+
+<PageTitle>Jobs - @ServiceName - UKBatch</PageTitle>
+
+@if (_redirected)
+{
+    <EmptyState Title="Service not registered" Detail="@($"Service '{ServiceName}' is not configured.")" IconName="dns" />
+    return;
+}
+
+<h1 class="page-title">Jobs</h1>
+
+<div class="catalog-filters">
+    <div class="form-field">
+        <label class="form-field__label" for="partitioned-filter">Filter</label>
+        <select id="partitioned-filter" class="form-field__select" @bind="_partitionedFilter" @bind:after="ReloadAsync">
+            <option value="">All jobs</option>
+            <option value="true">Partitioned only</option>
+            <option value="false">Non-partitioned only</option>
+        </select>
+    </div>
+</div>
+
+@if (_errorMessage is { } err)
+{
+    <ErrorBanner Message="@err" OnRetry="ReloadAsync" />
+}
+else if (_envelope is null)
+{
+    <div class="page-loader">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading jobs…</span>
+    </div>
+}
+else if (_envelope.Items.Count == 0 && _workerJobs.Count == 0)
+{
+    @* Full-page empty state only when BOTH local jobs AND worker-advertised jobs are empty. *@
+    <EmptyState Title="No jobs registered" Detail="@($"No jobs are registered on '{ServiceName}'.")" IconName="work" />
+}
+else
+{
+    @if (_envelope.Items.Count == 0)
+    {
+        @* A pure orchestrator (server + workers deployment) runs no in-process jobs; surface the
+           worker section below instead of the full-page empty state. *@
+        <p class="form-field__hint catalog-local-note">No local jobs on this service.</p>
+    }
+    else
+    {
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th class="data-table__header">Name</th>
+                    <th class="data-table__header">Type</th>
+                    <th class="data-table__header">Schedule</th>
+                    <th class="data-table__header">Retries</th>
+                    <th class="data-table__header">Timeout</th>
+                    <th class="data-table__header">Tags</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var job in _envelope.Items)
+                {
+                    <tr @key="job.Name" class="data-table__row">
+                        <td class="data-table__cell">
+                            <a href="/dashboard/@ServiceName/jobs/@Uri.EscapeDataString(job.Name)">@job.Name</a>
+                        </td>
+                        <td class="data-table__cell">
+                            @if (job.IsPartitioned)
+                            {
+                                <span class="status-badge status-badge--running"><span class="material-symbols-outlined status-badge__icon">view_column</span> PARTITIONED</span>
+                            }
+                            else
+                            {
+                                <span class="status-badge status-badge--pending"><span class="material-symbols-outlined status-badge__icon">work</span> JOB</span>
+                            }
+                        </td>
+                        <td class="data-table__cell data-table__cell--id">@(job.Schedule ?? "—")</td>
+                        <td class="data-table__cell">@job.MaxRetries</td>
+                        <td class="data-table__cell">@(job.TimeoutSeconds == 0 ? "∞" : $"{job.TimeoutSeconds}s")</td>
+                        <td class="data-table__cell">@(job.Tags.Count == 0 ? "—" : string.Join(", ", job.Tags))</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <PageEnvelopePager Envelope="@_envelope" Limit="@_limit" OnOffsetChanged="OnOffsetChanged" T="JobDefinitionDto" />
+    }
+
+    @if (_workerJobs.Count > 0)
+    {
+        @* Worker-advertised jobs — honest separation from the paged table above. These rows are
+           name + worker + tags only: their schedule/retries/timeout live on the worker, they are
+           NOT registered on this server, so there is no Detail link and Trigger cannot apply. They
+           are few (one beat per worker), so they are not paged. *@
+        <h2 class="catalog-section-title">Worker-advertised jobs</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th class="data-table__header">Name</th>
+                    <th class="data-table__header">Worker</th>
+                    <th class="data-table__header">Tags</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in _workerJobs)
+                {
+                    <tr @key="@($"{row.JobName}{row.WorkerName}")" class="data-table__row">
+                        <td class="data-table__cell">@row.JobName</td>
+                        <td class="data-table__cell">
+                            <span class="@(row.Online ? "status-badge status-badge--running" : "status-badge status-badge--cancelled")"
+                                  title="@(row.Online ? "Worker online" : "Worker offline")">
+                                <span class="material-symbols-outlined status-badge__icon">cloud</span> @row.WorkerName
+                            </span>
+                        </td>
+                        <td class="data-table__cell">@(row.Tags.Count == 0 ? "—" : string.Join(", ", row.Tags))</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <p class="form-field__hint catalog-worker-note">
+            These jobs run on their workers — trigger them via a batch step (the Create-batch job picker lists them).
+        </p>
+    }
+}
+
+@code {
+    [Parameter] public string ServiceName { get; set; } = default!;
+
+    private PageEnvelope<JobDefinitionDto>? _envelope;
+    private IReadOnlyList<WorkerJobRow> _workerJobs = [];
+    private IUKBatchClient? _client;
+    private int _offset;
+    private int _limit = 50;
+    private string _partitionedFilter = "";
+    private string? _errorMessage;
+    private bool _redirected;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var descriptor = Registry.TryGet(ServiceName);
+        if (descriptor is null)
+        {
+            _redirected = true;
+            Nav.NavigateTo("/dashboard", replace: true);
+            return;
+        }
+        State.CurrentService = descriptor;
+        _client = ClientFactory.GetClient(ServiceName);
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_client is null) return;
+        _errorMessage = null;
+        try
+        {
+            bool? part = _partitionedFilter switch
+            {
+                "true" => true,
+                "false" => false,
+                _ => null,
+            };
+            _envelope = await _client.ListJobsAsync(_offset, _limit, part, CancellationToken.None);
+        }
+        catch (UKBatchClientException ex)
+        {
+            _errorMessage = $"Failed to load jobs: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unexpected failure: {ex.Message}";
+        }
+
+        // Worker-advertised jobs — a SECOND, INDEPENDENT best-effort fetch (mirrors the Wizard's
+        // two-fetch pattern): a pure orchestrator has no local jobs, so without this the page
+        // is empty even though three workers are advertising. A failed/down GetWorkersAsync simply
+        // leaves the worker section out — it never blanks the local table or surfaces an error.
+        await LoadWorkerJobsAsync();
+    }
+
+    private async Task LoadWorkerJobsAsync()
+    {
+        if (_client is null) return;
+        try
+        {
+            var workers = await _client.GetWorkersAsync(CancellationToken.None);
+            _workerJobs = FlattenWorkerJobs(workers);
+        }
+        catch (Exception)
+        {
+            // Best-effort: leave the previous snapshot (empty on first load); the local table stands.
+        }
+    }
+
+    // Flatten workers → (JobName, WorkerName, Tags, Online) rows, deduped on (JobName, WorkerName)
+    // ordinal, sorted by JobName then WorkerName. The worker's Tags are carried per row so a job's
+    // tags travel with the worker that advertises it. Null-tolerant: GetWorkersAsync is unstubbed in
+    // some tests (NSubstitute returns null) and a worker's Jobs/Tags may be null on a sparse beat.
+    private static IReadOnlyList<WorkerJobRow> FlattenWorkerJobs(IReadOnlyList<WorkerInfo>? workers)
+    {
+        if (workers is null || workers.Count == 0) return [];
+
+        var seen = new HashSet<(string, string)>();
+        var rows = new List<WorkerJobRow>();
+        foreach (var worker in workers)
+        {
+            if (worker is null || string.IsNullOrWhiteSpace(worker.Name)) continue;
+            foreach (var job in worker.Jobs ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(job)) continue;
+                if (seen.Add((job, worker.Name)))
+                {
+                    rows.Add(new WorkerJobRow(job, worker.Name, worker.Tags ?? [], worker.Online));
+                }
+            }
+        }
+
+        rows.Sort(static (a, b) =>
+        {
+            var byJob = string.CompareOrdinal(a.JobName, b.JobName);
+            return byJob != 0 ? byJob : string.CompareOrdinal(a.WorkerName, b.WorkerName);
+        });
+        return rows;
+    }
+
+    private async Task OnOffsetChanged(int newOffset)
+    {
+        _offset = newOffset;
+        await ReloadAsync();
+    }
+
+    // Page-local row VM: one (job, worker) pairing advertised via heartbeat. NOT JobCatalogEntry —
+    // that carries no Tags and models a pickable "job @ service" for the dropdown, not a display row.
+    private sealed record WorkerJobRow(string JobName, string WorkerName, IReadOnlyList<string> Tags, bool Online);
+}
+
+<style>
+    .catalog-filters { display: flex; gap: var(--space-md); margin-bottom: var(--space-md); }
+    .catalog-filters .form-field { max-width: 240px; margin-bottom: 0; }
+    .catalog-section-title { font-size: var(--font-headline-sm-size); margin: var(--space-lg) 0 var(--space-sm); }
+    .catalog-local-note { margin-bottom: var(--space-md); }
+    .catalog-worker-note { margin-top: var(--space-sm); }
+</style>

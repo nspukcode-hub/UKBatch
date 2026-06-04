@@ -1,0 +1,68 @@
+using UKBatch.Abstractions.Batches;
+
+namespace UKBatch.Dashboard.Models.Wizard;
+
+/// <summary>
+/// Client-side mirror of the server's <c>BatchDefinitionValidator</c> (Core, internal). Lets the
+/// wizard reject locally before the round-trip and drives the per-step <c>Next</c> gating. The server
+/// remains the authority — any server-only failure maps back via the submit catch.
+/// </summary>
+/// <remarks>
+/// <b>Parity discipline:</b> the message strings here are NOT
+/// a contract — the parity test asserts that, for the same model, this validator produces the same
+/// SET of property-paths as the server validator (path-set equality, not wording). The parity matrix
+/// is constrained to wizard-emittable models (server-only paths the wizard cannot reach — null payloads,
+/// <c>Enum.IsDefined</c>, non-empty <c>Id</c> — are out of scope).
+/// </remarks>
+public static class BatchDefinitionClientValidator
+{
+    /// <summary>Returns property-path → messages, mirroring the server validator's rules.</summary>
+    public static IReadOnlyDictionary<string, string[]> Validate(BatchWizardModel model)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        var errors = new List<(string Path, string Msg)>();
+        if (string.IsNullOrWhiteSpace(model.Name)) errors.Add(("Name", "must be non-empty"));
+        if (model.Steps.Count == 0) errors.Add(("Steps", "must contain at least one step"));
+        for (var i = 0; i < model.Steps.Count; i++)
+            ValidateStep(model.Steps[i], $"Steps[{i}]", errors, allowParallel: true);
+        // Validate OnFailureSteps (Compensate branch). The server validator currently has a parallel
+        // gap here; the wizard MUST surface blank JobName etc. so the operator
+        // doesn't ship a runtime-fail definition. Path prefix routes to the FailurePolicy step.
+        for (var i = 0; i < model.OnFailureSteps.Count; i++)
+            ValidateStep(model.OnFailureSteps[i], $"OnFailureSteps[{i}]", errors, allowParallel: false);
+        return errors
+            .GroupBy(e => e.Path, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(e => e.Msg).ToArray(), StringComparer.Ordinal);
+    }
+
+    private static void ValidateStep(WizardStepDraft step, string path, List<(string, string)> errors, bool allowParallel)
+    {
+        if (string.IsNullOrWhiteSpace(step.StepId)) errors.Add(($"{path}.StepId", "must be non-empty"));
+        switch (step.StepType)
+        {
+            case BatchStepType.Job:
+                if (string.IsNullOrWhiteSpace(step.JobName))
+                    errors.Add(($"{path}.Job.JobName", "must be non-empty"));
+                break;
+
+            case BatchStepType.ParallelGroup:
+                if (!allowParallel)
+                {
+                    errors.Add(($"{path}.StepType", "Nested ParallelGroup steps are forbidden in v0.1"));
+                    break;
+                }
+                if (step.Children.Count < 2)
+                    errors.Add(($"{path}.ParallelGroup.Steps", "ParallelGroup must contain >=2 children"));
+                if (step.JoinPolicy == ParallelJoinPolicy.WaitMajority && step.Children.Count < 3)
+                    errors.Add(($"{path}.ParallelGroup.Steps", "WaitMajority requires >=3 children (degenerate with fewer; use WaitAll instead)"));
+                for (var j = 0; j < step.Children.Count; j++)
+                    ValidateStep(step.Children[j], $"{path}.ParallelGroup.Steps[{j}]", errors, allowParallel: false);
+                break;
+
+            case BatchStepType.ApprovalGate:
+                if (string.IsNullOrWhiteSpace(step.ApprovalTitle))
+                    errors.Add(($"{path}.Approval.Title", "must be non-empty"));
+                break;
+        }
+    }
+}

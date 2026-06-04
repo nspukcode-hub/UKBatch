@@ -1,0 +1,44 @@
+<Project>
+
+  <PropertyGroup Label="Core build">
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningLevel>9999</WarningLevel>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <NoWarn>$(NoWarn);NU1507</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup Label="NuGet metadata" Condition="'$(IsPackable)' == 'true' OR ('$(IsPackable)' == '' AND $(MSBuildProjectName.StartsWith('UKBatch')) AND !$(MSBuildProjectName.EndsWith('.Tests')) AND $(MSBuildProjectName) != 'UKBatch.Server')">
+    <IsPackable>true</IsPackable>
+    <Authors>Ugur Kaykusuz</Authors>
+    <Company>UKBatch</Company>
+    <Copyright>Copyright (c) Ugur Kaykusuz</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/nspukcode-hub/UKBatch</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/nspukcode-hub/UKBatch.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>batch;job;orchestration;workflow;background-jobs;blazor;dashboard;microservices;hangfire-alternative</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Versioning">
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>alpha</VersionSuffix>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Condition="Exists('$(MSBuildThisFileDirectory)README.md')" />
+  </ItemGroup>
+
+</Project>

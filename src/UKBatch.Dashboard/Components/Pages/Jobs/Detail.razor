@@ -1,0 +1,261 @@
+@* Job detail — definition + recent executions + live subscribe-to-job. *@
+@page "/dashboard/{ServiceName}/jobs/{Name}"
+@implements IAsyncDisposable
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject INotificationService Notifications
+@inject NavigationManager Nav
+
+<PageTitle>Job @Name - UKBatch</PageTitle>
+
+@if (_redirected) return;
+
+@if (_isLoading)
+{
+    <div class="page-loader">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading…</span>
+    </div>
+}
+else if (_errorMessage is { } err)
+{
+    <ErrorBanner Message="@err" />
+}
+else if (_definition is null)
+{
+    <EmptyState Title="Job not found" Detail="@($"Job '{Name}' is not registered on '{ServiceName}'.")"
+                IconName="work_off">
+        <ActionContent>
+            <a class="btn btn--primary" href="/dashboard/@ServiceName/jobs">Back to catalog</a>
+        </ActionContent>
+    </EmptyState>
+}
+else
+{
+    <h1 class="page-title">@_definition.Name</h1>
+
+    <section class="surface-card">
+        <div class="surface-card__header">
+            <h2 class="surface-card__title">Definition</h2>
+        </div>
+        <div class="surface-card__body">
+            <dl class="definition-list">
+                <dt>Type</dt><dd>@(_definition.IsPartitioned ? "Partitioned" : "Single-shot")</dd>
+                <dt>Schedule</dt><dd class="mono">@(_definition.Schedule ?? "—")</dd>
+                <dt>Max retries</dt><dd>@_definition.MaxRetries</dd>
+                <dt>Timeout</dt><dd>@(_definition.TimeoutSeconds == 0 ? "∞" : $"{_definition.TimeoutSeconds}s")</dd>
+                @if (_definition.PartitionWorkerCount > 0)
+                {
+                    <dt>Partition workers</dt><dd>@_definition.PartitionWorkerCount</dd>
+                }
+                <dt>Tags</dt><dd>@(_definition.Tags.Count == 0 ? "—" : string.Join(", ", _definition.Tags))</dd>
+            </dl>
+        </div>
+    </section>
+
+    <section class="surface-card">
+        <div class="surface-card__header">
+            <h2 class="surface-card__title">Trigger</h2>
+            <button class="btn btn--primary" @onclick="TriggerAsync" disabled="@_triggerInFlight">
+                <span class="material-symbols-outlined">play_arrow</span>
+                @(_triggerInFlight ? "Triggering…" : "Run Now")
+            </button>
+        </div>
+        <div class="surface-card__body">
+            <div class="form-field">
+                <label class="form-field__label" for="trigger-params">Parameters (JSON, optional)</label>
+                <textarea id="trigger-params" class="form-field__textarea" rows="4"
+                          placeholder='{"key":"value"}'
+                          @bind="_paramsJson" @bind:event="oninput"></textarea>
+                @if (_triggerError is { } te)
+                {
+                    <span class="form-field__error">@te</span>
+                }
+            </div>
+        </div>
+    </section>
+
+    <section class="surface-card">
+        <div class="surface-card__header">
+            <h2 class="surface-card__title">Recent executions</h2>
+            <span class="page-subtitle">Last @_executionRows.Count execution(s) — live updates on subscribe</span>
+        </div>
+        <div class="surface-card__body">
+            @if (_executionRows.Count == 0)
+            {
+                <EmptyState Title="No executions yet" Detail="@($"This job has not been triggered yet.")" IconName="play_circle" />
+            }
+            else
+            {
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th class="data-table__header">ID</th>
+                            <th class="data-table__header">Job</th>
+                            <th class="data-table__header">Status</th>
+                            <th class="data-table__header">Progress</th>
+                            <th class="data-table__header">Enqueued</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _executionRows)
+                        {
+                            <LiveExecutionRow @key="row.ExecutionId"
+                                              ServiceName="@ServiceName"
+                                              InitialModel="@row"
+                                              SubscribeToLive="false" />
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter] public string ServiceName { get; set; } = default!;
+    [Parameter] public string Name { get; set; } = default!;
+
+    private IUKBatchClient? _client;
+    private JobDefinitionDto? _definition;
+    private List<ExecutionRowViewModel> _executionRows = new();
+    private string? _errorMessage;
+    private bool _isLoading = true;
+    private bool _redirected;
+    private bool _subscribed;
+    private string _paramsJson = string.Empty;
+    private bool _triggerInFlight;
+    private string? _triggerError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var descriptor = Registry.TryGet(ServiceName);
+        if (descriptor is null)
+        {
+            _redirected = true;
+            Nav.NavigateTo("/dashboard", replace: true);
+            return;
+        }
+        State.CurrentService = descriptor;
+
+        try
+        {
+            _client = ClientFactory.GetClient(ServiceName);
+
+            // R4: subscribe FIRST so live updates for new executions are not lost.
+            _client.ExecutionStateChanged += OnExecutionStateChangedAsync;
+            try
+            {
+                await _client.SubscribeToJobAsync(Name, CancellationToken.None);
+                _subscribed = true;
+            }
+            catch (Exception)
+            {
+                // Subscribe failure is non-fatal — page renders static snapshot.
+            }
+
+            _definition = await _client.GetJobAsync(Name, CancellationToken.None);
+            if (_definition is null)
+            {
+                _isLoading = false;
+                return;
+            }
+
+            var recent = await _client.QueryExecutionsAsync(
+                new JobQueryRequest { JobName = Name, Limit = 50 },
+                CancellationToken.None);
+            _executionRows = recent.Items.Select(ExecutionRowViewModel.FromExecution).ToList();
+        }
+        catch (UKBatchClientException ex)
+        {
+            _errorMessage = $"Failed to load job: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unexpected failure: {ex.Message}";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task TriggerAsync()
+    {
+        if (_client is null || _definition is null || _triggerInFlight) return;
+        _triggerInFlight = true;
+        _triggerError = null;
+        try
+        {
+            IReadOnlyDictionary<string, object?>? parameters = null;
+            if (!string.IsNullOrWhiteSpace(_paramsJson))
+            {
+                try
+                {
+                    parameters = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(_paramsJson);
+                }
+                catch (System.Text.Json.JsonException jx)
+                {
+                    _triggerError = $"Invalid JSON: {jx.Message}";
+                    return;
+                }
+            }
+
+            var executionId = await _client.TriggerJobAsync(Name, parameters, null, CancellationToken.None);
+            await Notifications.SuccessAsync(
+                "Job triggered",
+                $"Execution id: {executionId.Substring(0, Math.Min(8, executionId.Length))}");
+            Nav.NavigateTo($"/dashboard/{ServiceName}/executions/{executionId}");
+        }
+        catch (UKBatchClientException ex)
+        {
+            _triggerError = ex.Message;
+            await Notifications.ErrorAsync("Trigger failed", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _triggerError = ex.Message;
+            await Notifications.ErrorAsync("Unexpected failure", ex.Message);
+        }
+        finally
+        {
+            _triggerInFlight = false;
+        }
+    }
+
+    private async Task OnExecutionStateChangedAsync(JobExecution exec)
+    {
+        if (exec.JobName != Name) return;
+        var idx = _executionRows.FindIndex(r => r.ExecutionId == exec.ExecutionId);
+        if (idx >= 0)
+        {
+            _executionRows[idx] = ExecutionRowViewModel.FromExecution(exec);
+        }
+        else
+        {
+            _executionRows.Insert(0, ExecutionRowViewModel.FromExecution(exec));
+            if (_executionRows.Count > 100) _executionRows = _executionRows.Take(100).ToList();
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_client is not null)
+        {
+            _client.ExecutionStateChanged -= OnExecutionStateChangedAsync;
+            if (_subscribed)
+            {
+                try { await _client.UnsubscribeFromJobAsync(Name, CancellationToken.None); }
+                catch (Exception) { /* ignore */ }
+            }
+        }
+    }
+}
+
+<style>
+    .definition-list { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-xs) var(--space-md); margin: 0; }
+    .definition-list dt { color: var(--color-text-tertiary); font-size: var(--font-label-md-size); text-transform: uppercase; letter-spacing: var(--font-label-md-tracking); }
+    .definition-list dd { margin: 0; color: var(--color-text-primary); }
+</style>

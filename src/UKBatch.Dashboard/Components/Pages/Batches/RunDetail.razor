@@ -1,0 +1,468 @@
+@* Batch RUN detail — live executions + live DAG + BatchCompleted summary. *@
+@page "/dashboard/{ServiceName}/runs/{BatchRunId}"
+@using UKBatch.Dashboard.Models.DagStatus
+@implements IAsyncDisposable
+@inject IUKBatchServiceRegistry Registry
+@inject IUKBatchClientFactory ClientFactory
+@inject IDashboardState State
+@inject NavigationManager Nav
+@inject Microsoft.Extensions.Options.IOptions<DashboardOptions> Options
+
+<PageTitle>Batch run @BatchRunId.Substring(0, Math.Min(8, BatchRunId.Length)) - UKBatch</PageTitle>
+
+@if (_redirected) return;
+
+<h1 class="page-title">Batch run <span class="mono">@BatchRunId.Substring(0, Math.Min(8, BatchRunId.Length))</span></h1>
+
+@if (_completion is { } summary)
+{
+    <section class="surface-card batch-run__completion @(CompletionBgClass(summary.FinalStatus))">
+        <div class="surface-card__header">
+            <h2 class="surface-card__title">
+                <JobStatusBadge Status="@summary.FinalStatus" />
+                <span>@summary.BatchName completed</span>
+            </h2>
+        </div>
+        <div class="surface-card__body">
+            <dl class="completion-grid">
+                <div><dt>Total</dt><dd>@summary.TotalJobs</dd></div>
+                <div><dt>Succeeded</dt><dd>@summary.SucceededJobs</dd></div>
+                <div><dt>Failed</dt><dd>@summary.FailedJobs</dd></div>
+                <div><dt>Cancelled</dt><dd>@summary.CancelledJobs</dd></div>
+                <div><dt>Completed</dt><dd class="mono">@summary.CompletedAtUtc.ToString("HH:mm:ss") UTC</dd></div>
+            </dl>
+        </div>
+    </section>
+}
+
+@if (_definition is not null)
+{
+    <section class="surface-card">
+        <div class="surface-card__header">
+            <h2 class="surface-card__title">Topology</h2>
+        </div>
+        <div class="surface-card__body">
+            <div class="dag-layout">
+                <div class="dag-layout__canvas">
+                    <DagStatusCanvas Steps="@_definition.Steps"
+                                     OnFailureSteps="@_definition.OnFailureSteps"
+                                     StatusByStepId="@_statusByStepId"
+                                     PendingStepIds="@_awaitingGates"
+                                     SelectedStepId="@_selectedStepId"
+                                     OnNodeSelected="OnNodeSelectedAsync"
+                                     OnApproveClicked="HandleApproveFromNodeAsync" />
+                </div>
+                @if (_selectedStep is not null)
+                {
+                    <DagNodeDetailPanel Step="@_selectedStep"
+                                        Status="@SelectedStatus()"
+                                        PendingApprovalId="@SelectedPendingApprovalId()"
+                                        DecisionBusy="@_decisionBusy"
+                                        DecisionError="@_decisionError"
+                                        OnApprove="HandleApproveAsync"
+                                        OnReject="HandleRejectAsync"
+                                        OnClose="ClosePanel" />
+                }
+            </div>
+        </div>
+    </section>
+}
+
+@if (_isLoading)
+{
+    <div class="page-loader">
+        <span class="material-symbols-outlined spin-animation">progress_activity</span>
+        <span>Loading executions…</span>
+    </div>
+}
+else if (_executionRows.Count == 0 && _completion is null)
+{
+    @* Gate the empty-state on `_completion is null` so the completion banner (the separate
+       @if block above) and the "Waiting…" empty-state are mutually exclusive. A batch that completed
+       with zero surviving rows (e.g. cross-service-only, undercounted) shows the banner, not "Waiting". *@
+    <EmptyState Title="Waiting for first execution…"
+                Detail="@($"Batch run '{BatchRunId.Substring(0, Math.Min(8, BatchRunId.Length))}' hasn't dispatched any executions yet.")"
+                IconName="hourglass_empty" />
+}
+else
+{
+    <section class="surface-card">
+        <div class="surface-card__header">
+            <h2 class="surface-card__title">Executions (@_executionRows.Count)</h2>
+        </div>
+        <div class="surface-card__body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th class="data-table__header">ID</th>
+                        <th class="data-table__header">Job</th>
+                        <th class="data-table__header">Status</th>
+                        <th class="data-table__header">Progress</th>
+                        <th class="data-table__header">Enqueued</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in _executionRows)
+                    {
+                        <LiveExecutionRow @key="row.ExecutionId"
+                                          ServiceName="@ServiceName"
+                                          InitialModel="@row"
+                                          SubscribeToLive="false" />
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter] public string ServiceName { get; set; } = default!;
+    [Parameter] public string BatchRunId { get; set; } = default!;
+
+    private IUKBatchClient? _client;
+    private List<ExecutionRowViewModel> _executionRows = new();
+    private BatchCompletionSummary? _completion;
+    private bool _isLoading = true;
+    private bool _redirected;
+    private bool _subscribed;
+
+    // ── live DAG ──
+    private BatchDefinitionDto? _definition;
+    private bool _definitionLoaded;            // single-shot definition fetch guard
+    private bool _definitionFetchFailed;       // bound retries when defId 404s persistently
+    private IReadOnlyDictionary<string, JobStatus> _statusByStepId =
+        new Dictionary<string, JobStatus>(StringComparer.Ordinal);
+    // Approval-gate live status: gates are NOT jobs (no JobExecution row), so their state comes from the
+    // approvals feed, not _executionRows. A gate is AwaitingApproval while a PendingApproval exists for it
+    // (BatchId+BatchStepId), then resolves to Completed (approved/auto-approved) or Failed (rejected /
+    // batch failed). Merged into _statusByStepId by RebuildStatusMap so the DAG node colours like any other.
+    private HashSet<string> _awaitingGates = new(StringComparer.Ordinal);   // currently-pending gate StepIds
+    private readonly HashSet<string> _resolvedGates = new(StringComparer.Ordinal); // gates given a terminal status (one-shot)
+    private readonly Dictionary<string, JobStatus> _gateStatus = new(StringComparer.Ordinal);
+    // Pending approval DTOs for THIS run, keyed by BatchStepId — so the node inspector can decide the gate
+    // in-place. Rebuilt alongside _awaitingGates in RefreshGatesAsync; the reconciler
+    // contract (StepId set in/out) is unchanged.
+    private Dictionary<string, PendingApprovalDto> _pendingByStepId = new(StringComparer.Ordinal);
+    private string? _selectedStepId;
+    private BatchStep? _selectedStep;
+    private UiRefreshDebounce? _refresh;        // coalesces hub bursts into one StateHasChanged
+
+    // ── inline approval decision state ──
+    private bool _decisionBusy;                  // true while an approve/reject REST call is in flight
+    private string? _decisionError;              // surfaced in the panel; cleared on selection change / close
+
+    protected override async Task OnInitializedAsync()
+    {
+        var descriptor = Registry.TryGet(ServiceName);
+        if (descriptor is null)
+        {
+            _redirected = true;
+            Nav.NavigateTo("/dashboard", replace: true);
+            return;
+        }
+        State.CurrentService = descriptor;
+
+        // The debounce fires on a thread-pool continuation — render callback MUST hop to the dispatcher.
+        _refresh = new UiRefreshDebounce(() => InvokeAsync(StateHasChanged), Options.Value.UiRefreshDebounce);
+
+        try
+        {
+            _client = ClientFactory.GetClient(ServiceName);
+
+            // R4 — subscribe FIRST before initial fetch.
+            _client.ExecutionStateChanged += OnExecutionStateChangedAsync;
+            _client.BatchCompleted += OnBatchCompletedAsync;
+            _client.ApprovalRequested += OnApprovalRequestedAsync;   // approval-gate node colouring
+            try
+            {
+                await _client.SubscribeToBatchAsync(BatchRunId, CancellationToken.None);
+                _subscribed = true;
+            }
+            catch (Exception)
+            {
+                // Subscribe failure non-fatal — REST snapshot still loads.
+            }
+
+            var page = await _client.GetBatchRunStatusAsync(BatchRunId, 0, 500, CancellationToken.None);
+            _executionRows = page.Items.Select(ExecutionRowViewModel.FromExecution).ToList();
+            RebuildStatusMap();
+            await RefreshGatesAsync();   // catch a gate already pending on a page reload
+
+            // Lazy-load the definition for the DAG topology if any execution already carries it.
+            // Fresh runs have 0 executions at init — the event handler covers that case.
+            var defId = page.Items.Select(i => i.BatchDefinitionId).FirstOrDefault(id => !string.IsNullOrEmpty(id));
+            if (defId is { Length: > 0 })
+            {
+                await TryLoadDefinitionAsync(defId);
+            }
+        }
+        catch (UKBatchClientException)
+        {
+            // 404 is non-fatal — batch run may not exist yet (live subscription will populate).
+        }
+        catch (Exception)
+        {
+            // Surface via EmptyState — leave rows empty so UI shows "Waiting for first execution".
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task OnExecutionStateChangedAsync(JobExecution exec)
+    {
+        if (exec.BatchId != BatchRunId) return;
+
+        // Lazy, single-shot definition fetch (fresh runs have 0 executions at init, so the
+        // topology can only be resolved once the first row with a BatchDefinitionId arrives).
+        // Gate on _definitionFetchFailed so a persistent 404 (definition deleted)
+        // doesn't re-fetch on every event (the up-to-4× hub fan-out would otherwise spam it).
+        if (!_definitionLoaded && !_definitionFetchFailed && exec.BatchDefinitionId is { Length: > 0 } defId)
+        {
+            await TryLoadDefinitionAsync(defId);
+        }
+
+        var idx = _executionRows.FindIndex(r => r.ExecutionId == exec.ExecutionId);
+        if (idx >= 0)
+        {
+            // Page-level monotonic guard — LiveExecutionRow's own guard does NOT cover this list,
+            // and RebuildStatusMap reads row.Status. Reject stale/regressing status (Completed→Running).
+            if (JobStatusRank.Rank(exec.Status) >= JobStatusRank.Rank(_executionRows[idx].Status))
+                _executionRows[idx] = ExecutionRowViewModel.FromExecution(exec);
+        }
+        else
+        {
+            _executionRows.Add(ExecutionRowViewModel.FromExecution(exec));
+        }
+        // While a gate is pending, a successor's execution event is our cue that the gate was approved
+        // (there is no "approval resolved" hub event). RefreshGatesAsync re-rebuilds the map; otherwise
+        // just rebuild from rows. Skip the extra approvals round-trip once no gate is awaiting.
+        if (_awaitingGates.Count > 0)
+            await RefreshGatesAsync();
+        else
+            RebuildStatusMap();
+        await _refresh!.RequestAsync();   // UiRefreshDebounce — coalesces bursts
+    }
+
+    private async Task OnApprovalRequestedAsync(PendingApproval approval)
+    {
+        if (approval.BatchId != BatchRunId) return;
+        await RefreshGatesAsync();             // marks the gate AwaitingApproval ("waiting")
+        await _refresh!.RequestAsync();
+    }
+
+    // Reconciles approval-gate node status from the approvals feed (gates have no JobExecution row).
+    // A gate with a live PendingApproval (this batch) → AwaitingApproval. A gate that WAS pending and is
+    // now gone → terminal once: Failed if the batch ended Failed/Cancelled, else Completed (approved /
+    // auto-approved). _resolvedGates makes the terminal write one-shot so a later step's failure can't
+    // re-colour an already-approved gate.
+    private async Task RefreshGatesAsync()
+    {
+        if (_client is null) return;
+        IReadOnlyList<PendingApprovalDto> list;
+        try { list = await _client.ListApprovalsAsync(null, CancellationToken.None); }
+        catch (Exception) { return; }   // approvals endpoint hiccup — keep last known gate state
+
+        // One pass over this run's pending approvals: the StepId set drives the reconciler (unchanged
+        // contract); the StepId→DTO map lets the inspector decide a gate in place. Last writer wins on
+        // the rare duplicate step id (two gates with the same StepId is a malformed definition).
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        var byStep = new Dictionary<string, PendingApprovalDto>(StringComparer.Ordinal);
+        foreach (var a in list ?? [])
+        {
+            if (a.BatchId != BatchRunId) continue;
+            pending.Add(a.BatchStepId);
+            byStep[a.BatchStepId] = a;
+        }
+
+        var batchFailed = _completion is { FinalStatus: JobStatus.Failed or JobStatus.Cancelled };
+        ApprovalGateReconciler.Apply(pending, _awaitingGates, batchFailed, _resolvedGates, _gateStatus);
+        _awaitingGates = pending;
+        _pendingByStepId = byStep;
+        RebuildStatusMap();
+    }
+
+    private async Task TryLoadDefinitionAsync(string defId)
+    {
+        _definitionLoaded = true; // set BEFORE the await — re-entrancy guard (events fire 4× via fan-out)
+        try
+        {
+            _definition = await _client!.GetBatchByIdAsync(defId, CancellationToken.None);
+        }
+        catch (Exception)
+        {
+            _definitionLoaded = false;       // un-pin so a subsequent retry is possible
+            _definitionFetchFailed = true;   // bound retries (single attempt for this run)
+        }
+    }
+
+    // Rebuild the full StepId→Status map from the authoritative row list on every event
+    // (no per-node ref-counting — avoids desync on out-of-order / missed events).
+    private void RebuildStatusMap()
+    {
+        var map = new Dictionary<string, JobStatus>(StringComparer.Ordinal);
+        foreach (var row in _executionRows)
+        {
+            if (row.BatchStepId is { Length: > 0 } sid)
+                map[sid] = row.Status;   // last writer wins; rows reflect page-level monotonic-guarded state
+        }
+        // Approval gates have no execution row — overlay their feed-derived status (RefreshGatesAsync).
+        foreach (var (sid, st) in _gateStatus)
+            map[sid] = st;
+        _statusByStepId = map;
+    }
+
+    private async Task OnBatchCompletedAsync(BatchCompletionSummary summary)
+    {
+        if (summary.BatchId != BatchRunId) return;
+        _completion = summary;
+        await RefreshGatesAsync();   // final gate resolution — covers a TRAILING gate (no successor event)
+        await _refresh!.RequestAsync();
+    }
+
+    private Task OnNodeSelectedAsync(BatchStep step)
+    {
+        // Selecting a different node clears any stale decision error/busy from the previous gate.
+        _selectedStep = step;
+        _selectedStepId = step.StepId;
+        _decisionError = null;
+        _decisionBusy = false;
+        return Task.CompletedTask;
+    }
+
+    // One-click approve from the in-node Approve button. Select the gate FIRST (this opens
+    // the inspector, which is the error surface — a 403/failure shows there with the gate already in view),
+    // then run the EXISTING approve path. HandleApproveAsync reads SelectedPendingApprovalId(), which the
+    // selection above just primed, so there is no separate approve code path: success → gate green + panel
+    // read-only; failure → panel open showing DecisionError.
+    private async Task HandleApproveFromNodeAsync(BatchStep step)
+    {
+        // Double-click safety: OnNodeSelectedAsync RESETS _decisionBusy (a fresh selection clears stale
+        // state). If we re-selected on a second rapid click while the FIRST approve for this same gate is
+        // still in flight, that reset would defeat HandleApproveAsync's own busy guard and double-submit.
+        // So when we're already busy on the gate that's already selected, no-op the second click entirely.
+        if (_decisionBusy && string.Equals(_selectedStepId, step.StepId, StringComparison.Ordinal)) return;
+        await OnNodeSelectedAsync(step);
+        await HandleApproveAsync();
+    }
+
+    private Task ClosePanel()
+    {
+        _selectedStep = null;
+        _selectedStepId = null;
+        _decisionError = null;
+        _decisionBusy = false;
+        return Task.CompletedTask;
+    }
+
+    private JobStatus? SelectedStatus()
+        => _selectedStepId is not null && _statusByStepId.TryGetValue(_selectedStepId, out var s) ? s : null;
+
+    // Pending approval id for the selected step, or null — drives the inspector's decision UI.
+    private string? SelectedPendingApprovalId()
+        => _selectedStepId is not null && _pendingByStepId.TryGetValue(_selectedStepId, out var dto) ? dto.ApprovalId : null;
+
+    // ── inline approve / reject ─────────────────────────────────────────────────────────
+    // On success: re-list approvals (the gate falls out of pending → reconciler turns it green; the
+    // successor step then streams in over the hub). On UKBatchClientException: map 403 → not-authorized,
+    // anything else → a concise message; surface via _decisionError. Render via the debounce.
+
+    private async Task HandleApproveAsync()
+    {
+        var approvalId = SelectedPendingApprovalId();
+        if (_client is null || approvalId is null || _decisionBusy) return;
+
+        _decisionBusy = true;
+        _decisionError = null;
+        await _refresh!.RequestAsync();
+        try
+        {
+            await _client.ApproveAsync(approvalId, null, CancellationToken.None);
+            await RefreshGatesAsync();
+        }
+        catch (UKBatchClientException ex)
+        {
+            _decisionError = DecisionErrorMessage(ex, "approve");
+        }
+        catch (Exception)
+        {
+            _decisionError = "Could not approve the gate. Please retry.";
+        }
+        finally
+        {
+            _decisionBusy = false;
+            await _refresh!.RequestAsync();
+        }
+    }
+
+    private async Task HandleRejectAsync(string reason)
+    {
+        var approvalId = SelectedPendingApprovalId();
+        if (_client is null || approvalId is null || _decisionBusy) return;
+        if (string.IsNullOrWhiteSpace(reason)) return;   // panel guards this too, but never trust the caller
+
+        _decisionBusy = true;
+        _decisionError = null;
+        await _refresh!.RequestAsync();
+        try
+        {
+            await _client.RejectAsync(approvalId, reason, CancellationToken.None);
+            await RefreshGatesAsync();
+        }
+        catch (UKBatchClientException ex)
+        {
+            _decisionError = DecisionErrorMessage(ex, "reject");
+        }
+        catch (Exception)
+        {
+            _decisionError = "Could not reject the gate. Please retry.";
+        }
+        finally
+        {
+            _decisionBusy = false;
+            await _refresh!.RequestAsync();
+        }
+    }
+
+    private static string DecisionErrorMessage(UKBatchClientException ex, string verb)
+        => ex.StatusCode == System.Net.HttpStatusCode.Forbidden
+            ? "Not authorized to decide this gate (role mismatch)."
+            : $"Could not {verb} the gate: {ex.Message}";
+
+    private static string CompletionBgClass(JobStatus status) => status switch
+    {
+        JobStatus.Completed => "batch-run__completion--completed",
+        JobStatus.Failed => "batch-run__completion--failed",
+        JobStatus.Cancelled => "batch-run__completion--cancelled",
+        _ => string.Empty,
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_client is not null)
+        {
+            _client.ExecutionStateChanged -= OnExecutionStateChangedAsync;
+            _client.BatchCompleted -= OnBatchCompletedAsync;
+            _client.ApprovalRequested -= OnApprovalRequestedAsync;
+            if (_subscribed)
+            {
+                try { await _client.UnsubscribeFromBatchAsync(BatchRunId, CancellationToken.None); }
+                catch (Exception) { /* ignore */ }
+            }
+        }
+        if (_refresh is not null) await _refresh.DisposeAsync();
+    }
+}
+
+<style>
+    .batch-run__completion { border-width: 2px; }
+    .batch-run__completion--completed { border-color: var(--color-status-completed); background: color-mix(in srgb, var(--color-status-completed) 8%, var(--color-surface-container)); }
+    .batch-run__completion--failed    { border-color: var(--color-status-failed); background: color-mix(in srgb, var(--color-status-failed) 8%, var(--color-surface-container)); }
+    .batch-run__completion--cancelled { border-color: var(--color-status-cancelled); background: color-mix(in srgb, var(--color-status-cancelled) 8%, var(--color-surface-container)); }
+    .batch-run__completion .surface-card__title { display: flex; align-items: center; gap: var(--space-xs); }
+    .completion-grid { display: flex; gap: var(--space-lg); flex-wrap: wrap; }
+    .completion-grid > div { display: flex; flex-direction: column; gap: var(--space-xxs); }
+    .completion-grid dt { color: var(--color-text-tertiary); font-size: var(--font-label-md-size); text-transform: uppercase; letter-spacing: var(--font-label-md-tracking); margin: 0; }
+    .completion-grid dd { color: var(--color-text-primary); font-size: var(--font-headline-md-size); font-weight: 700; margin: 0; }
+</style>

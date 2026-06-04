@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>UKBatch.Dashboard.Tests</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CA1707;CA1812;CA2007;CA1303;CA1305;CA1031;CA1849;CA1051;CA1062;CA1859;CA1848;CA1822;CS1591;CS1574;CS1573;CA2227;CA1819;CA1816;IDE0005;CA1052;CA1063;CA1064;CA1826</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\UKBatch.Dashboard\UKBatch.Dashboard.csproj" />
+    <ProjectReference Include="..\..\samples\Sample.RestApi\Sample.RestApi.csproj" />
+    <ProjectReference Include="..\..\samples\Sample.Dashboard\Sample.Dashboard.csproj" />
+    <!--
+      Sample.RestApi is referenced to give RestUKBatchClient hub tests a real backing server via
+      WebApplicationFactory<Program> (same LongPolling pattern as UKBatch.Api.Tests). The
+      Sample.RestApi.HubClient assembly is intentionally NOT referenced — both Sample apps
+      generate a synthetic `Program` and a dual-reference creates a CS0433 ambiguity.
+      Sample.Dashboard is added for embedded single-app integration tests; its
+      `Sample.Dashboard.Program` namespace is distinct from `Sample.RestApi.Program` so no CS0433.
+    -->
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="bunit" />
+  </ItemGroup>
+</Project>

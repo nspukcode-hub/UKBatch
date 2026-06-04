@@ -1,0 +1,31 @@
+@* Root document for the UKBatch Dashboard Blazor Server app.
+   The inline theme-bootstrap script runs BEFORE first paint
+   to eliminate the default-theme flash. The toggle handler (Settings page) calls
+   UKBatchDashboard.setTheme(...) defined in dashboard.js. *@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;500&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="_content/UKBatch.Dashboard/css/dashboard.css" />
+    <script>
+        (function () {
+            try {
+                var theme = localStorage.getItem('ukbatch-dashboard-theme') || 'dark';
+                document.documentElement.classList.add(theme === 'light' ? 'light' : 'dark');
+            } catch (e) {
+                document.documentElement.classList.add('dark');
+            }
+        })();
+    </script>
+    <HeadOutlet @rendermode="RenderMode.InteractiveServer" />
+</head>
+<body>
+    <Routes @rendermode="RenderMode.InteractiveServer" />
+    <script src="_framework/blazor.web.js"></script>
+    <script src="_content/UKBatch.Dashboard/js/dashboard.js"></script>
+</body>
+</html>
