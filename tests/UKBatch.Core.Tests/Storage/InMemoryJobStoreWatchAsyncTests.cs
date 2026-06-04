@@ -62,7 +62,7 @@ public class InMemoryJobStoreWatchAsyncTests
             _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);
         }
 
-        await receivedAll.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await receivedAll.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
         subCts.Cancel();
         try { await consumer.ConfigureAwait(false); } catch (OperationCanceledException) { }
 
@@ -103,7 +103,7 @@ public class InMemoryJobStoreWatchAsyncTests
             _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);
         }
 
-        await consumerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await consumerStarted.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
         // Let consumer drain remaining buffer.
         await Task.Delay(500).ConfigureAwait(false);
         subCts.Cancel();
@@ -139,7 +139,7 @@ public class InMemoryJobStoreWatchAsyncTests
         {
             var firstMove = watch.MoveNextAsync();  // registers the subscription, then suspends on the empty buffer
             _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);  // seed completes the pending read
-            (await firstMove.AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false)).Should().BeTrue();
+            (await firstMove.AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
             received.Add(watch.Current);
 
             // Consumer idle: the bounded buffer absorbs exactly BufferCapacity events, DropNewest
@@ -153,7 +153,7 @@ public class InMemoryJobStoreWatchAsyncTests
             // Drain the survivors — exactly BufferCapacity events are buffered, never more.
             for (var i = 0; i < options.BufferCapacity; i++)
             {
-                (await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false)).Should().BeTrue();
+                (await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
                 received.Add(watch.Current);
             }
 

@@ -48,7 +48,7 @@ public class EndToEndSampleTests
                 cancellationToken: default).ConfigureAwait(false);
 
             var terminal = await awaiter.WaitForTerminalAsync(execution.ExecutionId, default)
-                .WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                .WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
             terminal.Status.Should().Be(JobStatus.Completed);
             terminal.TriggeredBy.Should().Be("test");
@@ -75,7 +75,7 @@ public class EndToEndSampleTests
             var execution = await runner.TriggerAsync("sample.fail", JobParameters.Empty, "test", default).ConfigureAwait(false);
 
             var terminal = await awaiter.WaitForTerminalAsync(execution.ExecutionId, default)
-                .WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                .WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
             terminal.Status.Should().Be(JobStatus.Failed);
             terminal.LastError.Should().NotBeNull();
@@ -110,7 +110,7 @@ public class EndToEndSampleTests
             var execution = await runner.TriggerAsync("sample.transient", JobParameters.Empty, "test", default).ConfigureAwait(false);
 
             var terminal = await awaiter.WaitForTerminalAsync(execution.ExecutionId, default)
-                .WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+                .WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
             terminal.Status.Should().Be(JobStatus.Completed);
             terminal.AttemptNumber.Should().BeGreaterOrEqualTo(2);

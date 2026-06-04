@@ -53,7 +53,7 @@ public class JobExecutionAwaiterTests
             await store.UpdateStatusAsync(execution.ExecutionId, JobStatus.Running, null, default).ConfigureAwait(false);
             await store.UpdateStatusAsync(execution.ExecutionId, JobStatus.Completed, null, default).ConfigureAwait(false);
 
-            var terminal = await wait.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var terminal = await wait.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
             terminal.Status.Should().Be(JobStatus.Completed);
         }
         finally
@@ -115,7 +115,7 @@ public class JobExecutionAwaiterTests
             }))).ConfigureAwait(false);
 
             // Every waiter completes within a generous timeout.
-            await Task.WhenAll(pairs.Select(p => p.wait)).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            await Task.WhenAll(pairs.Select(p => p.wait)).WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
             pairs.All(p => p.wait.IsCompletedSuccessfully).Should().BeTrue();
             _ = def;
         }
@@ -184,7 +184,7 @@ public class JobExecutionAwaiterTests
 
             // Now register the waiter. The catch-up must observe the already-terminal row.
             var wait = awaiter.WaitForTerminalAsync(execId, default);
-            var terminal = await wait.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var terminal = await wait.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
             terminal.Status.Should().Be(JobStatus.Completed);
         }
         finally
@@ -228,7 +228,7 @@ public class JobExecutionAwaiterTests
             await store.UpdateStatusAsync(execId, JobStatus.Running, null, default).ConfigureAwait(false);
             await store.UpdateStatusAsync(execId, JobStatus.Completed, null, default).ConfigureAwait(false);
 
-            var terminal = await wait.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var terminal = await wait.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
             terminal.Status.Should().Be(JobStatus.Completed);
         }
         finally

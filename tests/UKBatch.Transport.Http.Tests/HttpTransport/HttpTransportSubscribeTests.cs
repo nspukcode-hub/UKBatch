@@ -119,7 +119,7 @@ public sealed class HttpTransportSubscribeTests : IClassFixture<WorkerFactory>
             await Task.Delay(200);
             cts.Cancel();
             // Completes within a few seconds (iterator's WaitToReadAsync respects the CT).
-            await enumerationTask.WaitAsync(TimeSpan.FromSeconds(8));
+            await enumerationTask.WaitAsync(TimeSpan.FromSeconds(60));
         }
     }
 

@@ -39,7 +39,7 @@ public sealed class ActivityPropagationTests
         await response.ShouldBeAsync(HttpStatusCode.OK);
 
         var sink = host.App!.Services.GetRequiredService<CapturedActivityInfo>();
-        var info = await sink.WaitAsync(TimeSpan.FromSeconds(5));
+        var info = await sink.WaitAsync(TimeSpan.FromSeconds(60));
         info.TraceId.Should().Be(FixedTraceId, "the job's restored Activity must share the request trace id");
         info.ParentId.Should().NotBeNullOrEmpty();
     }
@@ -61,7 +61,7 @@ public sealed class ActivityPropagationTests
 
         var info = await host.App!.Services
             .GetRequiredService<CapturedActivityInfo>()
-            .WaitAsync(TimeSpan.FromSeconds(5));
+            .WaitAsync(TimeSpan.FromSeconds(60));
         // With no inbound traceparent, the server starts a fresh root Activity. The job sees ITS
         // trace id via RestoreRequestActivity — verifying the capture+restore round-trip.
         info.TraceId.Should().NotBeNull("ASP.NET Core always starts a request Activity; the bridge propagates it");

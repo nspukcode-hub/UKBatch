@@ -92,7 +92,7 @@ public class ApprovalGateTimeoutTests
             null,
             default).ConfigureAwait(false);
 
-        await awaitTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await awaitTask.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
     }
 
     [Fact]

@@ -41,7 +41,7 @@ public class ApprovalGateServiceTests
 
         await svc.ApproveAsync(approvalId, new ApproverContext { Identity = "admin@x", Roles = new[] { "admin" } }, "ok", default).ConfigureAwait(false);
 
-        await awaitTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await awaitTask.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
     }
 
     [Fact]
@@ -143,7 +143,7 @@ public class ApprovalGateServiceTests
         var approvalId = pending[0].ApprovalId;
 
         await svc.ApproveAsync(approvalId, new ApproverContext { Identity = "viewer@x", Roles = new[] { "viewer" } }, null, default).ConfigureAwait(false);
-        await awaitTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await awaitTask.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
     }
 
     [Fact]

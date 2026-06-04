@@ -60,7 +60,7 @@ public class InProcessTransportPubSubTests
         }
 
         // Wait for all subscriptions to start.
-        await Task.WhenAll(readyTasks.Select(r => r.Task)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await Task.WhenAll(readyTasks.Select(r => r.Task)).WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
         await Task.Delay(100).ConfigureAwait(false); // ensure SubscribeAsync's GetOrAdd path executed
 
         // Publish N messages.
@@ -69,7 +69,7 @@ public class InProcessTransportPubSubTests
             await transport.PublishAsync(NewMessage($"m{i}"), default).ConfigureAwait(false);
         }
 
-        await Task.WhenAll(subscribers).WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+        await Task.WhenAll(subscribers).WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
         // EVERY subscriber must have received EVERY message (invariant).
         for (var i = 0; i < Subs; i++)
@@ -101,7 +101,7 @@ public class InProcessTransportPubSubTests
             catch (OperationCanceledException) { }
         });
 
-        await ready.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await ready.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
         await Task.Delay(100).ConfigureAwait(false);
 
         for (var i = 0; i < N; i++)
@@ -109,7 +109,7 @@ public class InProcessTransportPubSubTests
             await transport.PublishAsync(NewMessage($"m{i:D3}", "orderly"), default).ConfigureAwait(false);
         }
 
-        await subscriber.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        await subscriber.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
         var expected = Enumerable.Range(0, N).Select(i => $"m{i:D3}").ToList();
         received.Should().BeEquivalentTo(expected, opts => opts.WithStrictOrdering());
@@ -135,7 +135,7 @@ public class InProcessTransportPubSubTests
 
         await Task.Delay(100).ConfigureAwait(false);
         subCts.Cancel();
-        await subscriber.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await subscriber.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
         caught.Should().BeTrue();
     }

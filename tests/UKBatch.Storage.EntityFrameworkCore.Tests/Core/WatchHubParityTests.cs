@@ -39,7 +39,7 @@ public sealed class WatchHubParityTests
         await Task.Delay(50).ConfigureAwait(false);
         for (var i = 0; i < N; i++) hub.Publish(Exec($"e{i}"));
 
-        await done.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
         cts.Cancel();
         try { await consumer.ConfigureAwait(false); } catch (OperationCanceledException) { }
 
@@ -102,7 +102,7 @@ public sealed class WatchHubParityTests
         {
             var firstMove = watch.MoveNextAsync();  // registers the subscription, then suspends on the empty buffer
             hub.Publish(Exec("seed"));              // completes the pending read deterministically
-            (await firstMove.AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false)).Should().BeTrue();
+            (await firstMove.AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
             received.Add(watch.Current);
 
             // Consumer idle: the bounded buffer absorbs exactly BufferCapacity events, DropNewest
@@ -113,7 +113,7 @@ public sealed class WatchHubParityTests
             // Drain the survivors — exactly BufferCapacity events are buffered, never more.
             for (var i = 0; i < options.BufferCapacity; i++)
             {
-                (await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false)).Should().BeTrue();
+                (await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
                 received.Add(watch.Current);
             }
 

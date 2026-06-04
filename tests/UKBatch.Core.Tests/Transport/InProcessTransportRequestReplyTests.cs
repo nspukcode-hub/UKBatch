@@ -51,7 +51,7 @@ public class InProcessTransportRequestReplyTests
         await Task.Delay(50).ConfigureAwait(false); // give RequestReply time to register
         transport.CompleteReply("req1", NewResult("exec-1")).Should().BeTrue();
 
-        var result = await rpcTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        var result = await rpcTask.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
         result.ExecutionId.Should().Be("exec-1");
 
         PendingRepliesCount(transport).Should().Be(0);

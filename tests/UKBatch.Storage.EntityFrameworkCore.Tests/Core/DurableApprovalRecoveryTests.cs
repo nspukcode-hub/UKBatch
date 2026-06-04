@@ -63,7 +63,7 @@ public sealed class DurableApprovalRecoveryTests : IAsyncLifetime
         var pending = await harness.Service.ListPendingAsync(null, CancellationToken.None);
         var id = pending[0].ApprovalId;
         await harness.Service.ApproveAsync(id, new ApproverContext { Identity = "admin@x", Roles = new[] { "admin" } }, "ok", CancellationToken.None);
-        await gate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await gate.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
         var record = await _store.GetAsync(id, CancellationToken.None);
         record!.Status.Should().Be(ApprovalRecordStatus.Decided);

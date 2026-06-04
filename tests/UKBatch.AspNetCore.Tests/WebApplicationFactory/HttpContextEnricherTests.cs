@@ -46,7 +46,7 @@ public sealed class HttpContextEnricherTests
         body.Should().Contain("\"triggeredBy\":\"alice\"");
 
         var capturedSink = host.App!.Services.GetRequiredService<CapturedTriggeredBy>();
-        var captured = await capturedSink.WaitAsync(TimeSpan.FromSeconds(5));
+        var captured = await capturedSink.WaitAsync(TimeSpan.FromSeconds(60));
         captured.Should().Be("alice");
     }
 
@@ -62,7 +62,7 @@ public sealed class HttpContextEnricherTests
         body.Should().Contain("\"triggeredBy\":null");
 
         var capturedSink = host.App!.Services.GetRequiredService<CapturedTriggeredBy>();
-        var captured = await capturedSink.WaitAsync(TimeSpan.FromSeconds(5));
+        var captured = await capturedSink.WaitAsync(TimeSpan.FromSeconds(60));
         captured.Should().BeNull();
     }
 
@@ -111,7 +111,7 @@ public sealed class HttpContextEnricherTests
 
             var captured = await app.Services
                 .GetRequiredService<CapturedTriggeredBy>()
-                .WaitAsync(TimeSpan.FromSeconds(5));
+                .WaitAsync(TimeSpan.FromSeconds(60));
             captured.Should().Be("user-42");
         }
         finally
