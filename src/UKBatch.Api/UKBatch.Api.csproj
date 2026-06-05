@@ -13,7 +13,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <!-- Built-in OpenAPI document generation (AddOpenApi + document/schema transformers) requires
+         net9+. The net8.0 build ships the full REST + SignalR surface without the /openapi/v1.json
+         document; consumers who need one on net8 can layer Swashbuckle over the mapped endpoints. -->
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Condition="'$(TargetFramework)' == 'net10.0'" />
   </ItemGroup>
 
   <!-- SignalR is part of the framework ref; do NOT add Microsoft.AspNetCore.SignalR PackageReference (NU1510). -->

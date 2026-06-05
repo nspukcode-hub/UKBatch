@@ -23,7 +23,12 @@ namespace UKBatch.Runtime;
 internal sealed class JobScheduler
 {
     private readonly PriorityQueue<ScheduledJobEntry, DateTimeOffset> _heap = new();
+#if NET10_0_OR_GREATER
     private readonly Lock _heapLock = new();
+#else
+    // System.Threading.Lock requires net9+; a plain monitor object is the net8.0 equivalent.
+    private readonly object _heapLock = new();
+#endif
     private readonly Channel<bool> _wakeChannel;
     private readonly JobDefinitionRegistry _registry;
     private readonly JobDispatcher _dispatcher;

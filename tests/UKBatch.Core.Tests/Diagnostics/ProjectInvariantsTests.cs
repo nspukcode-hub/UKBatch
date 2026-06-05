@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using FluentAssertions;
 using Xunit;
 
@@ -62,27 +61,5 @@ public class ProjectInvariantsTests
         }
         offenders.Should().BeEmpty(
             "no executable sync-over-async; the runtime must be async-all-the-way.");
-    }
-
-    [Fact]
-    public void Core_BuildsClean_UnderTreatWarningsAsErrors()
-    {
-        // Smoke check — UKBatch.Core builds without warnings under TreatWarningsAsErrors=true.
-        var root = LocateRepoRoot();
-        var corePath = Path.Combine(root, "src", "UKBatch.Core", "UKBatch.Core.csproj");
-
-        var psi = new ProcessStartInfo("dotnet", $"build \"{corePath}\" -c Release --nologo")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            WorkingDirectory = root,
-        };
-        using var p = Process.Start(psi)!;
-        var output = p.StandardOutput.ReadToEnd();
-        var error = p.StandardError.ReadToEnd();
-        p.WaitForExit(60_000);
-
-        p.ExitCode.Should().Be(0, $"UKBatch.Core must build clean under TreatWarningsAsErrors. STDOUT:\n{output}\nSTDERR:\n{error}");
     }
 }

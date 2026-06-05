@@ -12,6 +12,7 @@ First public preview of the UKBatch package family.
 
 ### Added
 
+- **Multi-targeting** — every package ships `net8.0` and `net10.0` builds in a single NuGet package; the consuming app's target framework picks the right build automatically. On `net8.0` the EF Core adapter rides the EF Core 8 (LTS) line.
 - **UKBatch.Abstractions** — zero-dependency contracts (interfaces, attributes, DTOs) shared by every package.
 - **UKBatch.Core** — the runtime: dispatcher, cron scheduler (via Cronos), per-job retries, sequential/parallel/approval-gate workflows, partitioned data-parallel jobs, the in-memory store, and the in-process transport.
 - **UKBatch.AspNetCore** — host integration with `HttpContext`-aware `TriggeredBy` enrichment, W3C trace propagation, and a readiness health check.
@@ -25,6 +26,7 @@ First public preview of the UKBatch package family.
 
 ### Known limitations
 
+- **No OpenAPI document on .NET 8.** Built-in OpenAPI generation requires .NET 9+; on the `net8.0` target the REST + SignalR surface is identical, but `/openapi/v1.json` is not produced (layer Swashbuckle yourself if needed).
 - **No durable workflow resume.** After a host restart, batch definitions and completed history persist (with persistent storage), but in-flight executions are marked `Failed` by the orphan reaper and paused approval gates do not resume.
 - **No step output forwarding.** A step's output is not passed as input to subsequent steps. The cross-service HTTP sample's `orderId` illustrates this: it is generated but not forwarded.
 - **No cross-service progress forwarding.** Per-item progress counters of a job running on a remote worker appear in the worker's logs but do not flow back to the dashboard.

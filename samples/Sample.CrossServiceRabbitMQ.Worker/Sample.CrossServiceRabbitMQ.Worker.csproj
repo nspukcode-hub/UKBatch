@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
+    <!-- net10-only: broker-backed demo host, runs on the repo's primary TFM. -->
+    <TargetFrameworks>net10.0</TargetFrameworks>
     <IsPackable>false</IsPackable>
     <RootNamespace>Sample.CrossServiceRabbitMQ.Worker</RootNamespace>
     <UserSecretsId>sample-crossservicerabbitmq-worker-2a8b54d1</UserSecretsId>

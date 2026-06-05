@@ -1,3 +1,6 @@
+#if !NET10_0_OR_GREATER
+using System.Security.Cryptography;
+#endif
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -154,9 +157,9 @@ internal static class BatchesEndpoints
                 }
                 var def = new BatchDefinition
                 {
-                    // Use the public BCL Guid.CreateVersion7 instead of the id helper in Core
-                    // internals — this keeps the Api package's consumption of Core internals minimal.
-                    Id = Guid.CreateVersion7().ToString("N"),
+                    // Use an inline UUIDv7 instead of the id helper in Core internals — this keeps
+                    // the Api package's consumption of Core internals minimal.
+                    Id = NewBatchId(),
                     Name = body.Name,
                     Source = body.Source,
                     Schedule = body.Schedule,
@@ -388,5 +391,29 @@ internal static class BatchesEndpoints
                 title: "Job not registered",
                 detail: ex.Message);
         }
+    }
+
+    private static string NewBatchId()
+    {
+#if NET10_0_OR_GREATER
+        return Guid.CreateVersion7().ToString("N");
+#else
+        // UUIDv7 (RFC 9562) for net8.0, where Guid.CreateVersion7 is unavailable: 48-bit
+        // big-endian Unix-ms timestamp + version 7 + variant 10 + 74 random bits. The
+        // big-endian Guid ctor reproduces CreateVersion7's byte layout exactly, so ids
+        // generated on net8.0 and net10.0 sort and round-trip identically.
+        Span<byte> bytes = stackalloc byte[16];
+        RandomNumberGenerator.Fill(bytes);
+        var unixMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        bytes[0] = (byte)(unixMs >> 40);
+        bytes[1] = (byte)(unixMs >> 32);
+        bytes[2] = (byte)(unixMs >> 24);
+        bytes[3] = (byte)(unixMs >> 16);
+        bytes[4] = (byte)(unixMs >> 8);
+        bytes[5] = (byte)unixMs;
+        bytes[6] = (byte)((bytes[6] & 0x0F) | 0x70); // version 7
+        bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80); // variant 10xx
+        return new Guid(bytes, bigEndian: true).ToString("N");
+#endif
     }
 }

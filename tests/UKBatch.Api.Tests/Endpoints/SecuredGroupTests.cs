@@ -47,6 +47,9 @@ public sealed class SecuredGroupTests : IClassFixture<SampleRestApiFactory>
             "the anonymous mount preserves behavior unchanged.");
     }
 
+#if NET10_0_OR_GREATER
+    // The OpenAPI document endpoint requires net9+; on net8.0 the package ships REST + SignalR
+    // without document generation, so this contract is asserted on net10.0 only.
     [Fact]
     public async Task OpenApi_HasBothAnonymousAndSecuredOperations_OperationIdsStableUnderSingleMount()
     {
@@ -80,4 +83,5 @@ public sealed class SecuredGroupTests : IClassFixture<SampleRestApiFactory>
         operationIds.Should().Contain("SecuredListBatches", "Item #7: secured mount surfaces prefixed op id.");
         operationIds.Should().Contain("SecuredListJobs", "Item #7: secured mount surfaces prefixed op id.");
     }
+#endif
 }

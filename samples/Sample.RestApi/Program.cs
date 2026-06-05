@@ -112,7 +112,9 @@ app.MapGroup("/api/secured")
     .MapUKBatchApi("Secured")
     .RequireAuthorization();
 
+#if NET10_0_OR_GREATER
 app.MapOpenApi();
+#endif
 app.MapHealthChecks("/healthz");
 
 app.Run();

@@ -123,9 +123,16 @@ if (app.Configuration.GetValue<bool>("Sample:Dashboard:RequireAuthorization"))
 
 // MapStaticAssets — .NET 9/10 Blazor Web App convention. Mounts `_framework/blazor.web.js`
 // + static web assets manifest. UseStaticFiles alone does NOT serve Blazor framework files.
+// On net8.0 MapStaticAssets is unavailable; UseStaticFiles serves the static web assets instead.
+#if NET10_0_OR_GREATER
 app.MapStaticAssets();
+#else
+app.UseStaticFiles();
+#endif
 
+#if NET10_0_OR_GREATER
 app.MapOpenApi();
+#endif
 app.MapHealthChecks("/healthz");
 
 app.Run();

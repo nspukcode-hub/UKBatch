@@ -1,6 +1,6 @@
 # UKBatch.Abstractions
 
-The zero-dependency contract surface for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 10. This package is interfaces, attributes, and DTOs only: `IJob`, `IPartitionedJob<TItem>`, `[Job]`, `JobContext`, `JobParameters`, and the storage/transport contracts every other `UKBatch.*` package builds on.
+The zero-dependency contract surface for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 8 and .NET 10. This package is interfaces, attributes, and DTOs only: `IJob`, `IPartitionedJob<TItem>`, `[Job]`, `JobContext`, `JobParameters`, and the storage/transport contracts every other `UKBatch.*` package builds on.
 
 Reference it from a shared contracts assembly when you want to *define* jobs without pulling in the runtime — for example a library project that several services consume.
 

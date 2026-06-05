@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
+    <!-- net10-only: built into the net10 runtime Docker image via its Dockerfile. -->
+    <TargetFrameworks>net10.0</TargetFrameworks>
     <IsPackable>false</IsPackable>
     <RootNamespace>Sample.WorkerMode.Shipping</RootNamespace>
     <UserSecretsId>sample-workermode-shipping-3d8a6f17</UserSecretsId>

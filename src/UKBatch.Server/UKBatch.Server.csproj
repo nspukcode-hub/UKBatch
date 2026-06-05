@@ -1,5 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
+    <!-- net10-only: the server is a deployable Docker app shipped on the net10 runtime image,
+         not a NuGet package consumers restore into their own TFM. -->
+    <TargetFrameworks>net10.0</TargetFrameworks>
     <!-- Explicit (Directory.Build.props ALSO excludes UKBatch.Server from the pack heuristic by
          name) — the server is a deployable Docker app, not a NuGet package. -->
     <IsPackable>false</IsPackable>

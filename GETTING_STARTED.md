@@ -1,6 +1,6 @@
 # Getting started with UKBatch
 
-UKBatch is a lightweight, pluggable batch/job orchestration library for .NET 10 microservices. It runs in two shapes from the same NuGet packages and the same job code:
+UKBatch is a lightweight, pluggable batch/job orchestration library for .NET 8 and .NET 10 microservices. It runs in two shapes from the same NuGet packages and the same job code:
 
 - **Embedded mode** — reference the library inside one ASP.NET Core app. The runtime, REST API, and dashboard all live in that process. Best for small to mid-size services.
 - **Server + workers** — run the standalone `UKBatch.Server` (a Docker app) as the orchestrator and dashboard; your microservices join as **workers** over a cross-service transport. Best for larger distributed systems.
@@ -11,7 +11,7 @@ This guide walks the common path. Each section links to a runnable sample under 
 
 ## Prerequisites
 
-- **.NET 10 SDK** (the repo pins a version in `global.json`).
+- **.NET 10 SDK** to build this repo (the repo pins a version in `global.json`). Consuming apps need only their own SDK: the packages target both `net8.0` and `net10.0`, so a plain .NET 8 SDK project works.
 - **Docker** (optional) — only for the EF Core PostgreSQL path and the server + workers Compose stack.
 
 > Packages are not on NuGet yet (0.1.0-alpha). To follow along now, clone the repo and reference the projects, or build the packages with `dotnet pack`. The `dotnet add package` lines below are what consumers will use once published.
@@ -90,7 +90,7 @@ var app = builder.Build();
 app.UseAntiforgery();                  // REQUIRED for Razor Components — see Gotchas
 app.MapGroup("/api").MapUKBatchApi();  // REST + SignalR hub at /api/hubs/jobs
 app.MapUKBatchDashboard();             // UI at /dashboard
-app.MapStaticAssets();                 // serves Blazor framework assets
+app.MapStaticAssets();                 // serves Blazor framework assets (.NET 9+; on .NET 8 use app.UseStaticFiles())
 
 app.Run();
 ```

@@ -1,6 +1,6 @@
 # UKBatch.Transport.Http
 
-A broker-free HTTP transport adapter for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 10. It implements `ITransport` over HMAC-signed REST so a batch can dispatch a step to a different microservice as easily as a local step, with no message broker to run.
+A broker-free HTTP transport adapter for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 8 and .NET 10. It implements `ITransport` over HMAC-signed REST so a batch can dispatch a step to a different microservice as easily as a local step, with no message broker to run.
 
 > **Status:** part of the UKBatch 0.1.0-alpha package family. Same `JobMessage` / `JobResult` envelope as `UKBatch.Transport.RabbitMQ` — a different wire.
 

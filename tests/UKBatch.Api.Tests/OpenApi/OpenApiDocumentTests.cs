@@ -1,3 +1,6 @@
+// The OpenAPI document endpoint requires net9+; on net8.0 the package ships REST + SignalR without
+// document generation, so these document-shape regressions run on net10.0 only.
+#if NET10_0_OR_GREATER
 using System.Net;
 using System.Text.Json;
 using FluentAssertions;
@@ -141,3 +144,4 @@ public sealed class OpenApiDocumentTests : IClassFixture<SampleRestApiFactory>
  " #29: at least one operation should have 400/403/404/409/500 Problem Details annotations.");
     }
 }
+#endif

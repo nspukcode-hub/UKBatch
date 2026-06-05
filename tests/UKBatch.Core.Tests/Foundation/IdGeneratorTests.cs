@@ -90,4 +90,35 @@ public class IdGeneratorTests
         await Task.WhenAll(Enumerable.Range(0, N).Select(_ => Task.Run(() => ids.Add(IdGenerator.NewExecutionId())))).ConfigureAwait(false);
         ids.Distinct().Count().Should().Be(N);
     }
+
+    [Fact]
+    public async Task Ids_AreRfc9562UuidV7_TimeOrdered()
+    {
+        // Validates the UUIDv7 contract identically on both target frameworks: the BCL
+        // Guid.CreateVersion7 on net10.0, the inline RFC 9562 polyfill on net8.0. In the
+        // dashless "N" form, the version nibble sits at index 12 and the variant nibble at
+        // index 16 (canonical layout xxxxxxxx-xxxx-Vxxx-Yxxx-xxxxxxxxxxxx without separators).
+        var batch = Enumerable.Range(0, 200).Select(_ => IdGenerator.NewExecutionId()).ToList();
+        foreach (var id in batch)
+        {
+            // Must round-trip as a 32-char hex Guid.
+            var parsed = Guid.ParseExact(id, "N");
+            parsed.Should().NotBe(Guid.Empty);
+
+            // (a) Version 7.
+            id[12].Should().Be('7', $"UUIDv7 version nibble must be 7; saw '{id[12]}' in {id}");
+
+            // (b) Variant 10xx -> high nibble is one of 8, 9, a, b.
+            id[16].Should().BeOneOf(new[] { '8', '9', 'a', 'b' },
+                $"UUIDv7 variant nibble must be 8/9/a/b; saw '{id[16]}' in {id}");
+        }
+
+        // (c) k-sortability: two ids generated a few ms apart sort by generation time under an
+        // ordinal string comparison (the 48-bit ms timestamp prefix dominates).
+        var first = IdGenerator.NewExecutionId();
+        await Task.Delay(5).ConfigureAwait(false);
+        var second = IdGenerator.NewExecutionId();
+        string.CompareOrdinal(first, second).Should().BeLessThan(0,
+            $"an id generated later must sort after an earlier one; saw {first} then {second}");
+    }
 }

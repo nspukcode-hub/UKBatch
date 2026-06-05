@@ -2,7 +2,9 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using UKBatch.Api.Hub;
+#if NET10_0_OR_GREATER
 using UKBatch.Api.OpenApi;
+#endif
 using UKBatch.Api.Workers;
 using UKBatch.AspNetCore.Triggering;
 
@@ -53,13 +55,17 @@ public static class ServiceCollectionExtensions
             opts.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
         });
 
+#if NET10_0_OR_GREATER
         // OpenAPI registration — ships defaults. No RequireAuthorizationOperationTransformer stub:
         // the README documents the recipe for users to add Bearer / API-key security schemes.
+        // The built-in OpenAPI document generator requires net9+, so on net8.0 the package ships
+        // REST + SignalR without document generation (enum-as-string serialization is unaffected).
         services.AddOpenApi(opts =>
         {
             opts.AddOperationTransformer<ProblemDetailsResponseTransformer>();
             opts.AddSchemaTransformer<EnumStringTransformer>();
         });
+#endif
 
         // Hub + fan-out lifetime.
         services.AddSingleton<JobStatusHubFanout>();

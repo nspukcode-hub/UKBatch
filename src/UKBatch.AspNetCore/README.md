@@ -1,6 +1,6 @@
 # UKBatch.AspNetCore
 
-ASP.NET Core integration for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 10.
+ASP.NET Core integration for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 8 and .NET 10.
 
 This package adds three things to a UKBatch host running inside an ASP.NET Core application:
 

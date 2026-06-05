@@ -1,3 +1,7 @@
+// The built-in OpenAPI document generator (Microsoft.AspNetCore.OpenApi) requires net9+, so this
+// transformer compiles only on net10.0. On net8.0 the package ships REST + SignalR without
+// document generation.
+#if NET10_0_OR_GREATER
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
 
@@ -39,3 +43,4 @@ public sealed class ProblemDetailsResponseTransformer : IOpenApiOperationTransfo
         };
     }
 }
+#endif

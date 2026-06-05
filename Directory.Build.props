@@ -1,7 +1,11 @@
 <Project>
 
   <PropertyGroup Label="Core build">
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- Multi-target is the default: every shipped package (and its test/sample dependents)
+         builds for both net10.0 and net8.0. net10-only hosts (UKBatch.Server, Docker-only
+         samples) opt out with <TargetFrameworks>net10.0</TargetFrameworks> in their own csproj.
+         net10.0 is listed first so it stays the IDE / `dotnet run` default. -->
+    <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

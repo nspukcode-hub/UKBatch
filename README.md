@@ -1,6 +1,6 @@
 # UKBatch
 
-Lite, pluggable batch and job orchestration for .NET 10 microservices.
+Lite, pluggable batch and job orchestration for .NET 8 and .NET 10 microservices.
 
 > Status: 0.1.0-alpha — under active development; not yet on NuGet.
 
@@ -42,7 +42,7 @@ var app = builder.Build();
 app.UseAntiforgery();                   // required for the dashboard
 app.MapGroup("/api").MapUKBatchApi();
 app.MapUKBatchDashboard();
-app.MapStaticAssets();
+app.MapStaticAssets();                  // .NET 9+; on .NET 8 call app.UseStaticFiles() instead
 app.Run();
 ```
 
@@ -82,6 +82,8 @@ builder.Services.AddUKBatchRabbitMqTransport();      // a cross-service transpor
 ## Packages
 
 ### Available now
+
+Every package targets `net8.0` and `net10.0` in a single NuGet package — your app's target framework picks the right build automatically. One .NET 8 caveat: the built-in OpenAPI document (`/openapi/v1.json`) requires .NET 9+, so `UKBatch.Api` on .NET 8 ships the full REST + SignalR surface without the generated document.
 
 | Package | Purpose |
 |---|---|

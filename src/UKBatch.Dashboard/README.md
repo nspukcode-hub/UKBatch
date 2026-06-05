@@ -1,6 +1,6 @@
 # UKBatch.Dashboard
 
-A Blazor Server dashboard for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 10. It surfaces monitoring, triggering, approvals, a live DAG view, and a visual drag-and-drop batch editor across one or many services. The dashboard is purely a consumer of `UKBatch.Api` over HTTP/SignalR — it never touches the runtime directly, so the same package serves both embedded and server + workers deployments.
+A Blazor Server dashboard for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 8 and .NET 10. It surfaces monitoring, triggering, approvals, a live DAG view, and a visual drag-and-drop batch editor across one or many services. The dashboard is purely a consumer of `UKBatch.Api` over HTTP/SignalR — it never touches the runtime directly, so the same package serves both embedded and server + workers deployments.
 
 > **Status:** part of the UKBatch 0.1.0-alpha package family.
 
@@ -41,7 +41,7 @@ var app = builder.Build();
 app.UseAntiforgery();                   // REQUIRED — see below
 app.MapGroup("/api").MapUKBatchApi();   // REST + SignalR hub
 app.MapUKBatchDashboard();              // UI at /dashboard
-app.MapStaticAssets();                  // serves Blazor framework assets
+app.MapStaticAssets();                  // .NET 9+; on .NET 8 call app.UseStaticFiles() instead
 
 app.Run();
 ```
@@ -53,7 +53,8 @@ Open `http://localhost:5050/dashboard`. A working sample is under [`samples/Samp
 - **`app.UseAntiforgery()` is required.** Razor Components emit anti-forgery metadata; without the middleware in the pipeline, `/dashboard` returns HTTP 500 ("endpoint contains anti-forgery metadata"). Place it after `UseAuthorization()`.
 - **A service `BaseUrl` must end with a trailing slash** (`http://localhost:5050/api/`). `HttpClient.BaseAddress` drops the last path segment otherwise (RFC 3986), so `jobs` resolves to `/jobs` and 404s. The validator does not enforce this in v0.1.
 - **ProjectReference (not NuGet) needs an MSBuild flag.** NuGet build props are not propagated through `ProjectReference`, so add `<RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>` to your host csproj manually. Without it the .NET Web SDK omits `_framework/blazor.web.js` and the dashboard renders as static HTML — buttons silently do nothing. NuGet consumers get this automatically via `build/UKBatch.Dashboard.props`.
-- **`MapStaticAssets()` is required** (the .NET 9/10 static-asset manifest endpoint) to serve the Blazor framework files; `UseStaticFiles()` alone does not.
+- **`MapStaticAssets()` is required on .NET 9/10** (the static-asset manifest endpoint) to serve the Blazor framework files; `UseStaticFiles()` alone does not.
+- **.NET 8 hosts use `UseStaticFiles()` instead** (`MapStaticAssets` does not exist there; `_framework/blazor.web.js` is served by `MapRazorComponents` itself on .NET 8). One standard .NET 8 behavior to know: the dashboard's own CSS/JS (`_content/UKBatch.Dashboard/...`) flows through the static-web-assets manifest, which loads automatically in the **Development** environment and is physically copied to `wwwroot/` by **`dotnet publish`** — both verified working with the .NET 8 SDK. The one gap is running a Release build straight from `dotnet run` without publishing; call `builder.WebHost.UseStaticWebAssets()` explicitly if you need that.
 
 ## Multi-service configuration
 

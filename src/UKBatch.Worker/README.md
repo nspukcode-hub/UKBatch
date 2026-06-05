@@ -1,6 +1,6 @@
 # UKBatch.Worker
 
-Worker-mode helper for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 10. One call, `b.UseWorkerMode(...)`, turns a microservice into a **worker** in a server + workers deployment: it advertises itself to the UKBatch server over an HTTP heartbeat and runs the jobs the orchestrator routes to it over a cross-service transport.
+Worker-mode helper for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 8 and .NET 10. One call, `b.UseWorkerMode(...)`, turns a microservice into a **worker** in a server + workers deployment: it advertises itself to the UKBatch server over an HTTP heartbeat and runs the jobs the orchestrator routes to it over a cross-service transport.
 
 > **Status:** part of the UKBatch 0.1.0-alpha package family.
 

@@ -1,6 +1,6 @@
 # UKBatch.Api
 
-REST endpoints, an OpenAPI document, and a SignalR push hub for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 10. It mounts onto any `RouteGroupBuilder` in an ASP.NET Core app and is auth-agnostic: anonymous by default, opt-in via `RequireAuthorization`. The hub broadcasts execution, progress, approval, and batch-completion events for dashboard clients.
+REST endpoints, an OpenAPI document, and a SignalR push hub for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 8 and .NET 10. It mounts onto any `RouteGroupBuilder` in an ASP.NET Core app and is auth-agnostic: anonymous by default, opt-in via `RequireAuthorization`. The hub broadcasts execution, progress, approval, and batch-completion events for dashboard clients.
 
 > **Status:** part of the UKBatch 0.1.0-alpha package family.
 
@@ -26,7 +26,7 @@ builder.Services.AddUKBatchApi();
 var app = builder.Build();
 
 app.MapGroup("/api").MapUKBatchApi();   // REST + SignalR hub
-app.MapOpenApi();                       // /openapi/v1.json
+app.MapOpenApi();                       // /openapi/v1.json — .NET 9+ only; omit on .NET 8
 
 app.Run();
 ```
@@ -49,6 +49,8 @@ The main route groups (mounted under whatever prefix you map):
 | Workers | `GET /workers` (server + workers deployment registry) |
 
 The complete surface — every route, request/response schema, and the ProblemDetails error map — is in the generated OpenAPI document at `/openapi/v1.json` (wired automatically by `AddUKBatchApi()`; default transformers annotate operations with 400/403/404/409/500 responses and render enums as strings).
+
+> **.NET 8 note:** built-in OpenAPI document generation requires .NET 9+. On the `net8.0` target every endpoint and the SignalR hub behave identically (including enum-as-string JSON), but `/openapi/v1.json` is not produced — layer [Swashbuckle](https://github.com/domaindrivendev/Swashbuckle.AspNetCore) over the mapped endpoints if you need a document on .NET 8.
 
 ## SignalR hub
 

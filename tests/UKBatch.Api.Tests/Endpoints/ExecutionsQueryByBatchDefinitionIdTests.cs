@@ -95,6 +95,9 @@ public sealed class ExecutionsQueryByBatchDefinitionIdTests : IClassFixture<Samp
         body.Should().Contain("empty");
     }
 
+#if NET10_0_OR_GREATER
+    // The OpenAPI document endpoint requires net9+; on net8.0 the package ships REST + SignalR
+    // without document generation, so this schema contract is asserted on net10.0 only.
     [Fact]
     public async Task Query_OpenApi_BatchDefinitionIdInRequestSchema()
     {
@@ -111,4 +114,5 @@ public sealed class ExecutionsQueryByBatchDefinitionIdTests : IClassFixture<Samp
         props.Should().Contain("batchDefinitionId",
             "batchDefinitionId must surface in JobQueryRequest OpenAPI schema.");
     }
+#endif
 }
