@@ -18,7 +18,7 @@ UKBatch.Core               (runtime, scheduler, in-memory stores, in-process tra
 UKBatch.AspNetCore         (IHostedService, DI integration)
 UKBatch.Transport.Http     (cross-service ITransport over HTTP)
 UKBatch.Transport.RabbitMQ (cross-service ITransport over AMQP)   ← this package
-UKBatch.Storage.*          (EF Core / Redis)
+UKBatch.Storage.EntityFrameworkCore (PostgreSQL / SQLite)
 ```
 
 ## Install

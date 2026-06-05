@@ -1,6 +1,6 @@
 # UKBatch.Storage.EntityFrameworkCore
 
-EF Core 10 persistent storage adapter for [UKBatch](https://github.com/) — a plug-in replacement for
+EF Core 10 persistent storage adapter for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a plug-in replacement for
 the in-memory stores so **batch definitions**, **execution history**, and **pending approval records**
 survive a host restart. Supports **PostgreSQL** (Npgsql) and **SQLite**.
 
@@ -75,4 +75,4 @@ JSON columns are stored **as names** (not ordinals), so a v0.2 reader round-trip
 
 ## License
 
-MIT.
+MIT. See [LICENSE](https://github.com/nspukcode-hub/UKBatch/blob/main/LICENSE) in the repo root. Full docs: [UKBatch on GitHub](https://github.com/nspukcode-hub/UKBatch).

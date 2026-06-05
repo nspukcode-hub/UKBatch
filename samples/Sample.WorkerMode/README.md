@@ -163,6 +163,21 @@ invocations (`received cross-service invocation … over RabbitMQ`).
 > config is grantable — every request is anonymous, and `["ops"]` → 403, `["*"]` → 403, `[]` → 500
 > (fail-safe). That is why the demo opts DevAuth in.
 
+## Intra-job parallelism
+
+The invoicing worker also ships `ReconcileInvoicesJob` — an `IPartitionedJob<InvoiceRow>` that demonstrates
+the "SELECT first, then chew through the rows on N concurrent workers" shape. `SourceAsync` streams 12
+simulated invoice rows; `ProcessAsync` runs them on **3 concurrent workers** (registered with
+`.WithParallelism(3)` + `ItemErrorPolicy.ContinueOnError`, so one bad row counts as a failure instead of
+killing the run); and `FinalizeAsync` commits the accumulated results **once** at the end (the unit-of-work
+hook). The overlapping `START`/`DONE` log lines in the worker container are the visible proof of the
+parallelism — waves of 3, not one at a time.
+
+The asserting harness (below) drives it through a `partitioned-demo` batch (step `ReconcileInvoices` on the
+`invoicing` worker). It also exercises the **per-run worker-count override**: triggering with an
+`{ "ukbatch.workers": 6 }` parameter raises the worker count for that single run (capped at 128) without
+re-registering the job — the worker logs the override and the effective count.
+
 ## 4. Durability demo (the broker's headline feature)
 
 Unlike HTTP (where a dead receiver = immediate failure), RabbitMQ **persists** the step's message in a
@@ -196,6 +211,26 @@ completes and the batch finishes. The Workers panel shows `shipping` going Offli
 
 > If you exceed the 30s timeout, step 2 fails with a timeout and the batch run is marked failed; the
 > message is still consumed when the worker restarts. Restart within 30s to see the happy path.
+
+## Automated end-to-end assertions
+
+`seed-batch.sh` is "create + trigger + read with your eyes". Its asserting sibling, `e2e-assert.sh`, drives
+the same live Compose stack over the REST API, **polls each run to a terminal state, and fails hard (exit 1)
+on any mismatch** — the value being the real images + real broker + real network + real Postgres path that
+in-process unit tests cannot exercise. With the stack up, run:
+
+```bash
+docker compose up -d --build --wait
+bash samples/Sample.WorkerMode/e2e-assert.sh
+```
+
+It covers: stack health and the 3 workers reporting Online; a simple sequential cross-service run; the
+approval + parallel flow (asserting the gate really holds before granting, then all three cross-service
+executions complete); RabbitMQ durability (stop a worker, confirm its step waits in the durable queue,
+restart, confirm completion); a compensation path (a deliberately-failing job drives the `OnFailure` branch);
+partitioned fan-out including the `ukbatch.workers` per-run override; and Postgres state durability across a
+server restart (definitions and completed history survive — within the v0.1 boundary of durable record, not
+workflow resume).
 
 ## 5. Tear down
 

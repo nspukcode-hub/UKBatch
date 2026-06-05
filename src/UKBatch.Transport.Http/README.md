@@ -1,238 +1,92 @@
 # UKBatch.Transport.Http
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+A broker-free HTTP transport adapter for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 10. It implements `ITransport` over HMAC-signed REST so a batch can dispatch a step to a different microservice as easily as a local step, with no message broker to run.
 
-HTTP transport adapter for the [UKBatch](https://github.com/nspukcode-hub/UKBatch) batch / job orchestration ecosystem. Implements `ITransport` over HMAC-signed REST so a batch can dispatch a step to a different microservice as easily as a local step.
-
-> **v0.1.0-alpha** — broker-free cross-service transport. A RabbitMQ adapter (`UKBatch.Transport.RabbitMQ`) is also available; Kafka / Azure Service Bus adapters are planned.
-
-## What is UKBatch.Transport.Http?
-
-`UKBatch.Transport.Http` lets two (or more) UKBatch-hosting microservices talk to each other without a broker. The orchestrator side calls `_transport.PublishAsync(...)` / `RequestReplyAsync(...)`; the worker side mounts three internal endpoints under `/ukbatch/internal/jobs/*` that accept the same `JobMessage` envelope and return `JobResult`. Authentication is HMAC SHA256 over a strict canonical envelope (method + path + timestamp + nonce + body hash); replay is blocked by an LRU nonce cache + clock-skew window.
-
-Position in the package family:
-
-```
-UKBatch.Abstractions   (zero-dep interfaces)
-UKBatch.Core           (runtime, scheduler, in-memory stores, in-process transport)
-UKBatch.AspNetCore     (IHostedService, DI integration)
-UKBatch.Api            (REST + OpenAPI + SignalR)
-UKBatch.Dashboard      (Blazor Server UI)
-UKBatch.Transport.Http (cross-service ITransport)   ← this package
-UKBatch.Storage.*      (EF Core / Redis)
-```
+> **Status:** part of the UKBatch 0.1.0-alpha package family. Same `JobMessage` / `JobResult` envelope as `UKBatch.Transport.RabbitMQ` — a different wire.
 
 ## Install
 
 ```bash
-dotnet add package UKBatch.Abstractions
-dotnet add package UKBatch.Core
-dotnet add package UKBatch.AspNetCore
 dotnet add package UKBatch.Transport.Http
 ```
 
-## Quickstart
+## Quick start
 
-### Orchestrator (sender side)
+Both sides register the transport; the secret and service registry bind from the `UKBatch:Transport:Http` configuration section.
+
+**Orchestrator (sender):**
 
 ```csharp
 using UKBatch.AspNetCore;
 using UKBatch.Transport.Http;
-
-var builder = WebApplication.CreateBuilder(args);
 
 builder.AddUKBatchAspNetCore(b =>
 {
     b.Configure(o => o.ThisServiceName = "orchestrator");
-
-    b.AddBatch("invoice-pipeline", batch =>
-    {
-        batch.RunJob("InvoiceProcessing", step =>
-        {
-            step.OnService("billing-worker");
-            step.WithTimeout(60);
-        });
-    });
+    b.AddBatch("invoice-pipeline", batch => batch
+        .RunJob<PrepareOrderJob>()                                       // local
+        .ThenRunJob("InvoiceProcessing", step => step.OnService("billing-worker")));  // remote
 });
 
-// Replace the default InProcessTransport singleton with HttpTransport.
-builder.Services.AddUKBatchHttpTransport(opts =>
-{
-    opts.SharedSecret = builder.Configuration["UKBatch:Transport:Http:SharedSecret"]!;
-    opts.Services["billing-worker"] = new ServiceEndpoint
-    {
-        BaseUrl = new Uri("http://billing-worker:5150/")
-    };
-});
-
-var app = builder.Build();
-app.Run();
+builder.Services.AddUKBatchHttpTransport();   // binds UKBatch:Transport:Http
 ```
 
-### Worker (receiver side)
+**Worker (receiver):**
 
 ```csharp
-using UKBatch.AspNetCore;
-using UKBatch.Transport.Http;
-
-var builder = WebApplication.CreateBuilder(args);
-
 builder.AddUKBatchAspNetCore(b =>
 {
     b.Configure(o => o.ThisServiceName = "billing-worker");
     b.AddJob<InvoiceProcessingJob>().Named("InvoiceProcessing");
 });
 
-builder.Services.AddUKBatchHttpTransport(opts =>
-{
-    opts.SharedSecret = builder.Configuration["UKBatch:Transport:Http:SharedSecret"]!;
-    // No Services{} on the worker — receiver-only nodes have no outbound targets.
-});
+builder.Services.AddUKBatchHttpTransport();
 
 var app = builder.Build();
-app.MapUKBatchHttpTransport();   // exposes /ukbatch/internal/jobs/publish + /poll + /invoke
-
+app.MapUKBatchHttpTransport();   // exposes /ukbatch/internal/jobs/{publish,poll,invoke}
 app.Run();
 ```
 
-The worker's full sample lives under `samples/Sample.CrossServiceHttp/`.
+The sender does **not** reference the worker's job assembly — only the job NAME is shared. The full sample is under [`samples/Sample.CrossServiceHttp`](https://github.com/nspukcode-hub/UKBatch/tree/main/samples/Sample.CrossServiceHttp).
 
-## Wire surface
+## Configuration
 
-All three endpoints are fixed-path under `/ukbatch/internal/jobs/`:
+```jsonc
+{
+  "UKBatch": {
+    "Transport": {
+      "Http": {
+        "SharedSecret": "<32+ bytes — env var / Key Vault in production>",
+        "Services": {
+          "billing-worker": { "BaseUrl": "http://billing-worker:5150" }
+        }
+      }
+    }
+  }
+}
+```
 
-| Method | Route | Purpose |
-|---|---|---|
-| `POST` | `/ukbatch/internal/jobs/publish` | Fire-and-forget message publish |
-| `GET`  | `/ukbatch/internal/jobs/poll?topic={t}&waitMs={ms}` | Long-poll subscribe |
-| `POST` | `/ukbatch/internal/jobs/invoke` | Synchronous request/reply (used by cross-service batch steps) |
-
-The path prefix is **not** caller-configurable — every UKBatch worker exposes the same mount point so service-to-service discovery is unambiguous.
+`SharedSecret` is the HMAC key and is required whenever `Services` is non-empty (the validator enforces this). Receiver-only nodes have no outbound targets and leave `Services` empty.
 
 ## HMAC SHA256 auth
 
-Every request carries three headers:
+Every request carries `X-UKBatch-Signature`, `X-UKBatch-Timestamp`, and `X-UKBatch-Nonce`. The signature is HMAC-SHA256 over a strict canonical envelope (method, canonical path, timestamp, nonce, body hash) that sender and receiver compute identically. Replay is blocked by an LRU nonce cache plus a clock-skew window (`MaxClockSkew`, default 5 min). Signature mismatch / missing header / nonce replay all return `401 ukbatch:transport-auth-failed` (no information leak); clock-skew failures return `401 ukbatch:transport-clock-skew` so legitimate NTP drift is diagnosable.
 
-```
-X-UKBatch-Signature: <base64(HMACSHA256(secret, canonical))>
-X-UKBatch-Timestamp: <unix epoch ms>
-X-UKBatch-Nonce:     <base64url(16 random bytes)>
-```
+## Resilience and limits
 
-Canonical envelope (newline-delimited UTF-8, sender and receiver MUST compute identically):
+Each per-service `HttpClient` carries one Polly v8 pipeline (via `Microsoft.Extensions.Http.Resilience`): an outer wall-clock timeout, retry (default `[2s, 5s, 15s]` + jitter), a circuit breaker (5 failures per 30s → open 30s → half-open probe), and a per-attempt timeout. 4xx does **not** retry (a caller error wastes the budget); only `HttpRequestException`, 5xx, 408, and 503 do. Request bodies are capped at `MaxBodyBytes` (1 MB default) to bound HMAC body-hash CPU cost — keep your worker's Kestrel `MaxRequestBodySize` at or above it.
 
-```
-{HTTP-METHOD}\n
-{canonical-path}\n
-{timestamp-ms}\n
-{nonce}\n
-{base64(sha256(body))}
-```
+## Critical notes
 
-Canonical path rules (strict normalization):
+- **Service identity is required for outbound steps.** Set `UKBatchOptions.ThisServiceName` (or env var `UKBATCH_SERVICE_NAME`); a cross-service step without it fails fast at dispatch with an actionable error.
+- **The receiver mount path is fixed** at `/ukbatch/internal/jobs/*` — not caller-configurable, so service-to-service discovery is unambiguous.
+- **`Cache-Control: no-store`** is set on every receiver response (even on a handler throw) so intermediaries never cache long-poll responses.
+- **`SharedSecret` in plaintext `appsettings.json` is for dev/samples only** — source it from an env var or a secret store in production.
 
-1. Trailing slash stripped (unless path is exactly `/`).
-2. Query parameters sorted by key (ordinal); values sorted within key.
-3. Percent-encoded per RFC 3986 via `Uri.EscapeDataString` (`%20` for space, NOT `+`).
-4. No trailing `?` when the query is empty.
+## When to use it
 
-**Spoof-resistance contract:** signature mismatch, missing header, AND nonce replay ALL return `401 ukbatch:transport-auth-failed` (OWASP fold — no information leak). Clock-skew failures return `401 ukbatch:transport-clock-skew` separately because legitimate NTP drift is a real ops concern.
+Choose this transport for cross-service dispatch when you want point-to-point request/reply without standing up a broker. If you need a stopped worker's message to wait durably until it restarts, use `UKBatch.Transport.RabbitMQ` instead — same envelope, broker-backed.
 
-## Resilience (Polly v8)
+## License
 
-Each per-service named `HttpClient` carries one resilience pipeline (configured via `Microsoft.Extensions.Http.Resilience`). Composition from outer to inner:
-
-```
-Caller invocation
-    │
-    ▼
-Outer wall-clock timeout    (= options.DefaultRequestTimeout, across retries)
-    │
-    ▼
-Retry strategy              (default [2s, 5s, 15s] + jitter)
-    │
-    ▼
-Circuit breaker             (5 fails per 30s window → open for 30s → half-open probe)
-    │
-    ▼
-Per-attempt timeout         (= options.DefaultRequestTimeout)
-    │
-    ▼
-HttpClient.Timeout          (INFINITE — Polly authoritative)
-```
-
-**4xx does NOT retry.** Only `HttpRequestException` + 5xx + 408 + 503. 4xx is a caller error (bad signature, unknown job) and retrying wastes the budget.
-
-## Cross-service step usage
-
-In a `BatchBuilder` chain, prefix any step with `.OnService("worker-name")`:
-
-```csharp
-b.AddBatch("invoice-pipeline", batch =>
-{
-    batch.RunJob<PrepareOrderJob>()                                // local
-         .ThenRunJob("InvoiceProcessing", step =>                  // cross-service
-         {
-             step.OnService("billing-worker");
-             step.WithTimeout(120);
-         })
-         .ThenRunJob<NotifyCustomerJob>();                         // local again
-});
-```
-
-The string-name overload (`.ThenRunJob("InvoiceProcessing", ...)`) exists so the orchestrator does NOT need to reference the worker's job assembly — only the job NAME is shared.
-
-**Service identity (`UKBatchOptions.ThisServiceName`):** required if any batch contains an outbound cross-service step. Resolution chain:
-
-1. `UKBatchOptions.ThisServiceName` (from `appsettings.json` `UKBatch:ThisServiceName` or `builder.Configure(o => o.ThisServiceName = "...")`).
-2. Env var `UKBATCH_SERVICE_NAME`.
-3. `Assembly.GetEntryAssembly()?.GetName().Name` (last-resort fallback).
-
-Missing identity on a cross-service step fails fast at dispatch time with an actionable `InvalidOperationException` naming both config paths.
-
-## Configuration options
-
-`HttpTransportOptions` is bound from the `UKBatch:Transport:Http` section. Defaults:
-
-| Option | Default | Purpose |
-|---|---|---|
-| `Services` | empty dict | Per-service endpoint registry (receiver-only nodes may leave empty) |
-| `SharedSecret` | empty | HMAC secret — REQUIRED if `Services` non-empty (validator enforces) |
-| `DefaultRequestTimeout` | `30s` | Per-request wall-clock timeout |
-| `LongPollMaxWait` | `30s` | Server-side cap on `/poll` hold duration |
-| `RetryDelays` | `null` (= [2s, 5s, 15s] + jitter) | Polly retry schedule |
-| `CircuitBreakerThreshold` | `5` | Failures within window before breaking |
-| `CircuitBreakerWindow` | `30s` | Sampling + open duration |
-| `MaxClockSkew` | `300s` | HMAC timestamp tolerance |
-| `NonceCacheCapacity` | `1024` | LRU size for anti-replay |
-| `MessageIdCacheCapacity` | `4096` | LRU size for receiver-side message dedupe |
-| `MaxBodyBytes` | `1 MB` | Request body cap |
-
-## ProblemDetails error map
-
-| Type URI | Status | When |
-|---|---|---|
-| `ukbatch:transport-auth-failed` | 401 | Signature mismatch / missing header / nonce replay (OWASP fold) |
-| `ukbatch:transport-clock-skew` | 401 | Timestamp outside `MaxClockSkew` window |
-| `ukbatch:transport-unknown-service` | 400 | Sender supplied a service name not in `Services` |
-
-## Operator caveats
-
-- **`Cache-Control: no-store`** is set automatically on every receiver response — intermediaries (nginx, CDN, browser) MUST NOT cache long-poll responses. The middleware sets the header BEFORE the handler runs, so even handler-side throws still emit it.
-- **Kestrel body limits:** if you send `JobMessage` payloads near `MaxBodyBytes` (1 MB default), confirm your worker's `Kestrel:Limits:MaxRequestBodySize` is configured ≥ same value. Default Kestrel is 30 MB; UKBatch caps at 1 MB internally to bound HMAC body-hash CPU cost.
-- **`SharedSecret` provisioning:** plaintext `appsettings.json` is acceptable for dev / samples only. Production deployments MUST source from env var, Azure Key Vault, AWS Secrets Manager, etc. Validator does not inspect entropy; choose 32+ bytes.
-- **Clock sync:** `MaxClockSkew` defaults to 5 minutes (NTP-realistic). If you run worker / orchestrator on clock-drifting hosts, monitor `ukbatch:transport-clock-skew` rate — that's the diagnostic surface.
-
-## Limitations & roadmap
-
-- **v0.1-alpha:** static service registry only (no Consul / Eureka / DNS-SRV). Discovery hook `IServiceDiscovery` is declared but not registered.
-- **Planned:** key rotation (rolling secret), header-based service discovery, OpenTelemetry instrumentation, persistent MessageId dedupe (currently in-memory only).
-- **Alternative transport:** `UKBatch.Transport.RabbitMQ` provides an AMQP `ITransport` — same `JobMessage` envelope, different wire.
-
-## License & support
-
-MIT licensed. Source code, samples, issue tracker:
-
-- GitHub: <https://github.com/nspukcode-hub/UKBatch>
-
-Contributions welcome.
+MIT. See [LICENSE](https://github.com/nspukcode-hub/UKBatch/blob/main/LICENSE) in the repo root. Full docs: [UKBatch on GitHub](https://github.com/nspukcode-hub/UKBatch).

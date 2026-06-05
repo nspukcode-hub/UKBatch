@@ -24,6 +24,7 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>batch;job;orchestration;workflow;background-jobs;blazor;dashboard;microservices;hangfire-alternative</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>See https://github.com/nspukcode-hub/UKBatch/blob/main/CHANGELOG.md</PackageReleaseNotes>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <IncludeSymbols>true</IncludeSymbols>
