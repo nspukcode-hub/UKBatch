@@ -73,45 +73,53 @@ public class InMemoryJobStoreWatchAsyncTests
     public async Task WatchAsync_DropOldest_SlowConsumerSeesMostRecentEvents()
     {
         var store = CreateStore();
-        const int N = 1000;
+        const int Published = 1000;
         var options = new WatchOptions
         {
             OverflowPolicy = WatchOverflowPolicy.DropOldest,
             BufferCapacity = 32,
         };
         var received = new List<JobExecution>();
-        using var subCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var subCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var consumerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var consumer = Task.Run(async () =>
+        // Deterministic slow-consumer harness — same shape as the DropNewest test below. The previous
+        // version raced a Task.Run consumer against the awaited publish loop: when the subscription
+        // registered only after the last publish, the live feed delivered nothing, the
+        // consumer-started signal never fired, and the watchdog timed out. MoveNextAsync runs the
+        // async-iterator body synchronously up to its first await, so the subscription is REGISTERED
+        // when the call returns; keeping the consumer idle (no pending read) while the creates flood
+        // the buffer makes the DropOldest head-eviction structural instead of timing-dependent.
+        var watch = store.WatchAsync(options, subCts.Token).GetAsyncEnumerator(subCts.Token);
+        try
         {
-            try
+            var firstMove = watch.MoveNextAsync();  // registers the subscription, then suspends on the empty buffer
+            _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);  // seed completes the pending read
+            (await firstMove.AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+            received.Add(watch.Current);
+
+            // Consumer idle: the bounded buffer holds at most BufferCapacity events, and DropOldest
+            // evicts from the head — what survives is the most recent window of the flood.
+            for (var i = 0; i < Published; i++)
             {
-                await foreach (var ex in store.WatchAsync(options, subCts.Token).ConfigureAwait(false))
-                {
-                    consumerStarted.TrySetResult();
-                    received.Add(ex);
-                    await Task.Delay(5, subCts.Token).ConfigureAwait(false); // slow consumer
-                }
+                _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { }
-        });
 
-        // Publish before consumer is reading aggressively — let the buffer fill.
-        for (var i = 0; i < N; i++)
-        {
-            _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);
+            // Drain the surviving window — exactly BufferCapacity events are buffered, never more.
+            for (var i = 0; i < options.BufferCapacity; i++)
+            {
+                (await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+                received.Add(watch.Current);
+            }
+
+            // With a 32-deep buffer and a flood of 1000, most events were evicted before the drain.
+            received.Count.Should().BeLessThan(Published);
+            received.Count.Should().BeGreaterThan(0);
         }
-
-        await consumerStarted.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
-        // Let consumer drain remaining buffer.
-        await Task.Delay(500).ConfigureAwait(false);
-        subCts.Cancel();
-        try { await consumer.ConfigureAwait(false); } catch (OperationCanceledException) { }
-
-        // With a 32-deep buffer + slow consumer, we expect FEWER than N events delivered.
-        received.Count.Should().BeLessThan(N);
-        received.Count.Should().BeGreaterThan(0);
+        finally
+        {
+            subCts.Cancel();
+            await watch.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Fact]
