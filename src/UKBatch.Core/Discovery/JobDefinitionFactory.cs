@@ -69,10 +69,17 @@ internal static class JobDefinitionFactory
     public static ResiliencePipeline BuildItemRetryPipeline(JobDefinition def)
     {
         ArgumentNullException.ThrowIfNull(def);
+        // The consumer loop already ran ONE direct body() attempt before reaching this pipeline
+        // (that is the "1" in "1 + MaxRetries"). The pipeline therefore supplies MaxRetries ADDITIONAL
+        // executions. A Polly retry pipeline runs (1 + MaxRetryAttempts) total executions, so
+        // MaxRetryAttempts = MaxRetries - 1 makes the pipeline contribute exactly MaxRetries.
+        // MaxRetries == 0 is handled by the caller (the pipeline is never invoked), so MaxRetries >= 1
+        // here and MaxRetries - 1 >= 0 is always valid.
+        var pipelineAttempts = Math.Max(0, def.MaxRetries - 1);
         return new ResiliencePipelineBuilder()
             .AddRetry(new RetryStrategyOptions
             {
-                MaxRetryAttempts = Math.Max(0, def.MaxRetries),
+                MaxRetryAttempts = pipelineAttempts,
                 BackoffType = DelayBackoffType.Exponential,
                 Delay = TimeSpan.FromMilliseconds(100),
                 UseJitter = true,

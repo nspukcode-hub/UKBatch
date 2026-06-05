@@ -124,13 +124,16 @@ public sealed class ServiceDiscoveryTests
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["UKBatch:Transport:Http:SharedSecret"] = "BOUND-SECRET",
+                ["UKBatch:Transport:Http:SharedSecret"] = "BOUND-SECRET-FROM-CONFIGURATION-32CH+",
                 ["UKBatch:Transport:Http:DefaultRequestTimeout"] = "00:01:00",
                 ["UKBatch:Transport:Http:LongPollMaxWait"] = "00:00:45",
                 ["UKBatch:Transport:Http:MaxClockSkew"] = "00:10:00",
                 ["UKBatch:Transport:Http:NonceCacheCapacity"] = "2048",
                 ["UKBatch:Transport:Http:Services:billing:BaseUrl"] = "http://billing.example",
                 ["UKBatch:Transport:Http:Services:billing:Tag"] = "prod",
+                // The sentinel host above is non-loopback http; opt in so resolving IOptions.Value
+                // (which runs the validator) accepts it in this pure binding test.
+                ["UKBatch:Transport:Http:AllowInsecureHttp"] = "true",
             })
             .Build();
         var services = new ServiceCollection();
@@ -139,7 +142,7 @@ public sealed class ServiceDiscoveryTests
         services.AddUKBatchHttpTransport();
         using var sp = services.BuildServiceProvider();
         var opts = sp.GetRequiredService<IOptions<HttpTransportOptions>>().Value;
-        opts.SharedSecret.Should().Be("BOUND-SECRET");
+        opts.SharedSecret.Should().Be("BOUND-SECRET-FROM-CONFIGURATION-32CH+");
         opts.DefaultRequestTimeout.Should().Be(TimeSpan.FromMinutes(1));
         opts.LongPollMaxWait.Should().Be(TimeSpan.FromSeconds(45));
         opts.MaxClockSkew.Should().Be(TimeSpan.FromMinutes(10));
@@ -147,6 +150,7 @@ public sealed class ServiceDiscoveryTests
         opts.Services.Should().ContainKey("billing");
         opts.Services["billing"].BaseUrl.AbsoluteUri.Should().Be("http://billing.example/");
         opts.Services["billing"].Tag.Should().Be("prod");
+        opts.AllowInsecureHttp.Should().BeTrue();
     }
 
     [Fact]
@@ -169,7 +173,7 @@ public sealed class ServiceDiscoveryTests
     {
         using var host = BuildHostWithConfig(new Dictionary<string, string?>
         {
-            ["UKBatch:Transport:Http:SharedSecret"] = "GOOD-SECRET-32B+",
+            ["UKBatch:Transport:Http:SharedSecret"] = "GOOD-SECRET-MEETS-THE-32-CHAR-FLOOR+",
             ["UKBatch:Transport:Http:DefaultRequestTimeout"] = "00:00:30",
             ["UKBatch:Transport:Http:LongPollMaxWait"] = "00:00:25",
         });
@@ -191,7 +195,7 @@ public sealed class ServiceDiscoveryTests
 
     private static HttpTransportOptions ValidOpts() => new()
     {
-        SharedSecret = "GOOD-SECRET-32B+",
+        SharedSecret = "GOOD-SECRET-MEETS-THE-32-CHAR-FLOOR+",
         DefaultRequestTimeout = TimeSpan.FromSeconds(60),
         LongPollMaxWait = TimeSpan.FromSeconds(30),
         MaxClockSkew = TimeSpan.FromMinutes(5),

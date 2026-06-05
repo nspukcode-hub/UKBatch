@@ -25,29 +25,40 @@ builder.AddUKBatchAspNetCore(b => b.Configure(o =>
 // ── 2. REST API + SignalR hub + IWorkerRegistry (AddUKBatchApi registers the registry singleton) ──
 builder.Services.AddUKBatchApi();
 
-// Auth core services. By default NO scheme is registered → the auth/authorization middleware below is a
-// genuine no-op for every request (unchanged production posture). These are REQUIRED in DI before
-// app.UseAuthentication()/app.UseAuthorization(): those middlewares activate IAuthenticationSchemeProvider
-// / IAuthorizationPolicyProvider at pipeline-build time and throw if absent — they are NOT no-ops when
-// the services are missing. Registering them here keeps the middleware in the pipeline (present so a
-// deployment can add a scheme) while no-op'ing until a scheme is configured (mirrors how
-// Sample.Dashboard / Sample.RestApi register AddAuthentication + AddAuthorization before Use*).
-//
-// OPT-IN DevAuth: the demo's approval gate is allowedRoles:["ops"]; with
-// no scheme EVERY request is anonymous and NO approval config is anonymous-satisfiable ([]→500, ["ops"]→403,
-// ["*"]→403 — the wildcard sentinel still rejects anonymous callers). When UKBATCH_DEV_AUTH=true (set by
-// docker-compose for the demo) we register the sample-local header-based DevAuth scheme so an operator can
-// approve via curl with `X-Dev-User` + `X-Dev-Roles: ops`. Default false → no scheme → production untouched.
-// Browser dashboard approve button has no header-injection/login flow → curl is the approval path (OIDC = v0.2).
-var enableDevAuth = bool.TryParse(cfg["UKBATCH_DEV_AUTH"], out var da) && da;
+// ── Auth posture (FAIL-CLOSED) ──────────────────────────────────────────────────────────────────
+// The server exposes trigger / cancel / delete / worker-beat / SignalR. This release ships NO production
+// authentication scheme, so the operator MUST consciously choose a posture. Flat env var wins (canonical
+// operator knob), then the structured key.
+var allowAnonymous = (bool.TryParse(cfg["UKBATCH_ALLOW_ANONYMOUS"], out var aa) && aa)
+    || (bool.TryParse(cfg["UKBatch:AllowAnonymous"], out var aaS) && aaS);
+var enableDevAuth = (bool.TryParse(cfg["UKBATCH_DEV_AUTH"], out var da) && da)
+    || (bool.TryParse(cfg["UKBatch:DevAuth"], out var daS) && daS);
+
+if (!allowAnonymous && !enableDevAuth)
+{
+    throw new InvalidOperationException(
+        "UKBatch.Server refuses to start without an explicit auth posture. This server has no " +
+        "production authentication scheme in this release and would otherwise expose trigger, cancel, " +
+        "delete, worker-registration and SignalR endpoints anonymously. Choose ONE:\n" +
+        "  • Set UKBATCH_ALLOW_ANONYMOUS=true to run anonymously ONLY behind a trusted network or an " +
+        "external auth gateway (reverse proxy / API gateway that authenticates callers).\n" +
+        "  • Set UKBATCH_DEV_AUTH=true for demos — registers a header-trusting dev scheme (NOT secure; " +
+        "callers self-assert identity via X-Dev-User / X-Dev-Roles).\n" +
+        "  • Wait for the OIDC support planned for a future release.");
+}
+
 if (enableDevAuth)
 {
+    // Header-trusting dev scheme: an operator can approve via curl with `X-Dev-User` + `X-Dev-Roles: ops`.
+    // Callers self-assert identity with no verification — demos only.
     builder.Services.AddAuthentication("DevAuth")
         .AddScheme<DevAuthSchemeOptions, DevAuthHandler>("DevAuth", _ => { });
 }
 else
 {
-    builder.Services.AddAuthentication();   // no scheme → no-op (unchanged production posture)
+    // allowAnonymous == true here. No scheme → the auth/authorization middleware is a genuine no-op;
+    // the operator has explicitly accepted anonymous access behind their own gateway.
+    builder.Services.AddAuthentication();
 }
 builder.Services.AddAuthorization();
 
@@ -148,8 +159,25 @@ if (enableDashboard)
 
 var app = builder.Build();
 
+// Loud startup warnings for both insecure postures (the throw above guarantees one of them is set).
+if (allowAnonymous && !enableDevAuth)
+{
+    app.Logger.LogWarning(
+        "UKBatch.Server is running with UKBATCH_ALLOW_ANONYMOUS=true: ALL endpoints (trigger, cancel, " +
+        "delete, worker registration, SignalR) are reachable WITHOUT authentication. This is safe ONLY " +
+        "behind a trusted network or an external auth gateway. Do NOT expose this server directly to " +
+        "untrusted networks.");
+}
+if (enableDevAuth)
+{
+    app.Logger.LogWarning(
+        "UKBatch.Server is running with UKBATCH_DEV_AUTH=true: the header-trusting dev auth scheme is " +
+        "active. Callers self-assert identity via X-Dev-User / X-Dev-Roles with NO verification. This is " +
+        "for demos only — never use it in production.");
+}
+
 // ── 6. Middleware + endpoints ────────────────────────────────────────────────────────────────────
-app.UseAuthentication();   // no scheme registered by default → no-op; present so a deployment can add one
+app.UseAuthentication();   // no-op under anonymous posture; activates the DevAuth scheme when enabled
 app.UseAuthorization();
 if (enableDashboard)
 {

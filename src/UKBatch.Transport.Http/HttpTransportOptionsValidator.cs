@@ -24,6 +24,12 @@ internal sealed class HttpTransportOptionsValidator : IValidateOptions<HttpTrans
         {
             failures.Add("HttpTransportOptions.SharedSecret is required (got empty).");
         }
+        else if (options.SharedSecret.Length < 32)
+        {
+            failures.Add(
+                $"HttpTransportOptions.SharedSecret must be at least 32 characters for HMAC-SHA256 " +
+                $"(got {options.SharedSecret.Length}). Use a high-entropy secret from a secure source.");
+        }
 
         if (options.DefaultRequestTimeout <= TimeSpan.Zero
             || options.DefaultRequestTimeout > TimeSpan.FromMinutes(10))
@@ -117,9 +123,27 @@ internal sealed class HttpTransportOptionsValidator : IValidateOptions<HttpTrans
                     failures.Add(
                         $"Services['{key}'].BaseUrl must be an absolute http/https URI (got {endpoint.BaseUrl}).");
                 }
+                else if (endpoint.BaseUrl.Scheme == Uri.UriSchemeHttp
+                    && !options.AllowInsecureHttp
+                    && !IsLoopback(endpoint.BaseUrl))
+                {
+                    failures.Add(
+                        $"Services['{key}'].BaseUrl uses cleartext http on a non-loopback host ({endpoint.BaseUrl.Host}). " +
+                        $"HMAC does not encrypt payloads — use https, target a loopback host, or set " +
+                        $"HttpTransportOptions.AllowInsecureHttp=true to opt in explicitly.");
+                }
             }
         }
 
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
+    }
+
+    private static bool IsLoopback(Uri uri)
+    {
+        if (uri.IsLoopback)   // covers localhost, 127.0.0.1, ::1 per Uri's own rule
+        {
+            return true;
+        }
+        return System.Net.IPAddress.TryParse(uri.Host, out var ip) && System.Net.IPAddress.IsLoopback(ip);
     }
 }

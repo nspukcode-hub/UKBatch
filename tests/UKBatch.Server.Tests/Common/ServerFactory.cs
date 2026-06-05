@@ -25,6 +25,10 @@ public sealed class ServerFactory : WebApplicationFactory<global::UKBatch.Server
         ArgumentNullException.ThrowIfNull(builder);
         builder.UseEnvironment("Development");
 
+        // The server is fail-closed on auth posture; tests boot it anonymously (they assert REST/dashboard
+        // surface, not auth). A test that specifically exercises the auth gate overrides this.
+        builder.UseSetting("UKBATCH_ALLOW_ANONYMOUS", "true");
+
         if (ConfigOverrides is { Count: > 0 })
         {
             // UseSetting writes host configuration, which WebApplication.CreateBuilder reads at the

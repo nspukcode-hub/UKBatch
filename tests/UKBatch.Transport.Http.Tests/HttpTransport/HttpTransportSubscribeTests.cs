@@ -152,7 +152,7 @@ public sealed class HttpTransportSubscribeTests : IClassFixture<WorkerFactory>
     {
         const string Topic = "Subscribe.Auth.Failed";
         var (transport, sp) = new HttpTransportTestBuilder(_factory.Server)
-            .WithSecret("WRONG-SECRET-32B+")
+            .WithSecret("WRONG-SECRET-INTENTIONAL-MISMATCH-32CH+")
             .WithService(Topic, "http://billing-worker.test")
             .Build();
         await using (sp.ConfigureAwait(false))

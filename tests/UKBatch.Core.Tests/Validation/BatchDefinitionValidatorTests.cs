@@ -271,4 +271,74 @@ public class BatchDefinitionValidatorTests
         var result = BatchDefinitionValidator.Validate(def);
         result.IsValid.Should().BeFalse();
     }
+
+    [Fact]
+    public void Validate_OnFailureStepBlankJobName_Fails()
+    {
+        // Compensation steps run via the same dispatch as the main sequence, so a blank JobName must
+        // be rejected at validation rather than failing silently at runtime.
+        var def = MinimalValid() with
+        {
+            FailurePolicy = BatchFailurePolicy.Compensate,
+            OnFailureSteps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "comp1",
+                    Order = 0,
+                    StepType = BatchStepType.Job,
+                    Job = new JobStepData { JobName = "   " },
+                },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "OnFailureSteps[0].Job.JobName");
+    }
+
+    [Fact]
+    public void Validate_OnFailureStepMissingJobPayload_Fails()
+    {
+        var def = MinimalValid() with
+        {
+            FailurePolicy = BatchFailurePolicy.Compensate,
+            OnFailureSteps = new[]
+            {
+                new BatchStep { StepId = "comp1", Order = 0, StepType = BatchStepType.Job, Job = null },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "OnFailureSteps[0].Job");
+    }
+
+    [Fact]
+    public void Validate_ValidOnFailureSteps_Succeeds()
+    {
+        var def = MinimalValid() with
+        {
+            FailurePolicy = BatchFailurePolicy.Compensate,
+            OnFailureSteps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "comp1",
+                    Order = 0,
+                    StepType = BatchStepType.Job,
+                    Job = new JobStepData { JobName = "rollback" },
+                },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_EmptyOnFailureSteps_Succeeds()
+    {
+        // The default empty compensation list stays valid — the new loop must not regress this.
+        var def = MinimalValid() with { OnFailureSteps = Array.Empty<BatchStep>() };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeTrue();
+    }
 }

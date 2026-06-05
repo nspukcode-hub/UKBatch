@@ -106,7 +106,7 @@ public sealed class HttpTransportRequestReplyTests : IClassFixture<WorkerFactory
     public async Task RequestReplyAsync_SignatureMismatch_Throws()
     {
         var (transport, sp) = new HttpTransportTestBuilder(_factory.Server)
-            .WithSecret("WRONG-SECRET-NO-MATCH-32B+")
+            .WithSecret("WRONG-SECRET-NO-MATCH-INTENTIONAL-32CH+")
             .Build();
         await using (sp.ConfigureAwait(false))
         {

@@ -98,36 +98,94 @@ internal sealed class BatchExecutor
             {
                 await RunStepAsync(def, batchId, step, initial, triggeredBy, cancellationToken).ConfigureAwait(false);
             }
-            catch (BatchStepFailureException stepFailure)
-            {
-                switch (def.FailurePolicy)
-                {
-                    case BatchFailurePolicy.StopOnFailure:
-                        throw;
-
-                    case BatchFailurePolicy.ContinueOnFailure:
-                        _logger.LogWarning(stepFailure, "Batch {Batch} step {Step} failed; continuing per ContinueOnFailure policy.", batchId, step.StepId);
-                        firstFailure ??= stepFailure;
-                        continue;
-
-                    case BatchFailurePolicy.Compensate:
-                        if (def.OnFailureSteps.Count == 0)
-                        {
-                            throw;
-                        }
-                        await RunCompensationAsync(def, batchId, initial, triggeredBy, cancellationToken).ConfigureAwait(false);
-                        throw;
-
-                    default:
-                        throw;
-                }
-            }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                // Batch cancellation (host shutdown / operator cancel) must propagate as-is and must NOT
+                // run OnFailureSteps — a cancelled batch is not a failed batch. Ordered ahead of the
+                // failure arms so cancellation always wins.
                 throw;
+            }
+            catch (BatchStepFailureException stepFailure)
+            {
+                var compensation = RouteStepFailureAsync(
+                    def, batchId, step, stepFailure, initial, triggeredBy, cancellationToken,
+                    ref firstFailure, out var continueLoop);
+                if (compensation is not null)
+                {
+                    await compensation.ConfigureAwait(false);
+                }
+                if (continueLoop)
+                {
+                    continue;
+                }
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // A step raised something other than a step-terminated-as-Failed signal — e.g. an
+                // unregistered job name surfacing from dispatch, or an unexpected fault in the job
+                // machinery. These are real step failures and must follow the same FailurePolicy routing
+                // (including compensation); otherwise the failure policy is silently skipped. Wrap so the
+                // policy switch has a single descriptive failure type while preserving the original cause.
+                var wrapped = new BatchStepFailureException($"Step {step.StepId} failed: {ex.Message}", ex);
+                var compensation = RouteStepFailureAsync(
+                    def, batchId, step, wrapped, initial, triggeredBy, cancellationToken,
+                    ref firstFailure, out var continueLoop);
+                if (compensation is not null)
+                {
+                    await compensation.ConfigureAwait(false);
+                }
+                if (continueLoop)
+                {
+                    continue;
+                }
+                throw wrapped;
             }
         }
         _ = firstFailure;
+    }
+
+    /// <summary>
+    /// Routes a step failure through <see cref="BatchDefinition.FailurePolicy"/>. Returns the
+    /// compensation <see cref="Task"/> the caller must await (only for <see cref="BatchFailurePolicy.Compensate"/>
+    /// with non-empty <see cref="BatchDefinition.OnFailureSteps"/>), or <c>null</c> otherwise.
+    /// <paramref name="continueLoop"/> is <c>true</c> only for <see cref="BatchFailurePolicy.ContinueOnFailure"/>;
+    /// every other case leaves it <c>false</c> so the caller rethrows. Failure state is threaded
+    /// explicitly (no instance fields) to keep the executor reentrant.
+    /// </summary>
+    private Task? RouteStepFailureAsync(
+        BatchDefinition def,
+        string batchId,
+        BatchStep step,
+        BatchStepFailureException failure,
+        JobParameters initial,
+        string? triggeredBy,
+        CancellationToken cancellationToken,
+        ref Exception? firstFailure,
+        out bool continueLoop)
+    {
+        continueLoop = false;
+        switch (def.FailurePolicy)
+        {
+            case BatchFailurePolicy.StopOnFailure:
+                return null;
+
+            case BatchFailurePolicy.ContinueOnFailure:
+                _logger.LogWarning(failure, "Batch {Batch} step {Step} failed; continuing per ContinueOnFailure policy.", batchId, step.StepId);
+                firstFailure ??= failure;
+                continueLoop = true;
+                return null;
+
+            case BatchFailurePolicy.Compensate:
+                if (def.OnFailureSteps.Count == 0)
+                {
+                    return null;
+                }
+                return RunCompensationAsync(def, batchId, initial, triggeredBy, cancellationToken);
+
+            default:
+                return null;
+        }
     }
 
     private async Task RunStepAsync(

@@ -47,7 +47,9 @@ public sealed class PollyRetryTests
         services.AddSingleton<TimeProvider>(TimeProvider.System);
         services.Configure<HttpTransportOptions>(o =>
         {
-            o.SharedSecret = "TEST-SECRET-32B+";
+            o.SharedSecret = "TEST-SECRET-FOR-VALIDATION-FLOOR-32CH+";
+            // The stub endpoints below use non-loopback sentinel hosts (rewritten via handler injection).
+            o.AllowInsecureHttp = true;
             o.DefaultRequestTimeout = TimeSpan.FromSeconds(30);
             o.LongPollMaxWait = TimeSpan.FromSeconds(5);
             o.CircuitBreakerThreshold = 100;   // high so retries don't trip the CB

@@ -87,7 +87,23 @@ internal static class AttributeJobDiscovery
                     defaultParameters: null,
                     tags: attr.Tags);
 
-                var pipeline = def.ItemErrorPolicy == ItemErrorPolicy.RetryThenContinue
+                // Fail-fast on an invalid cron in [Job(Schedule = "...")] — a programmer error, surfaced at
+                // AddUKBatch time exactly like the fluent JobBuilder path (rather than crashing host startup).
+                if (!string.IsNullOrEmpty(def.Schedule))
+                {
+                    try
+                    {
+                        _ = Cronos.CronExpression.Parse(def.Schedule, options.CronFormat);
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new InvalidOperationException(
+                            $"Invalid cron expression '{def.Schedule}' for job '{jobName}' against CronFormat={options.CronFormat}: {ex.Message}",
+                            ex);
+                    }
+                }
+
+                var pipeline = def.ItemErrorPolicy == ItemErrorPolicy.RetryThenContinue && def.MaxRetries >= 1
                     ? JobDefinitionFactory.BuildItemRetryPipeline(def)
                     : null;
                 registry.Register(def, type, pipeline);

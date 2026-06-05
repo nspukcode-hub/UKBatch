@@ -143,43 +143,49 @@ public sealed class WatchHubParityTests
     public async Task Hub_Backpressure_BehavesLikeDropNewest_ByteForByteInvariant()
     {
         // Byte-for-byte invariant vs the original behavior: Backpressure is implemented as DropNewest
-        // with a non-blocking publisher (verbatim-extracted semantics). The publish loop must NOT
-        // block (true awaiting backpressure would deadlock — caught by the 2s fail-safe).
+        // with a non-blocking publisher (verbatim-extracted semantics).
+        // Same deterministic harness as the DropNewest sibling above — the previous version parked
+        // the consumer behind Task.Run + Task.Delay(50) and flaked to ZERO events under full-suite
+        // CPU load (subscription not yet registered when the flood ran). MoveNextAsync registers the
+        // subscription synchronously up to its first await, so the seed read is structural.
         var hub = new JobExecutionWatchHub(NullLogger<JobExecutionWatchHub>.Instance);
         var options = new WatchOptions { OverflowPolicy = WatchOverflowPolicy.Backpressure, BufferCapacity = 16 };
         var received = new List<JobExecution>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var consumer = Task.Run(async () =>
+        var watch = hub.WatchAsync(options, cts.Token).GetAsyncEnumerator(cts.Token);
+        try
         {
-            try
+            var firstMove = watch.MoveNextAsync();  // registers the subscription, then suspends on the empty buffer
+            hub.Publish(Exec("seed"));              // completes the pending read deterministically
+            (await firstMove.AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+            received.Add(watch.Current);
+
+            // Publisher must NOT block (true awaiting backpressure would deadlock the flood — caught
+            // by the fail-safe timeout). Consumer is idle, so the bounded buffer fills and the tail
+            // is dropped exactly like DropNewest.
+            const int Published = 500;
+            var publish = Task.Run(() =>
             {
-                await foreach (var ex in hub.WatchAsync(options, cts.Token).ConfigureAwait(false))
-                {
-                    received.Add(ex);
-                    await Task.Delay(20, cts.Token).ConfigureAwait(false);
-                }
+                for (var i = 0; i < Published; i++) hub.Publish(Exec($"e{i}"));
+            });
+            await publish.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+
+            // Drain the survivors — exactly BufferCapacity events are buffered, never more.
+            for (var i = 0; i < options.BufferCapacity; i++)
+            {
+                (await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+                received.Add(watch.Current);
             }
-            catch (OperationCanceledException) { }
-        });
 
-        await Task.Delay(50).ConfigureAwait(false);
-
-        var publish = Task.Run(() =>
+            received.Count.Should().BeGreaterThan(0);
+            received.Count.Should().BeLessThan(Published, "drops MUST occur — proves non-blocking (NOT awaiting backpressure)");
+        }
+        finally
         {
-            for (var i = 0; i < 500; i++) hub.Publish(Exec($"e{i}"));
-        });
-
-        var winner = await Task.WhenAny(publish, Task.Delay(TimeSpan.FromSeconds(2))).ConfigureAwait(false);
-        winner.Should().BeSameAs(publish, "Backpressure must NOT block the publisher (DropNewest in v0.1)");
-        await publish.ConfigureAwait(false);
-
-        await Task.Delay(200).ConfigureAwait(false);
-        cts.Cancel();
-        try { await consumer.ConfigureAwait(false); } catch (OperationCanceledException) { }
-
-        received.Count.Should().BeGreaterThan(0);
-        received.Count.Should().BeLessThan(500, "drops MUST occur — proves non-blocking (NOT awaiting backpressure)");
+            cts.Cancel();
+            await watch.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Fact]

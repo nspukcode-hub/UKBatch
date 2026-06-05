@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using Cronos;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using UKBatch.Abstractions.Jobs;
@@ -86,7 +87,21 @@ internal sealed class JobScheduler
                 {
                     continue;
                 }
-                var expr = _cronCache.Get(def.Schedule, _options.CronFormat);
+                CronExpression expr;
+                try
+                {
+                    expr = _cronCache.Get(def.Schedule, _options.CronFormat);
+                }
+                catch (Exception ex)
+                {
+                    // Defense-in-depth: a malformed cron must NOT take down host startup. Registration-time
+                    // validation should already have rejected this; if a definition still reaches here with a
+                    // bad expression, log it and skip ONLY that job — every other scheduled job still arms.
+                    _logger.LogError(ex,
+                        "Skipping scheduled job '{Job}': invalid cron expression '{Schedule}' for CronFormat={Format}.",
+                        def.Name, def.Schedule, _options.CronFormat);
+                    continue;
+                }
                 var next = expr.GetNextOccurrence(nowUtc.UtcDateTime, TimeZoneInfo.Utc);
                 if (next is null)
                 {

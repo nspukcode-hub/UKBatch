@@ -34,6 +34,9 @@ public sealed class OrchestratorFactory : WebApplicationFactory<Sample.CrossServ
                 ["UKBatch:Transport:Http:DefaultRequestTimeout"] = "00:00:30",
                 ["UKBatch:Transport:Http:LongPollMaxWait"] = "00:00:05",
                 ["UKBatch:Transport:Http:MaxClockSkew"] = "00:05:00",
+                // The worker base URL is a sentinel rewritten via handler injection — never a real
+                // network hop — so opt into the non-loopback http endpoint explicitly.
+                ["UKBatch:Transport:Http:AllowInsecureHttp"] = "true",
                 ["UKBatch:Transport:Http:Services:billing-worker:BaseUrl"] = WorkerBaseUrl,
                 // dashboard self pointer (overridden if tests poke loopback)
                 ["UKBatch:Dashboard:Services:0:Name"] = "self",

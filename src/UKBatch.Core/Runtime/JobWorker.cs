@@ -184,45 +184,70 @@ internal sealed class JobWorker
         }
         catch (OperationCanceledException oce)
         {
-            // Step 8b: user-cancel / per-execution timeout.
+            // Step 8b: non-shutdown OCE. Two sub-cases:
+            //  (1) per-execution timeout: linkedCts.CancelAfter(TimeoutSeconds) tripped. A timeout is a
+            //      retry-eligible FAILURE, not a cancellation — re-route through the same retry decision as
+            //      any other exception so MaxRetries is honored and the row finalizes Failed (not Cancelled).
+            //  (2) genuine cooperative cancellation (job observed the token and bailed without a timeout):
+            //      terminal Cancelled, no retry.
+            var elapsed = _clock.GetUtcNow() - startedAt;
+            var timedOut = req.Definition.TimeoutSeconds > 0
+                && elapsed >= TimeSpan.FromSeconds(req.Definition.TimeoutSeconds);
+            if (timedOut)
+            {
+                await HandleRetryableFailureAsync(
+                    req,
+                    new JobExecutionTimeoutException(
+                        $"Execution timed out after {req.Definition.TimeoutSeconds}s."),
+                    progress,
+                    stoppingToken).ConfigureAwait(false);
+                return;
+            }
+
+            // genuine cancellation
             await SafeTransitionAsync(req.ExecutionId, JobStatus.Cancelling, oce.Message).ConfigureAwait(false);
             await SafeTransitionAsync(req.ExecutionId, JobStatus.Cancelled, oce.Message).ConfigureAwait(false);
             await _writer.UpdateProgressAsync(req.ExecutionId, progress.Processed, progress.Failed, progress.Total, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            // Step 9: retry decision.
-            var decision = _retryPolicy.Decide(req.AttemptNumber, req.Definition.MaxRetries, ex);
-            if (decision.ShouldRetry)
+            await HandleRetryableFailureAsync(req, ex, progress, stoppingToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task HandleRetryableFailureAsync(
+        JobExecutionRequest req, Exception ex, CountingJobProgress progress, CancellationToken stoppingToken)
+    {
+        var decision = _retryPolicy.Decide(req.AttemptNumber, req.Definition.MaxRetries, ex);
+        if (decision.ShouldRetry)
+        {
+            // (a) Commit Retrying durably BEFORE the wait, so a crash during the wait
+            //     re-enqueues rather than loses the attempt.
+            await _writer.UpdateStatusAsync(req.ExecutionId, JobStatus.Retrying, errorMessage: ex.ToString(), CancellationToken.None).ConfigureAwait(false);
+            // (b) Commit next attempt number.
+            await _writer.RecordAttemptAsync(req.ExecutionId, req.AttemptNumber + 1, CancellationToken.None).ConfigureAwait(false);
+            try
             {
-                // (a) Commit Retrying durably BEFORE the wait, so a crash during the wait
-                //     re-enqueues rather than loses the attempt.
-                await _writer.UpdateStatusAsync(req.ExecutionId, JobStatus.Retrying, errorMessage: ex.ToString(), CancellationToken.None).ConfigureAwait(false);
-                // (b) Commit next attempt number.
-                await _writer.RecordAttemptAsync(req.ExecutionId, req.AttemptNumber + 1, CancellationToken.None).ConfigureAwait(false);
-                try
+                if (decision.Delay > TimeSpan.Zero)
                 {
-                    if (decision.Delay > TimeSpan.Zero)
-                    {
-                        await Task.Delay(decision.Delay, stoppingToken).ConfigureAwait(false);
-                    }
+                    await Task.Delay(decision.Delay, stoppingToken).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
-                {
-                    await SafeTransitionAsync(req.ExecutionId, JobStatus.Cancelling, "host shutdown during retry-wait").ConfigureAwait(false);
-                    await SafeTransitionAsync(req.ExecutionId, JobStatus.Cancelled, "host shutdown during retry-wait").ConfigureAwait(false);
-                    await _writer.UpdateProgressAsync(req.ExecutionId, progress.Processed, progress.Failed, progress.Total, CancellationToken.None).ConfigureAwait(false);
-                    return;
-                }
-                await _dispatcher.EnqueueAsync(
-                    req with { AttemptNumber = req.AttemptNumber + 1, EnqueuedAtUtc = _clock.GetUtcNow() },
-                    stoppingToken).ConfigureAwait(false);
             }
-            else
+            catch (OperationCanceledException)
             {
-                await _writer.UpdateStatusAsync(req.ExecutionId, JobStatus.Failed, errorMessage: ex.ToString(), CancellationToken.None).ConfigureAwait(false);
+                await SafeTransitionAsync(req.ExecutionId, JobStatus.Cancelling, "host shutdown during retry-wait").ConfigureAwait(false);
+                await SafeTransitionAsync(req.ExecutionId, JobStatus.Cancelled, "host shutdown during retry-wait").ConfigureAwait(false);
                 await _writer.UpdateProgressAsync(req.ExecutionId, progress.Processed, progress.Failed, progress.Total, CancellationToken.None).ConfigureAwait(false);
+                return;
             }
+            await _dispatcher.EnqueueAsync(
+                req with { AttemptNumber = req.AttemptNumber + 1, EnqueuedAtUtc = _clock.GetUtcNow() },
+                stoppingToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await _writer.UpdateStatusAsync(req.ExecutionId, JobStatus.Failed, errorMessage: ex.ToString(), CancellationToken.None).ConfigureAwait(false);
+            await _writer.UpdateProgressAsync(req.ExecutionId, progress.Processed, progress.Failed, progress.Total, CancellationToken.None).ConfigureAwait(false);
         }
     }
 

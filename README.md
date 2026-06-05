@@ -79,6 +79,8 @@ builder.AddUKBatchAspNetCore(b =>
 builder.Services.AddUKBatchRabbitMqTransport();      // a cross-service transport is required
 ```
 
+> **The server is fail-closed and requires an explicit auth posture.** This release ships no production authentication scheme, so `UKBatch.Server` refuses to start unless you choose one: `UKBATCH_ALLOW_ANONYMOUS=true` (run anonymously — only behind a trusted network or an external auth gateway) or `UKBATCH_DEV_AUTH=true` (a header-trusting scheme for demos only). The Compose stack sets `UKBATCH_DEV_AUTH=true`. Production-grade authentication (OIDC) is on the roadmap.
+
 ## Packages
 
 ### Available now

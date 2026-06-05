@@ -254,6 +254,16 @@ internal sealed class ApprovalGateService : IApprovalGateService, IApprovalGateC
             await _approvalStore.RecordOutcomeAsync(
                 registration.ApprovalId, mapped, decidedBy, _clock.GetUtcNow(), note, CancellationToken.None).ConfigureAwait(false);
         }
+        catch (ApprovalAlreadyDecidedException ex)
+        {
+            // The gate was already terminalized (e.g. the startup reaper Interrupted it before this
+            // resolution wrote through). The first terminal record wins; do not overwrite. Warn, don't crash.
+            _logger.LogWarning(
+                ex,
+                "Approval gate {GateId}: outcome already recorded ({Existing}); skipping duplicate write.",
+                registration.ApprovalId,
+                ex.ExistingOutcome);
+        }
         catch (InvalidOperationException ex)
         {
             // Absent-gate (never-persisted crash orphan) — downgrade to warn so resolution never crashes.

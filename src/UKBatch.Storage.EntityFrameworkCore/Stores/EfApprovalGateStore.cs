@@ -80,6 +80,17 @@ internal sealed class EfApprovalGateStore : IApprovalGateStore
             // ApprovalGateService downgrades this to a warn-log for its never-persisted-crash-orphan path.
             throw new InvalidOperationException($"Approval gate {approvalId} not found.");
         }
+        if (entity.Status == ApprovalRecordStatus.Decided)
+        {
+            // Terminal outcomes are immutable — a second decision (duplicate approve, or operator vs reaper
+            // race) must not overwrite the audit record. The first writer wins.
+            throw new ApprovalAlreadyDecidedException(
+                $"Approval gate {approvalId} is already decided ({entity.Outcome}); cannot overwrite.")
+            {
+                ApprovalId = approvalId,
+                ExistingOutcome = entity.Outcome,
+            };
+        }
         entity.Status = ApprovalRecordStatus.Decided;
         entity.Outcome = outcome;
         entity.DecidedBy = decidedBy;

@@ -34,7 +34,10 @@ internal static class JsonColumn
     internal static readonly JsonSerializerOptions Opts = new(JsonSerializerDefaults.General)
     {
         Converters = { new JsonStringEnumConverter() },
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        // Null-valued dictionary entries (e.g. {"customerId": null}) MUST survive the round-trip: an
+        // explicit null is meaningful data, and dropping the key here would silently lose it on persist,
+        // diverging from the in-memory store which keeps it. With the default (Never) such a key
+        // serializes as "k":null and deserializes back into a null value for the object?-typed entry.
     };
 
     /// <summary>Converter+comparer pair for an <see cref="IReadOnlyDictionary{TKey,TValue}"/> (string,object?) JSON column.</summary>

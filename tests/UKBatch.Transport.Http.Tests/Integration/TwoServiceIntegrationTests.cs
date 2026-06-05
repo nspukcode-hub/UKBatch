@@ -112,7 +112,7 @@ public sealed class TwoServiceIntegrationTests : IDisposable
     {
         // Orchestrator signs with WRONG secret; worker rejects with 401 + Cache-Control header set.
         var (transport, sp) = new HttpTransportTestBuilder(_worker.Server)
-            .WithSecret("INTENTIONAL-WRONG-SECRET-32B+")
+            .WithSecret("INTENTIONAL-WRONG-SECRET-MISMATCH-32CH+")
             .Build();
         await using (sp.ConfigureAwait(false))
         {

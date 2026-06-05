@@ -13,8 +13,8 @@ namespace UKBatch.Transport.Http;
 /// reload are out of scope. Restart the host to apply changes.</para>
 /// <para><b>Secret handling:</b> <see cref="SharedSecret"/> MUST come from a secure source (env var,
 /// Azure Key Vault, AWS Secrets Manager). Storing in plaintext <c>appsettings.json</c> is acceptable
-/// only for local dev / sample apps. The validator does NOT inspect entropy or length; deployment
-/// owners are responsible for choosing a 32+ byte secret.</para>
+/// only for local dev / sample apps. The validator enforces a minimum length of 32 characters; it does
+/// NOT inspect entropy — deployment owners remain responsible for a high-entropy secret.</para>
 /// </remarks>
 public sealed class HttpTransportOptions
 {
@@ -28,6 +28,15 @@ public sealed class HttpTransportOptions
     /// </remarks>
     public IDictionary<string, ServiceEndpoint> Services { get; set; }
         = new Dictionary<string, ServiceEndpoint>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// When <c>false</c> (default), the validator REJECTS any <see cref="Services"/> endpoint whose
+    /// <c>BaseUrl</c> uses cleartext <c>http</c> on a non-loopback host — HMAC protects integrity but NOT
+    /// confidentiality, so a real cross-host cleartext hop leaks payloads. Loopback hosts (localhost,
+    /// 127.0.0.1, ::1) are always exempt (local dev / same-host). Set <c>true</c> to allow non-loopback
+    /// <c>http</c> explicitly (e.g. inside a trusted private network with no TLS termination).
+    /// </summary>
+    public bool AllowInsecureHttp { get; set; }
 
     /// <summary>
     /// Shared symmetric secret for HMAC SHA256 signing. MUST be non-empty if <see cref="Services"/>

@@ -27,6 +27,9 @@ public static class ProblemDetailsConventions
     /// <summary><c>ukbatch:approval-config-invalid</c> — 500.</summary>
     public const string ApprovalConfigInvalid = TypePrefix + "approval-config-invalid";
 
+    /// <summary><c>ukbatch:approval-already-decided</c> — 409.</summary>
+    public const string ApprovalAlreadyDecided = TypePrefix + "approval-already-decided";
+
     /// <summary><c>ukbatch:validation-failed</c> — 400.</summary>
     public const string ValidationFailed = TypePrefix + "validation-failed";
 

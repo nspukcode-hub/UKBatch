@@ -115,6 +115,26 @@ public abstract class JobStoreParityTestBase : IAsyncLifetime
     }
 
     [Fact]
+    public async Task InsertThenGet_ExplicitNullParameterValue_KeySurvivesWithNullValue()
+    {
+        // An explicit-null parameter value (e.g. {"customerId": null}) is meaningful data and MUST survive
+        // the round-trip on every provider: the EF JSON column serializes it as "k":null and reads it back
+        // as a present key with a null value — matching the in-memory store, which keeps the key too. The
+        // normalized value is null on both (ParamString returns null for a present-but-null entry), so the
+        // distinguishing assertion is key PRESENCE, not the value alone.
+        await SeedAsync(TestData.Execution(
+            "with-null",
+            parameters: new Dictionary<string, object?> { ["customerId"] = null, ["region"] = "EU" }));
+
+        var fetched = (await Store.GetAsync("with-null", CancellationToken.None))!;
+
+        fetched.Parameters.Should().HaveCount(2, "the explicit-null key must not be dropped on persist");
+        fetched.Parameters.ContainsKey("customerId").Should().BeTrue("an explicit null value keeps its key");
+        ParamString(fetched, "customerId").Should().BeNull("the persisted value round-trips as null");
+        ParamString(fetched, "region").Should().Be("EU", "the sibling non-null key is intact");
+    }
+
+    [Fact]
     public async Task Get_Missing_ReturnsNull()
     {
         (await Store.GetAsync("nope", CancellationToken.None)).Should().BeNull();

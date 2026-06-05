@@ -22,7 +22,7 @@ public sealed class IdempotencyTests
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["UKBatch:Transport:Http:SharedSecret"] = "TEST-SECRET-32B+",
+                ["UKBatch:Transport:Http:SharedSecret"] = "TEST-SECRET-FOR-VALIDATION-FLOOR-32CH+",
                 ["UKBatch:Transport:Http:DefaultRequestTimeout"] = "00:00:30",
                 ["UKBatch:Transport:Http:LongPollMaxWait"] = "00:00:25",
             })

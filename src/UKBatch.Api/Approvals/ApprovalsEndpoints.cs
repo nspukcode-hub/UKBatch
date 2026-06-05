@@ -79,6 +79,14 @@ internal static class ApprovalsEndpoints
                         title: "Approval config invalid",
                         detail: ex.Message);
                 }
+                catch (ApprovalAlreadyDecidedException ex)
+                {
+                    return Results.Problem(
+                        type: ProblemDetailsConventions.ApprovalAlreadyDecided,
+                        statusCode: StatusCodes.Status409Conflict,
+                        title: "Approval already decided",
+                        detail: ex.Message);
+                }
             })
             .WithUKBatchName(operationIdPrefix, "ApproveApproval")
             .WithSummary("Approves a pending gate. Approver identity is derived from HttpContext.User; the request body has NO approver field.");
@@ -127,6 +135,14 @@ internal static class ApprovalsEndpoints
                         type: ProblemDetailsConventions.ApprovalConfigInvalid,
                         statusCode: StatusCodes.Status500InternalServerError,
                         title: "Approval config invalid",
+                        detail: ex.Message);
+                }
+                catch (ApprovalAlreadyDecidedException ex)
+                {
+                    return Results.Problem(
+                        type: ProblemDetailsConventions.ApprovalAlreadyDecided,
+                        statusCode: StatusCodes.Status409Conflict,
+                        title: "Approval already decided",
                         detail: ex.Message);
                 }
             })

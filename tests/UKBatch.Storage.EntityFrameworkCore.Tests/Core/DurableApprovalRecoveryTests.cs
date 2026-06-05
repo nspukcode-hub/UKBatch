@@ -133,6 +133,45 @@ public sealed class DurableApprovalRecoveryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Service_WriteThrough_AfterReaperInterrupt_DoesNotCrash()
+    {
+        // Race: the startup reaper terminalizes a gate (writes Decided/Interrupted directly to the store)
+        // while an in-memory awaiter for the SAME gate is still live and then gets approved. The resolution
+        // write-through must see the already-decided record, treat the terminal outcome as immutable, and
+        // warn-swallow the ApprovalAlreadyDecidedException so the batch resolution never crashes.
+        using var harness = new ApprovalServiceHarness(_store, new FakeTimeProvider());
+        var gate = harness.AwaitApprovalAsync("batch-1", "step-1", Config("admin"), CancellationToken.None);
+        await Task.Delay(50).ConfigureAwait(false);
+        var id = (await harness.Service.ListPendingAsync(null, CancellationToken.None))[0].ApprovalId;
+
+        // Simulate the reaper terminalizing the persisted record out-of-band (it writes the entity directly,
+        // not via RecordOutcomeAsync — modelled here as an overwriting Save to Decided/Interrupted).
+        await _store.SaveAsync(
+            TestData.Gate(
+                id,
+                batchId: "batch-1",
+                config: Config("admin"),
+                status: ApprovalRecordStatus.Decided,
+                outcome: ApprovalRecordOutcome.Interrupted,
+                decidedBy: "<reaper>"),
+            CancellationToken.None);
+
+        // Now resolve the still-live in-memory gate. The write-through hits the decided guard internally.
+        var approve = async () => await harness.Service.ApproveAsync(
+            id, new ApproverContext { Identity = "admin@x", Roles = new[] { "admin" } }, "late", CancellationToken.None);
+        await approve.Should().NotThrowAsync("approve only resolves the tcs; it does not write through");
+
+        // The batch resolution itself must complete without an exception escaping (warn-swallowed).
+        var resolve = async () => await gate.WaitAsync(TimeSpan.FromSeconds(60));
+        await resolve.Should().NotThrowAsync("the already-decided write-through is downgraded to a warn-log");
+
+        // The reaper's terminal record wins — it was NOT overwritten by the late approve.
+        var record = await _store.GetAsync(id, CancellationToken.None);
+        record!.Outcome.Should().Be(ApprovalRecordOutcome.Interrupted, "the first terminal record is immutable");
+        record.DecidedBy.Should().Be("<reaper>");
+    }
+
+    [Fact]
     public async Task Cancel_WritesTerminalOutcome_EvenWhenCallerTokenAlreadyCancelled()
     {
         // The load-bearing CT-decoupling: WriteOutcomeThroughAsync uses CancellationToken.None so the

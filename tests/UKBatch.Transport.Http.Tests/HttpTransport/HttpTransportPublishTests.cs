@@ -109,7 +109,7 @@ public sealed class HttpTransportPublishTests : IClassFixture<WorkerFactory>
     {
         // Build sender with a DIFFERENT secret from the worker — every request gets 401.
         var builder = new HttpTransportTestBuilder(_factory.Server)
-            .WithSecret("WRONG-SECRET-MISMATCH-32B+");
+            .WithSecret("WRONG-SECRET-MISMATCH-INTENTIONAL-32CH+");
         var (transport, sp) = builder.Build();
         await using (sp.ConfigureAwait(false))
         {

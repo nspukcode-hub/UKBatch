@@ -39,6 +39,14 @@ internal static class BatchDefinitionValidator
             ValidateStep(def.Steps[i], $"Steps[{i}]", errors, allowParallel: true);
         }
 
+        // Compensation steps are persisted verbatim and run via the same step dispatch as the main
+        // sequence, so they need the same per-step shape checks — otherwise a blank JobName slips
+        // through REST create/update and only surfaces as a silent runtime failure.
+        for (var i = 0; i < def.OnFailureSteps.Count; i++)
+        {
+            ValidateStep(def.OnFailureSteps[i], $"OnFailureSteps[{i}]", errors, allowParallel: true);
+        }
+
         return new ValidationResult(errors);
     }
 

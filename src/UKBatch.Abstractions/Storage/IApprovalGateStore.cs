@@ -29,7 +29,10 @@ public interface IApprovalGateStore
 
     /// <summary>
     /// Records a terminal decision (approved/rejected/timed-out/cancelled) on a previously-pending gate.
-    /// Throws <see cref="InvalidOperationException"/> if the gate is absent.
+    /// Throws <see cref="InvalidOperationException"/> if the gate is absent, and
+    /// <see cref="ApprovalAlreadyDecidedException"/> if the gate is already
+    /// <see cref="ApprovalRecordStatus.Decided"/> — terminal outcomes are immutable, so the first
+    /// recorded decision wins and a later duplicate must not overwrite it.
     /// </summary>
     Task RecordOutcomeAsync(
         string approvalId,

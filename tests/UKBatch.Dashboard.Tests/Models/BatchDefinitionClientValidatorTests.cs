@@ -142,15 +142,14 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
             $"Client: [{string.Join(",", clientPaths)}]  Server: [{string.Join(",", serverPaths)}]");
     }
 
-    // ── OnFailureSteps coverage (server validator has a gap here, but the client
-    // MUST surface blank fields so the operator catches them before submit) ─────────────
+    // ── OnFailureSteps coverage (the client surfaces blank fields up front so the operator
+    // catches them before submit; the server validator also rejects them as a backstop) ─────────
 
     [Fact]
     public void Validate_OnFailureSteps_BlankJobName_ReportsPath()
     {
-        // the wizard validator MUST report invalid OnFailureSteps (blank JobName etc.)
-        // even though the server's BatchDefinitionValidator currently ignores OnFailureSteps. This
-        // is a wizard-only safety net; the operator should not ship a runtime-fail definition.
+        // the wizard validator MUST report invalid OnFailureSteps (blank JobName etc.) up front so the
+        // operator never ships a definition that would otherwise fail at runtime.
         var model = new BatchWizardModel
         {
             Name = "ok",

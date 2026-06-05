@@ -102,19 +102,26 @@ public sealed class HmacSignatureServiceTests
         // Sanity: original signature still verifies.
         svc.Verify(goodCanonical, goodSig).Should().BeTrue();
 
-        // Heuristic timing-uniformity (lightweight; documented as informational lock):
-        // verify all-zeros + all-ones 50 times each; the ratio of mean times should be < 5×.
-        // This is a smoke check — exact timing assertions are flaky in CI. Skip if running in stress mode.
-        const int Iter = 50;
-        var swZeros = Stopwatch.StartNew();
-        for (var i = 0; i < Iter; i++) svc.Verify(goodCanonical, allZeros);
-        swZeros.Stop();
-        var swOnes = Stopwatch.StartNew();
-        for (var i = 0; i < Iter; i++) svc.Verify(goodCanonical, allOnes);
-        swOnes.Stop();
-        var ratio = Math.Max(swZeros.ElapsedTicks, swOnes.ElapsedTicks) /
-                    Math.Max(1.0, Math.Min(swZeros.ElapsedTicks, swOnes.ElapsedTicks));
-        ratio.Should().BeLessThan(20.0, "constant-time compare should not exhibit > 20× variance in matched-length verify");
+        // The constant-time property itself cannot be observed reliably from wall-clock timing in a
+        // shared-CPU test run (a stopwatch-ratio heuristic here flaked under full-suite load), so the
+        // invariant is locked structurally: the verifier must delegate byte comparison to
+        // CryptographicOperations.FixedTimeEquals rather than any short-circuiting equality.
+        var serviceSource = File.ReadAllText(Path.Combine(
+            LocateRepoRoot(), "src", "UKBatch.Transport.Http", "Auth", "HmacSignatureService.cs"));
+        serviceSource.Should().Contain("CryptographicOperations.FixedTimeEquals",
+            "signature comparison must be constant-time; a short-circuiting comparison leaks the first differing byte via timing");
+    }
+
+    private static string LocateRepoRoot()
+    {
+        var assemblyPath = typeof(HmacSignatureServiceTests).Assembly.Location;
+        var dir = new DirectoryInfo(Path.GetDirectoryName(assemblyPath)!);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "UKBatch.sln")))
+        {
+            dir = dir.Parent;
+        }
+        if (dir is null) throw new InvalidOperationException("Could not locate UKBatch.sln in any parent directory.");
+        return dir.FullName;
     }
 
     [Fact]

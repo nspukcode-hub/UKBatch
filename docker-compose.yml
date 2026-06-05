@@ -74,6 +74,8 @@ services:
       # Opt-in DevAuth — registers the sample-local header-based DevAuth scheme so the
       # approval-parallel-demo's ops-gated approval can be granted via curl (X-Dev-User +
       # X-Dev-Roles: ops). Default off in production; ON here only because this is the demo stack.
+      # This is also the demo's chosen auth posture: the server refuses to start without one
+      # (set either UKBATCH_DEV_AUTH or UKBATCH_ALLOW_ANONYMOUS).
       UKBATCH_DEV_AUTH: "true"
       # Dashboard self-loopback — the server's own /api. TRAILING SLASH MANDATORY (HttpClient strips
       # the last path segment per RFC 3986). localhost here = inside the server container.

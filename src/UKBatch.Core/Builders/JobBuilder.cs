@@ -192,7 +192,7 @@ public sealed class JobBuilder
             var errors = string.Join("; ", validation.Errors.Select(e => $"{e.PropertyPath}: {e.Message}"));
             throw new InvalidOperationException($"Job '{jobName}' configuration invalid: {errors}");
         }
-        ResiliencePipeline? pipeline = def.ItemErrorPolicy == ItemErrorPolicy.RetryThenContinue
+        ResiliencePipeline? pipeline = def.ItemErrorPolicy == ItemErrorPolicy.RetryThenContinue && def.MaxRetries >= 1
             ? JobDefinitionFactory.BuildItemRetryPipeline(def)
             : null;
         _registry.Register(def, _implementationType, pipeline);

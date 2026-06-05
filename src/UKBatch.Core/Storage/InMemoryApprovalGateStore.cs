@@ -65,6 +65,17 @@ public sealed class InMemoryApprovalGateStore : IApprovalGateStore
         {
             throw new InvalidOperationException($"Approval gate {approvalId} not found.");
         }
+        if (existing.Status == ApprovalRecordStatus.Decided)
+        {
+            // Terminal outcomes are immutable — a second decision (duplicate approve, or operator vs reaper
+            // race) must not overwrite the audit record. The first writer wins.
+            throw new ApprovalAlreadyDecidedException(
+                $"Approval gate {approvalId} is already decided ({existing.Outcome}); cannot overwrite.")
+            {
+                ApprovalId = approvalId,
+                ExistingOutcome = existing.Outcome,
+            };
+        }
 
         _gates[approvalId] = existing with
         {

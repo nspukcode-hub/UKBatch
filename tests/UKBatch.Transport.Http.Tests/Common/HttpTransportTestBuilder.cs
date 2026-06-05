@@ -94,6 +94,9 @@ public sealed class HttpTransportTestBuilder
             {
                 o.RetryDelays = _retryDelays;
             }
+            // The test sentinel host is rewritten via TestServer handler injection — never a real
+            // network hop — so opt into the non-loopback http endpoint explicitly.
+            o.AllowInsecureHttp = true;
             o.Services.Add(_serviceName, new ServiceEndpoint { BaseUrl = new Uri(_baseUrl) });
         });
         // Validate options at the host start to surface config errors loudly.
