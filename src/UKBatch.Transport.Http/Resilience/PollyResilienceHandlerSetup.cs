@@ -53,6 +53,14 @@ internal static class PollyResilienceHandlerSetup
             {
                 // HttpClient.Timeout INFINITE — Polly is the authoritative timeout.
                 client.Timeout = Timeout.InfiniteTimeSpan;
+            })
+            .ConfigurePrimaryHttpMessageHandler(static () => new SocketsHttpHandler
+            {
+                // Never auto-follow redirects: a 3xx would re-send the signed body and HMAC
+                // headers to the redirect target host, replaying a valid signed envelope to an
+                // attacker-controlled location. A redirect surfaces to the caller as its raw 3xx
+                // status (treated as a failed response by the send path).
+                AllowAutoRedirect = false,
             });
 
         httpClientBuilder.AddResilienceHandler("ukbatch-pipeline", (builder, ctx) =>

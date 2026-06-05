@@ -34,10 +34,21 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS runtime
 WORKDIR /app
 COPY --from=build /app ./
 EXPOSE 8080
+# Auth posture is FAIL-CLOSED: the server refuses to start unless the operator explicitly sets
+# UKBATCH_ALLOW_ANONYMOUS=true (only behind a trusted network / external auth gateway) or
+# UKBATCH_DEV_AUTH=true (header-trusting demo scheme). Deliberately NOT defaulted here.
 ENV ASPNETCORE_URLS=http://0.0.0.0:8080 \
     UKBATCH_ENABLE_DASHBOARD=true
 # /data = sqlite persistence mount point (ef-sqlite default: DataSource=/data/ukbatch.db).
+# Created + chowned BEFORE the VOLUME declaration so a fresh named volume inherits the non-root
+# ownership on first use (content after a VOLUME line is discarded). Pre-existing volumes created
+# by older root-running images need a one-time `chown -R 1654 /data` on the host/volume.
+RUN mkdir -p /data && chown $APP_UID:$APP_UID /data
 # NOTE: an inline comment after exec-form VOLUME is mis-parsed by Docker (it treats the trailing
 # text as a second mount path) — keep the comment on its own line.
 VOLUME ["/data"]
+# Run as the non-root user baked into the .NET base images (APP_UID=1654). The app binds :8080
+# (unprivileged), so root grants nothing but risk — any RCE in the web surface would otherwise
+# run with full container privileges.
+USER $APP_UID
 ENTRYPOINT ["dotnet", "UKBatch.Server.dll"]

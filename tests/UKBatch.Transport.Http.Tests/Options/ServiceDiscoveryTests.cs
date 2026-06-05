@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using UKBatch.Transport.Http;
@@ -147,6 +148,46 @@ public sealed class ServiceDiscoveryTests
         opts.Services["billing"].BaseUrl.AbsoluteUri.Should().Be("http://billing.example/");
         opts.Services["billing"].Tag.Should().Be("prod");
     }
+
+    [Fact]
+    public async Task InvalidOptions_FailHostStartAsync_NotFirstRequest()
+    {
+        // Empty SharedSecret violates the validator. ValidateOnStart wiring means the failure
+        // surfaces during host StartAsync, not lazily on the first outbound request.
+        using var host = BuildHostWithConfig(new Dictionary<string, string?>
+        {
+            ["UKBatch:Transport:Http:SharedSecret"] = "", // invalid
+        });
+
+        Func<Task> start = () => host.StartAsync();
+        await start.Should().ThrowAsync<OptionsValidationException>(
+            "ValidateOnStart runs the registered validator at host startup");
+    }
+
+    [Fact]
+    public async Task ValidOptions_HostStartsSuccessfully()
+    {
+        using var host = BuildHostWithConfig(new Dictionary<string, string?>
+        {
+            ["UKBatch:Transport:Http:SharedSecret"] = "GOOD-SECRET-32B+",
+            ["UKBatch:Transport:Http:DefaultRequestTimeout"] = "00:00:30",
+            ["UKBatch:Transport:Http:LongPollMaxWait"] = "00:00:25",
+        });
+
+        await host.StartAsync();
+        await host.StopAsync();
+    }
+
+    private static IHost BuildHostWithConfig(Dictionary<string, string?> settings) =>
+        new HostBuilder()
+            .ConfigureAppConfiguration(c => c.AddInMemoryCollection(settings))
+            .ConfigureServices(services =>
+            {
+                services.AddLogging();
+                services.AddSingleton<TimeProvider>(TimeProvider.System);
+                services.AddUKBatchHttpTransport();
+            })
+            .Build();
 
     private static HttpTransportOptions ValidOpts() => new()
     {

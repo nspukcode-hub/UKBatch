@@ -182,6 +182,77 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
         errors.Should().NotContainKey("OnFailureSteps[0].Job.JobName");
     }
 
+    // ── parameter-key rules (client-only safety net; the server validator does
+    // not inspect parameter keys, but the conversion silently drops/collapses them, so the
+    // wizard tells the operator what would happen) ─────────────────────────────────
+
+    [Fact]
+    public void Validate_DuplicateParameterKeys_FlagsDuplicate()
+    {
+        // Two rows with the SAME non-blank key: the conversion is last-wins, so one value is silently
+        // lost. The wizard flags it (Ordinal, matching the dictionary's StringComparer).
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Steps = { JobDraftWithParameters("s1", Param("dup", "a"), Param("dup", "b")) },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().ContainKey("Steps[0].Job.Parameters[1].Key",
+            "a duplicate non-blank parameter key must be surfaced (the conversion is last-wins)");
+    }
+
+    [Fact]
+    public void Validate_BlankKeyWithValue_FlagsKeyRequired()
+    {
+        // A row with no key but a real value: the conversion drops it, so the value vanishes. Flag it.
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Steps = { JobDraftWithParameters("s1", Param("", "orphan")) },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().ContainKey("Steps[0].Job.Parameters[0].Key",
+            "a value with no key must be surfaced — the conversion would silently drop it");
+    }
+
+    [Fact]
+    public void Validate_FullyBlankParameterRows_AreTolerated()
+    {
+        // Empty editor rows (key AND value blank) are just placeholders; the conversion drops them and
+        // the validator stays silent.
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Steps = { JobDraftWithParameters("s1", Param("", ""), Param("", "")) },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().NotContainKey("Steps[0].Job.Parameters[0].Key",
+            "fully-blank rows are tolerated (just empty editor rows)");
+        errors.Should().NotContainKey("Steps[0].Job.Parameters[1].Key");
+    }
+
+    [Fact]
+    public void Validate_DistinctParameterKeys_ProduceNoParameterErrors()
+    {
+        // Inverse: valid distinct keys must not raise spurious errors.
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Steps = { JobDraftWithParameters("s1", Param("a", "1"), Param("b", "2")) },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Keys.Should().NotContain(k => k.StartsWith("Steps[0].Job.Parameters", StringComparison.Ordinal),
+            "distinct non-blank keys are valid");
+    }
+
     // ── Sanity: a fully-valid wizard-emittable model produces zero errors ────────
 
     [Fact]
@@ -238,6 +309,16 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
         StepId = id,
         StepType = BatchStepType.Job,
         JobName = jobName,
+    };
+
+    private static KeyValuePair<string, string> Param(string key, string value) => new(key, value);
+
+    private static WizardStepDraft JobDraftWithParameters(string id, params KeyValuePair<string, string>[] pairs) => new()
+    {
+        StepId = id,
+        StepType = BatchStepType.Job,
+        JobName = "Echo",
+        Parameters = pairs.ToList(),
     };
 
     private static WizardStepDraft ParallelDraft(string id, IEnumerable<WizardStepDraft> children,

@@ -141,4 +141,101 @@ public sealed class InMemoryWorkerRegistryTests
         Action act = () => registry.Upsert(null!, time.GetUtcNow());
         act.Should().Throw<ArgumentNullException>();
     }
+
+    [Fact]
+    public void Upsert_AtCap_NewWorker_EvictsOldestSeen_CountStaysAtCap()
+    {
+        var (registry, time) = Build();
+
+        // Fill the registry to capacity, each worker beating at a distinct (increasing) time so the
+        // first-inserted worker has the oldest LastSeen.
+        for (var i = 0; i < InMemoryWorkerRegistry.MaxWorkers; i++)
+        {
+            registry.Upsert(Beat($"w{i:D5}"), time.GetUtcNow());
+            time.Advance(TimeSpan.FromMilliseconds(1));
+        }
+
+        var now = time.GetUtcNow();
+        registry.List(now).Should().HaveCount(InMemoryWorkerRegistry.MaxWorkers);
+
+        // One more NEW worker beyond the cap → the single oldest-seen entry ("w00000") is evicted.
+        registry.Upsert(Beat("newcomer"), now);
+
+        var names = registry.List(now).Select(w => w.Name).ToList();
+        names.Should().HaveCount(InMemoryWorkerRegistry.MaxWorkers, "memory stays bounded at the cap");
+        names.Should().Contain("newcomer", "the freshest beat is admitted");
+        names.Should().NotContain("w00000", "the oldest-seen entry is evicted to make room");
+    }
+
+    [Fact]
+    public void Upsert_AtCap_ExistingWorkerRebeat_NotEvicted_NoGrowth()
+    {
+        var (registry, time) = Build();
+
+        for (var i = 0; i < InMemoryWorkerRegistry.MaxWorkers; i++)
+        {
+            registry.Upsert(Beat($"w{i:D5}"), time.GetUtcNow());
+            time.Advance(TimeSpan.FromMilliseconds(1));
+        }
+
+        // The oldest-seen worker re-beats. A refresh of an EXISTING key must not grow the store and must
+        // not evict anyone — an active fleet is never throttled by the cap.
+        var now = time.GetUtcNow();
+        registry.Upsert(Beat("w00000", jobs: ["RefreshedJob"]), now);
+
+        var list = registry.List(now);
+        list.Should().HaveCount(InMemoryWorkerRegistry.MaxWorkers, "re-beating an existing worker does not grow the registry");
+        // The existing entry is refreshed in place rather than re-inserted as a new key.
+        var refreshed = list.Single(w => w.Name == "w00000");
+        refreshed.Jobs.Should().ContainSingle().Which.Should().Be("RefreshedJob");
+    }
+
+    [Fact]
+    public void Upsert_NewWorker_ReclaimsExpiredSlots_BeforeEvicting()
+    {
+        var (registry, time) = Build();
+
+        // Fill to capacity, then let every entry age past the hard-evict horizon.
+        for (var i = 0; i < InMemoryWorkerRegistry.MaxWorkers; i++)
+        {
+            registry.Upsert(Beat($"w{i:D5}"), time.GetUtcNow());
+        }
+        time.Advance(TimeSpan.FromMinutes(11)); // > 10min hard-evict for every existing entry
+
+        // A new worker beats AFTER the others expired. The Upsert sweep reclaims the dead slots, so the
+        // new worker is admitted and the stale entries are gone — without anyone calling List.
+        var now = time.GetUtcNow();
+        registry.Upsert(Beat("fresh"), now);
+
+        var list = registry.List(now);
+        list.Should().ContainSingle("the expired entries were swept on the write path, leaving only the new worker");
+        list[0].Name.Should().Be("fresh");
+    }
+
+    [Fact]
+    public void Upsert_ExpiredEntries_SweptOnWritePath_WithoutCallingList()
+    {
+        var (registry, time) = Build();
+
+        // Seed enough live workers that the next new-worker Upsert crosses the sweep gate (half the cap).
+        var seedCount = (InMemoryWorkerRegistry.MaxWorkers / 2) + 1;
+        for (var i = 0; i < seedCount; i++)
+        {
+            registry.Upsert(Beat($"old{i:D5}"), time.GetUtcNow());
+        }
+
+        // Age them all past the hard-evict horizon, then keep adding new workers (never calling List).
+        time.Advance(TimeSpan.FromMinutes(11));
+        var now = time.GetUtcNow();
+        registry.Upsert(Beat("trigger-sweep"), now);
+
+        // The first read after the write-path sweep should already be free of the expired entries —
+        // proving the sweep happened on Upsert, not lazily on List. (List's own sweep can't have run
+        // before this first call, so any survivors would have to come from the Upsert path.)
+        var list = registry.List(now);
+        list.Should().ContainSingle();
+        list[0].Name.Should().Be("trigger-sweep");
+        list.Should().NotContain(w => w.Name.StartsWith("old", StringComparison.Ordinal),
+            "expired entries are reclaimed by the Upsert sweep, not only when the panel reads the list");
+    }
 }

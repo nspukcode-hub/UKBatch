@@ -19,6 +19,9 @@ public sealed record class ApprovalGateConfig
     /// ASP.NET Core role names allowed to approve or reject. Fail-safe semantics: an empty list
     /// means NO ONE can approve (the gate is dead-locked until reconfigured); use the
     /// <see cref="AnyAuthenticatedUser"/> sentinel to explicitly opt in to authenticated-any-role.
+    /// Role comparison is case-SENSITIVE (ordinal) — unlike
+    /// <see cref="System.Security.Principal.IPrincipal.IsInRole"/>, which ignores case. Configure
+    /// role names with the exact casing your identity provider emits in the role claims.
     /// </summary>
     public required IReadOnlyList<string> AllowedRoles { get; init; }
 

@@ -141,6 +141,28 @@ public sealed class DrawflowAssetRegressionTests : IClassFixture<SampleDashboard
     }
 
     [Fact]
+    public async Task DagEditorJs_ServedBody_EncodesQuotesInEscapeHtml()
+    {
+        // escapeHtml output is interpolated into QUOTED attribute contexts (title="..." / data-step="...").
+        // The DOM-textContent trick alone encodes < > & but NOT " or ', so a step/job name like
+        // a" onmouseover="..." would break out of the attribute and inject a live event handler. The
+        // served asset MUST carry the quote-encoding replaces. bunit's mocked JSInterop never loads the
+        // real module, so only an HttpClient body assertion locks this — a future simplification that
+        // drops the replaces fails CI here.
+        using var client = _factory.CreateClient();
+        using var resp = await client.GetAsync(
+            new Uri("/_content/UKBatch.Dashboard/js/dag-editor.js", UriKind.Relative));
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var body = await resp.Content.ReadAsStringAsync();
+        body.Should().Contain("&quot;",
+            "escapeHtml MUST encode the double quote so values stay inside quoted attributes — " +
+            "its absence reopens the attribute-context injection seam");
+        body.Should().Contain("&#39;",
+            "escapeHtml MUST encode the single quote so values stay inside single-quoted attributes");
+    }
+
+    [Fact]
     public async Task DagEditorJs_ServedBody_CarriesTypedEdgeSync_ForOnFailureBranch()
     {
         // onFailure-canvas Bucket 4: the SERVED asset (not just the source on disk) must carry the

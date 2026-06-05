@@ -83,9 +83,7 @@ public sealed class WizardStepDraft
             {
                 JobName = JobName.Trim(),
                 TargetService = string.IsNullOrWhiteSpace(TargetService) ? null : TargetService,
-                Parameters = Parameters.Count == 0
-                    ? null
-                    : Parameters.ToDictionary(p => p.Key, p => (object?)p.Value, StringComparer.Ordinal),
+                Parameters = BuildParameters(),
                 MaxRetries = MaxRetries,
                 TimeoutSeconds = TimeoutSeconds,
             },
@@ -159,6 +157,26 @@ public sealed class WizardStepDraft
                 break;
         }
         return draft;
+    }
+
+    /// <summary>
+    /// Projects the editor parameter rows into the step's parameter dictionary. Render-safe: this runs
+    /// during render (the Review step and the visual editor canvas project drafts to preview the DAG),
+    /// so it must NEVER throw — an exception here tears down the Blazor circuit and loses the unsaved
+    /// batch. Blank-key rows (the editor seeds new rows with an empty key) are dropped; duplicate keys
+    /// are last-wins via indexer assignment. Returns <c>null</c> when no usable parameter remains, so a
+    /// step with only empty editor rows emits no Parameters (same as having added none).
+    /// </summary>
+    private Dictionary<string, object?>? BuildParameters()
+    {
+        if (Parameters.Count == 0) return null;
+        var result = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var p in Parameters)
+        {
+            if (string.IsNullOrWhiteSpace(p.Key)) continue;
+            result[p.Key] = p.Value;
+        }
+        return result.Count == 0 ? null : result;
     }
 
     private static string StringifyValue(object? value) => value switch

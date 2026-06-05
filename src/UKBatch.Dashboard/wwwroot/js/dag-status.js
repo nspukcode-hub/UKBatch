@@ -101,7 +101,13 @@ function ensureArrowMarker() {
 
 // XSS: every interpolated value passes through escapeHtml — Blazor's output encoding does NOT apply to
 // the DOM this module injects, so an unescaped step / service name would be an injection seam.
-function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+// The two quote replaces keep the result safe inside quoted attributes (e.g. title="..."): without
+// them a value like a" onmouseover="..." would close the attribute and inject a live event handler.
+function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s ?? '';
+    return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 // Compact node label: the last dotted segment of a namespaced job name
 // ("Sample.Dashboard.Jobs.ArchiveJob" -> "ArchiveJob"). The FULL title stays in the tooltip.

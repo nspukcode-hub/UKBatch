@@ -280,7 +280,15 @@ function branchesHtml(spec) {
     return `<div class="dag-ed-node__branches">${chips}</div>`;
 }
 
-function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+// Encodes < > & via the DOM, then the two quote characters so the result is safe inside a
+// double- or single-quoted attribute (every interpolation site here is a quoted attribute or
+// element text). Without the quote replaces a value like a" onmouseover="..." would break out
+// of title="..." / data-step="..." and inject a live event handler.
+function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s ?? '';
+    return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 // Compact node label: the last dotted segment of a namespaced job name
 // ("Sample.Dashboard.Jobs.ArchiveJob" -> "ArchiveJob"). Approval titles / "N branches" have no dots

@@ -24,26 +24,38 @@ public sealed class WatchHubParityTests
         var hub = new JobExecutionWatchHub(NullLogger<JobExecutionWatchHub>.Instance);
         const int N = 100;
         var received = new List<JobExecution>();
-        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var consumer = Task.Run(async () =>
+        // Deterministic registration handshake — no wall-clock scheduling assumptions. The previous
+        // version parked the consumer behind Task.Run + Task.Delay(50) and flaked under full-suite CPU
+        // load (the consumer might not get scheduled before the publishes, leaving the subscription
+        // unregistered so events publish into the void — the hub does not replay). MoveNextAsync runs
+        // the async-iterator body synchronously up to its first await (the empty-buffer read), so the
+        // subscription is REGISTERED the moment the call returns. We seed one event to complete that
+        // first read deterministically, then publish the rest and drain all N.
+        var watch = hub.WatchAsync(WatchOptions.Default, cts.Token).GetAsyncEnumerator(cts.Token);
+        try
         {
-            await foreach (var ex in hub.WatchAsync(WatchOptions.Default, cts.Token).ConfigureAwait(false))
+            var firstMove = watch.MoveNextAsync();  // registers the subscription, then suspends on the empty buffer
+            hub.Publish(Exec("e0"));                // completes the pending read deterministically
+            (await firstMove.AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+            received.Add(watch.Current);
+
+            // Subscription is live: the remaining events are buffered and drained in order.
+            for (var i = 1; i < N; i++) hub.Publish(Exec($"e{i}"));
+            for (var i = 1; i < N; i++)
             {
-                received.Add(ex);
-                if (received.Count == N) done.TrySetResult();
+                (await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+                received.Add(watch.Current);
             }
-        });
 
-        await Task.Delay(50).ConfigureAwait(false);
-        for (var i = 0; i < N; i++) hub.Publish(Exec($"e{i}"));
-
-        await done.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
-        cts.Cancel();
-        try { await consumer.ConfigureAwait(false); } catch (OperationCanceledException) { }
-
-        received.Should().HaveCountGreaterOrEqualTo(N);
+            received.Should().HaveCount(N);
+        }
+        finally
+        {
+            cts.Cancel();
+            await watch.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Fact]

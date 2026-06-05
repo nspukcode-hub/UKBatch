@@ -45,8 +45,11 @@ public static class ServiceCollectionExtensions
         }
 
         // Options binding — appsettings section + optional programmatic overlay.
+        // ValidateOnStart() runs the registered IValidateOptions during host StartAsync so invalid
+        // configuration fails fast at startup instead of on the first outbound request.
         var optionsBuilder = services.AddOptions<HttpTransportOptions>()
-            .BindConfiguration("UKBatch:Transport:Http");
+            .BindConfiguration("UKBatch:Transport:Http")
+            .ValidateOnStart();
         if (configure is not null)
         {
             optionsBuilder.Configure(configure);

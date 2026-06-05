@@ -36,4 +36,6 @@ WORKDIR /app
 COPY --from=build /app ./
 EXPOSE 8080
 ENV ASPNETCORE_URLS=http://0.0.0.0:8080
+# Run as the non-root user baked into the .NET base images (APP_UID=1654); :8080 is unprivileged.
+USER $APP_UID
 ENTRYPOINT ["dotnet", "Sample.WorkerMode.Invoicing.dll"]

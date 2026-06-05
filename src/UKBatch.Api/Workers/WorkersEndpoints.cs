@@ -23,6 +23,19 @@ internal static class WorkersEndpoints
     /// <see cref="RouteHandlerBuilderExtensions.WithUKBatchName"/> turns <c>"WorkerBeat"</c> into
     /// <c>"SecuredWorkerBeat"</c> — no special casing.
     /// </summary>
+    /// <summary>Maximum length of the worker name and of each advertised job name. Caps the per-entry
+    /// memory a single beat can pin, independent of the count caps below.</summary>
+    private const int MaxNameLength = 200;
+
+    /// <summary>Maximum length of each free-form tag string.</summary>
+    private const int MaxTagLength = 100;
+
+    /// <summary>Largest accepted Jobs array — a misbehaving worker must not balloon a single entry.</summary>
+    private const int MaxJobsCount = 1000;
+
+    /// <summary>Largest accepted Tags array.</summary>
+    private const int MaxTagsCount = 100;
+
     public static void Map(RouteGroupBuilder group, string? operationIdPrefix)
     {
         ArgumentNullException.ThrowIfNull(group);
@@ -39,16 +52,57 @@ internal static class WorkersEndpoints
                     });
                 }
 
-                // Defensive caps — a misbehaving worker must not balloon the registry.
-                if (body.Jobs.Count > 1000 || body.Tags.Count > 100)
+                if (body.Name.Length > MaxNameLength)
                 {
                     return Results.ValidationProblem(new Dictionary<string, string[]>
                     {
-                        ["Jobs"] = ["Jobs <= 1000, Tags <= 100."],
+                        ["Name"] = [$"Worker name length must be <= {MaxNameLength} (got {body.Name.Length})."],
                     });
                 }
 
-                registry.Upsert(body, clock.GetUtcNow());
+                // The wire payload's init-default of [] does NOT protect against an explicit JSON null
+                // ({"jobs":null} deserializes the property to null), so read through a null-coalescing
+                // accessor before touching .Count to avoid a 500.
+                var jobs = body.Jobs ?? [];
+                var tags = body.Tags ?? [];
+
+                // Count caps — a misbehaving worker must not balloon the registry.
+                if (jobs.Count > MaxJobsCount || tags.Count > MaxTagsCount)
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]>
+                    {
+                        ["Jobs"] = [$"Jobs <= {MaxJobsCount}, Tags <= {MaxTagsCount}."],
+                    });
+                }
+
+                // Per-item caps: reject blank/null entries and over-length strings so one beat can't pin
+                // unbounded memory under the count cap. Validate before normalizing so the caller gets a
+                // clear field error rather than silently dropped data.
+                foreach (var job in jobs)
+                {
+                    if (string.IsNullOrWhiteSpace(job) || job.Length > MaxNameLength)
+                    {
+                        return Results.ValidationProblem(new Dictionary<string, string[]>
+                        {
+                            ["Jobs"] = [$"Each job name must be non-empty and <= {MaxNameLength} chars."],
+                        });
+                    }
+                }
+
+                foreach (var tag in tags)
+                {
+                    if (string.IsNullOrWhiteSpace(tag) || tag.Length > MaxTagLength)
+                    {
+                        return Results.ValidationProblem(new Dictionary<string, string[]>
+                        {
+                            ["Tags"] = [$"Each tag must be non-empty and <= {MaxTagLength} chars."],
+                        });
+                    }
+                }
+
+                // Store a beat with non-null lists so the registry and the list snapshot never see null.
+                var normalized = body with { Jobs = jobs, Tags = tags };
+                registry.Upsert(normalized, clock.GetUtcNow());
                 return Results.Accepted();
             })
             .WithUKBatchName(operationIdPrefix, "WorkerBeat")

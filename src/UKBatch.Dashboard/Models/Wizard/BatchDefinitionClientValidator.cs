@@ -43,6 +43,7 @@ public static class BatchDefinitionClientValidator
             case BatchStepType.Job:
                 if (string.IsNullOrWhiteSpace(step.JobName))
                     errors.Add(($"{path}.Job.JobName", "must be non-empty"));
+                ValidateParameters(step, path, errors);
                 break;
 
             case BatchStepType.ParallelGroup:
@@ -63,6 +64,29 @@ public static class BatchDefinitionClientValidator
                 if (string.IsNullOrWhiteSpace(step.ApprovalTitle))
                     errors.Add(($"{path}.Approval.Title", "must be non-empty"));
                 break;
+        }
+    }
+
+    // The conversion to a parameter dictionary drops blank-key rows and resolves duplicate keys
+    // last-wins (so it never throws on the render path). These rules tell the operator what the
+    // conversion would silently do: a duplicate non-blank key (Ordinal, matching dictionary semantics)
+    // and a blank key paired with a real value are flagged; a fully-blank row is just an empty editor
+    // row and is tolerated.
+    private static void ValidateParameters(WizardStepDraft step, string path, List<(string, string)> errors)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < step.Parameters.Count; i++)
+        {
+            var key = step.Parameters[i].Key;
+            var value = step.Parameters[i].Value;
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                    errors.Add(($"{path}.Job.Parameters[{i}].Key", "must be non-empty when a value is set"));
+                continue;
+            }
+            if (!seen.Add(key))
+                errors.Add(($"{path}.Job.Parameters[{i}].Key", $"duplicate parameter key '{key}'"));
         }
     }
 }

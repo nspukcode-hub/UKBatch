@@ -44,8 +44,12 @@ internal sealed class JobExecutionAwaiter : IJobExecutionAwaiter, IHostedService
     {
         try
         {
-            // Large buffer so the awaiter never blocks the store's publisher; backpressure is
-            // the safe overflow policy for terminal-event correctness.
+            // Large buffer so the awaiter never blocks the store's publisher. NOTE: delivery is
+            // best-effort, not guaranteed — the in-memory adapter implements Backpressure as a
+            // non-blocking DropNewest, so if more than BufferCapacity events queue while this
+            // consumer lags, the tail is dropped and a dropped terminal event leaves its waiter
+            // pending. The 65536 buffer plus the catch-up read in WaitForTerminalAsync makes that
+            // practically unreachable; a periodic re-poll fallback is a planned hardening.
             var watchOptions = new WatchOptions
             {
                 OverflowPolicy = WatchOverflowPolicy.Backpressure,

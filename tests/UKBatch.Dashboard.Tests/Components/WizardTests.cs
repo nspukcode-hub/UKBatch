@@ -9,6 +9,7 @@ using UKBatch.Api.Common;
 using UKBatch.Api.Jobs;
 using UKBatch.Dashboard.Clients;
 using UKBatch.Dashboard.Components.Pages.Batches;
+using UKBatch.Dashboard.Models.Wizard;
 using UKBatch.Dashboard.Tests.Pages.Common;
 using Xunit;
 
@@ -524,6 +525,48 @@ public sealed class WizardTests : TestContext
         var currentLabel = cut.FindAll("button.wizard-stepper__step--current").First().TextContent;
         currentLabel.Should().Contain("Failure",
  "a 400 on OnFailureSteps[i] path MUST jump to the FailurePolicy wizard step");
+    }
+
+    // ── duplicate parameter keys render the DAG preview without tearing down the circuit ──
+
+    [Fact]
+    public void ReviewPreview_DuplicateParameterKeys_RendersWithoutThrowing()
+    {
+        // The Review step renders `<DagView Steps="@_model.StepsAsBatchSteps()" ...>`, so the draft→step
+        // projection runs DURING render. The parameter editor seeds new rows with an empty key, so two
+        // rows can share a key (blank or otherwise); the projection used to throw ArgumentException from
+        // the dictionary build — on the render path that tears down the Blazor circuit and loses the
+        // unsaved batch. This drives the exact Review wiring (projection feeding DagView) with a
+        // duplicate-key model and asserts it renders.
+        var model = new BatchWizardModel
+        {
+            Name = "dup-params",
+            Steps =
+            {
+                new WizardStepDraft
+                {
+                    StepId = "s1",
+                    StepType = BatchStepType.Job,
+                    JobName = "JobA",
+                    Parameters =
+                    {
+                        new KeyValuePair<string, string>("dup", "first"),
+                        new KeyValuePair<string, string>("dup", "second"),
+                        new KeyValuePair<string, string>(string.Empty, string.Empty),
+                    },
+                },
+            },
+        };
+
+        var render = () => RenderComponent<UKBatch.Dashboard.Components.Shared.DagView>(p => p
+            .Add(d => d.Steps, model.StepsAsBatchSteps())
+            .Add(d => d.OnFailureSteps, model.OnFailureAsBatchSteps()));
+
+        render.Should().NotThrow(
+            "the Review preview projects drafts to steps during render — a throw here tears down the circuit");
+        var cut = render();
+        cut.FindAll("foreignObject").Should().ContainSingle(
+            "the single Job step renders one DAG node despite the duplicate/blank parameter keys");
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────
