@@ -13,6 +13,12 @@ namespace UKBatch.Dashboard.Models.Wizard;
 /// SET of property-paths as the server validator (path-set equality, not wording). The parity matrix
 /// is constrained to wizard-emittable models (server-only paths the wizard cannot reach — null payloads,
 /// <c>Enum.IsDefined</c>, non-empty <c>Id</c> — are out of scope).
+/// <para>
+/// <b>Intentional asymmetry:</b> parameter-key checks (blank key with a value, duplicate keys) are
+/// CLIENT-ONLY. The wizard's dictionary projection would silently drop or collide such rows, so the
+/// wizard surfaces them up front; the server does not inspect parameter keys (it stays authoritative
+/// on step shape, not parameter content). Parameter-key paths are therefore excluded from parity.
+/// </para>
 /// </remarks>
 public static class BatchDefinitionClientValidator
 {

@@ -68,9 +68,12 @@ public sealed class ServerAuthPostureTests
 
     private static bool ContainsRefusalMessage(Exception ex)
     {
+        // Walk the inner chain: the refusal must be the typed startup throw carrying the actionable
+        // message, not an unrelated boot failure that merely lacks it.
         for (var current = ex; current is not null; current = current.InnerException)
         {
-            if (current.Message.Contains(
+            if (current is InvalidOperationException
+                && current.Message.Contains(
                     "refuses to start without an explicit auth posture",
                     StringComparison.Ordinal))
             {

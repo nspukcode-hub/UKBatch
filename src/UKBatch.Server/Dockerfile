@@ -27,7 +27,9 @@ RUN dotnet restore src/UKBatch.Server/UKBatch.Server.csproj
 # 3) Copy the rest of the source + publish. Framework-dependent, NO trimming/AOT — PublishTrimmed
 #    breaks Blazor Server reflection + Razor runtime compilation (decision #7).
 COPY src/ src/
-RUN dotnet publish src/UKBatch.Server/UKBatch.Server.csproj -c Release -o /app --no-restore
+# -f is REQUIRED: the project declares its TFM via the plural TargetFrameworks property
+# (multi-target repo convention), and publish refuses to run framework-less against it.
+RUN dotnet publish src/UKBatch.Server/UKBatch.Server.csproj -f net10.0 -c Release -o /app --no-restore
 
 # ---- runtime ----
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS runtime

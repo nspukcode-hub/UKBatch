@@ -81,8 +81,10 @@ public sealed class RabbitMqTransportOptions
     public TimeSpan DefaultRequestTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Max time a single confirm-tracked <c>BasicPublishAsync</c> waits for the broker ack before being
-    /// considered failed. Default <c>10s</c>.
+    /// Reserved for a future release: an explicit per-publish confirm-wait bound. Today the publish path
+    /// relies on the client library's built-in publisher-confirmation tracking and the caller's
+    /// <see cref="System.Threading.CancellationToken"/>; this value is validated but is NOT yet applied
+    /// to the confirm wait. Default <c>10s</c>.
     /// </summary>
     public TimeSpan PublisherConfirmTimeout { get; set; } = TimeSpan.FromSeconds(10);
 

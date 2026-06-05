@@ -8,7 +8,7 @@ namespace UKBatch.AspNetCore.Triggering;
 /// <summary>
 /// HTTP-aware implementation of both <see cref="IJobTriggerContext"/> (identity resolver) and
 /// <see cref="IJobTraceContext"/> (per-execution <see cref="Activity"/> slot manager). Registered as
-/// a singleton; two service descriptors share the same instance (the S1 ISP split).
+/// a singleton; two service descriptors share the same instance (the identity/trace ISP split).
 /// </summary>
 /// <remarks>
 /// Activity slots expire after <see cref="TtlSeconds"/> seconds via a cleanup callback driven by the
@@ -19,8 +19,8 @@ namespace UKBatch.AspNetCore.Triggering;
 /// </remarks>
 internal sealed class HttpContextJobTriggerContext : IJobTriggerContext, IJobTraceContext, IDisposable
 {
-    private const int TtlSeconds = 60;                                 // S2: tightened from 5 min
-    private const int DiagnosticLogEveryN = 100;                       // S2: log every N expirations
+    private const int TtlSeconds = 60;                                 // unconsumed Activity slots expire after this
+    private const int DiagnosticLogEveryN = 100;                       // emit one diagnostic per N expirations
 
     private readonly IHttpContextAccessor _accessor;
     private readonly ILogger<HttpContextJobTriggerContext> _logger;

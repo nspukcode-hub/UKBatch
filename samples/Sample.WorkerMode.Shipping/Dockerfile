@@ -27,8 +27,10 @@ RUN dotnet restore samples/Sample.WorkerMode.Shipping/Sample.WorkerMode.Shipping
 # 3) Copy the source needed to build (src + this sample) + publish. Framework-dependent, NO trimming.
 COPY src/ src/
 COPY samples/Sample.WorkerMode.Shipping/ samples/Sample.WorkerMode.Shipping/
+# -f is REQUIRED: the project declares its TFM via the plural TargetFrameworks property
+# (multi-target repo convention), and publish refuses to run framework-less against it.
 RUN dotnet publish samples/Sample.WorkerMode.Shipping/Sample.WorkerMode.Shipping.csproj \
-    -c Release -o /app --no-restore
+    -f net10.0 -c Release -o /app --no-restore
 
 # ---- runtime ----
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS runtime

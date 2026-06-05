@@ -256,6 +256,9 @@ internal sealed class ApprovalGateService : IApprovalGateService, IApprovalGateC
         }
         catch (ApprovalAlreadyDecidedException ex)
         {
+            // ORDERING: this arm MUST precede the InvalidOperationException arm below — the type
+            // derives from it; a reorder would silently route the already-decided case into the
+            // absent-gate message.
             // The gate was already terminalized (e.g. the startup reaper Interrupted it before this
             // resolution wrote through). The first terminal record wins; do not overwrite. Warn, don't crash.
             _logger.LogWarning(

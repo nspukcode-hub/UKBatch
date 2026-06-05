@@ -65,32 +65,46 @@ public sealed class WatchHubParityTests
         const int N = 50;
         var r1 = new List<JobExecution>();
         var r2 = new List<JobExecution>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        async Task Consume(List<JobExecution> sink)
+        // Same deterministic registration handshake as the sibling tests in this file: the first
+        // MoveNextAsync registers each subscription synchronously up to its first await, and a seed
+        // publish completes both pending reads — no Task.Delay scheduling assumptions.
+        var w1 = hub.WatchAsync(WatchOptions.Default, cts.Token).GetAsyncEnumerator(cts.Token);
+        var w2 = hub.WatchAsync(WatchOptions.Default, cts.Token).GetAsyncEnumerator(cts.Token);
+        try
         {
-            try
+            var m1 = w1.MoveNextAsync();
+            var m2 = w2.MoveNextAsync();
+            hub.Publish(Exec("seed"));
+            (await m1.AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+            (await m2.AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+            r1.Add(w1.Current);
+            r2.Add(w2.Current);
+
+            for (var i = 0; i < N; i++) hub.Publish(Exec($"e{i}"));
+
+            // Drain each subscriber independently — both must observe every published event.
+            for (var i = 0; i < N; i++)
             {
-                await foreach (var ex in hub.WatchAsync(WatchOptions.Default, cts.Token).ConfigureAwait(false))
-                {
-                    sink.Add(ex);
-                }
+                (await w1.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+                r1.Add(w1.Current);
             }
-            catch (OperationCanceledException) { }
+            for (var i = 0; i < N; i++)
+            {
+                (await w2.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+                r2.Add(w2.Current);
+            }
+
+            r1.Should().HaveCountGreaterOrEqualTo(N);
+            r2.Should().HaveCountGreaterOrEqualTo(N);
         }
-
-        var c1 = Task.Run(() => Consume(r1));
-        var c2 = Task.Run(() => Consume(r2));
-        await Task.Delay(100).ConfigureAwait(false);
-
-        for (var i = 0; i < N; i++) hub.Publish(Exec($"e{i}"));
-        await Task.Delay(200).ConfigureAwait(false);
-
-        cts.Cancel();
-        try { await Task.WhenAll(c1, c2).ConfigureAwait(false); } catch (OperationCanceledException) { }
-
-        r1.Should().HaveCountGreaterOrEqualTo(N);
-        r2.Should().HaveCountGreaterOrEqualTo(N);
+        finally
+        {
+            cts.Cancel();
+            await w1.DisposeAsync().ConfigureAwait(false);
+            await w2.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Fact]

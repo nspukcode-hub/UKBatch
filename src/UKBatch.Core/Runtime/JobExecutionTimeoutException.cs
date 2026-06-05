@@ -5,6 +5,11 @@ namespace UKBatch.Runtime;
 /// (<c>JobDefinition.TimeoutSeconds</c>). Routed through the normal retry decision — a timeout is a
 /// retry-eligible failure, distinct from a deliberate cancellation (which is terminal and never retried).
 /// </summary>
+/// <remarks>
+/// Deliberately derives from plain <see cref="Exception"/> (not <see cref="InvalidOperationException"/>):
+/// it never crosses a public boundary and must never be confused with the operation-state exceptions
+/// that REST endpoints map to 4xx responses.
+/// </remarks>
 internal sealed class JobExecutionTimeoutException : Exception
 {
     public JobExecutionTimeoutException(string message) : base(message) { }

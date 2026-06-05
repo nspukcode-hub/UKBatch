@@ -8,7 +8,7 @@ namespace UKBatch.Api.Jobs;
 /// <see cref="JobDefinition"/>.
 /// </summary>
 /// <remarks>
-/// NTH5: internal-only diagnostic fields (<c>ImplementationTypeName</c>, <c>SourceService</c>)
+/// Internal-only diagnostic fields (<c>ImplementationTypeName</c>, <c>SourceService</c>)
 /// are intentionally omitted from the wire DTO to keep the public surface stable across
 /// runtime/adapter substitution.
 /// </remarks>

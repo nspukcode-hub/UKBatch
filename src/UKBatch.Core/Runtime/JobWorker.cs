@@ -136,6 +136,11 @@ internal sealed class JobWorker
         // Step 3 + 4: build context and linked CTS for per-execution timeout.
         var startedAt = _clock.GetUtcNow();
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        // CancelAfter fires on the system wall clock (the CTS is not TimeProvider-aware), so the
+        // timed-out classification below MUST measure elapsed time from the same source — a
+        // monotonic tick captured at arming time. Measuring via the injected TimeProvider would
+        // misclassify a real timeout as a cooperative cancel whenever a non-system clock is in play.
+        var timeoutArmedAtTicks = Environment.TickCount64;
         if (req.Definition.TimeoutSeconds > 0)
         {
             linkedCts.CancelAfter(TimeSpan.FromSeconds(req.Definition.TimeoutSeconds));
@@ -190,7 +195,7 @@ internal sealed class JobWorker
             //      any other exception so MaxRetries is honored and the row finalizes Failed (not Cancelled).
             //  (2) genuine cooperative cancellation (job observed the token and bailed without a timeout):
             //      terminal Cancelled, no retry.
-            var elapsed = _clock.GetUtcNow() - startedAt;
+            var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - timeoutArmedAtTicks);
             var timedOut = req.Definition.TimeoutSeconds > 0
                 && elapsed >= TimeSpan.FromSeconds(req.Definition.TimeoutSeconds);
             if (timedOut)

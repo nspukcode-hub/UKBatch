@@ -68,8 +68,10 @@ internal sealed class InMemoryWorkerRegistry : IWorkerRegistry
 
         // A genuinely new worker: reclaim expired slots first so the cap reflects only live workers.
         // Gated to "near or at capacity" so the common case (a small fleet, plenty of headroom) skips
-        // the O(n) scan entirely. The race between this check and the eviction below is benign — at
-        // worst we briefly hold one extra entry, which the next sweep reclaims.
+        // the O(n) scan entirely. The race between this check and the eviction below is benign — the
+        // transient overshoot is bounded by the number of CONCURRENT new-worker writers (N threads can
+        // all pass the cap check before any inserts), and the next new-key upsert evicts back under
+        // the cap. Memory stays bounded either way (every entry is length-capped at the endpoint).
         if (_store.Count >= MaxWorkers / 2)
         {
             SweepExpired(now);

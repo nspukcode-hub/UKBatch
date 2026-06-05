@@ -95,7 +95,7 @@ There is **no application-level HMAC** — trust lives at the broker layer. Prov
 | `PrefetchCount` | `16` | Max unacked deliveries in flight |
 | `MaxRedeliveryCount` | `5` | Broker delivery-limit before dead-lettering |
 | `DefaultRequestTimeout` | `30s` | Request/reply wall-clock timeout |
-| `PublisherConfirmTimeout` | `10s` | Per-publish confirm wait |
+| `PublisherConfirmTimeout` | `10s` | Per-publish confirm wait (validated; **not yet wired** — the confirm wait is currently bounded by the caller token) |
 | `MessageIdCacheCapacity` | `4096` | Receiver-side dedupe LRU size |
 | `ConsumerDispatchConcurrency` | `1` | Parallel consumer dispatch per channel |
 
