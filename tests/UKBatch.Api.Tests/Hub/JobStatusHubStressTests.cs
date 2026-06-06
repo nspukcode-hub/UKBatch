@@ -292,18 +292,21 @@ public sealed class JobStatusHubStressTests : IAsyncLifetime
         // and 'batch:<id>' MUST receive each execution event 2 times — combined with 'job:<name>'
         // for invoice-generation = 3 times. The 4th subscription would be exec-id-keyed which we
         // can't pre-subscribe to.
+        // Wait for the exact condition the assertion below checks — the InvoiceGenerationJob
+        // execution observed at least 3 times for one (ExecutionId, Status) tuple (the 'all',
+        // 'job:<name>' and 'batch:<id>' fan-out). Breaking earlier on a weaker proxy (any execution
+        // seen twice) would let the assertion observe a partial fan-out before the third copy is
+        // delivered, which flakes under load. The 30s deadline is the watchdog.
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         while (DateTimeOffset.UtcNow < deadline)
         {
             lock (execs)
             {
-                // We expect multiple events from the batch run; at least one execution should
-                // arrive duplicated due to multi-group subscription.
-                var grouped = execs
-                    .Where(e => e.BatchId == batchId)
+                var fannedOut = execs
+                    .Where(e => e.BatchId == batchId && e.JobName == "Sample.RestApi.Jobs.InvoiceGenerationJob")
                     .GroupBy(e => (e.ExecutionId, e.Status))
-                    .Any(g => g.Count() >= 2);
-                if (grouped) break;
+                    .Any(g => g.Count() >= 3);
+                if (fannedOut) break;
             }
             await Task.Delay(200, cts.Token);
         }
