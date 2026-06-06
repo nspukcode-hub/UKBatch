@@ -86,12 +86,19 @@ public class JobDispatcherTests
         await d.EnqueueAsync(NewRequest(), default).ConfigureAwait(false);
         await d.EnqueueAsync(NewRequest(), default).ConfigureAwait(false);
 
-        // Next enqueue should block until a reader pulls one out.
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        // Next enqueue should block until a reader pulls one out. Generous cancellation — a safety net
+        // for a stuck writer, not a timing assumption (the drain below releases it well before this).
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var slowWriter = Task.Run(async () => await d.EnqueueAsync(NewRequest(), cts.Token).ConfigureAwait(false));
 
-        // Wait a bit, expect backpressure counter to be 1.
-        await Task.Delay(200).ConfigureAwait(false);
+        // Deterministically wait until the writer is parked in the backpressure wait (the counter is
+        // incremented when a writer blocks on a full channel). A fixed delay flaked here: under CPU
+        // load the Task.Run may not even be scheduled — let alone reach the wait — within 200ms.
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        while (d.BackpressureWaiterCount < 1 && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(10).ConfigureAwait(false);
+        }
         d.BackpressureWaiterCount.Should().BeGreaterOrEqualTo(1);
 
         // Drain to release.

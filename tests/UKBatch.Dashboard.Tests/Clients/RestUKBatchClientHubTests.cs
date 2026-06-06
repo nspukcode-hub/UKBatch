@@ -45,17 +45,32 @@ public sealed class RestUKBatchClientHubTests : IClassFixture<SampleRestApiFacto
     public async Task ConnectAsync_TransitionsToConnected()
     {
         await using var client = BuildWithBridgedHub();
+        var statesLock = new object();
         var states = new List<UKBatchClientState>();
-        client.StateChanged += s => { states.Add(s); return Task.CompletedTask; };
+        client.StateChanged += s =>
+        {
+            lock (statesLock) { states.Add(s); }
+            return Task.CompletedTask;
+        };
 
         client.State.Should().Be(UKBatchClientState.Disconnected);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         await client.ConnectAsync(cts.Token);
         client.State.Should().Be(UKBatchClientState.Connected);
-        // StateChanged is fire-and-forget, give the event loop a moment.
-        await Task.Delay(150);
-        states.Should().Contain(UKBatchClientState.Connecting);
-        states.Should().Contain(UKBatchClientState.Connected);
+
+        // StateChanged is fire-and-forget on a thread-pool continuation, so the observed states may
+        // lag the synchronous State property. Wait until both transitions have been delivered rather
+        // than guessing with a fixed delay that can be too short under load.
+        UKBatchClientState[] Snapshot() { lock (statesLock) { return states.ToArray(); } }
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        while (!(Snapshot().Contains(UKBatchClientState.Connecting) && Snapshot().Contains(UKBatchClientState.Connected))
+               && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
+        var observed = Snapshot();
+        observed.Should().Contain(UKBatchClientState.Connecting);
+        observed.Should().Contain(UKBatchClientState.Connected);
     }
 
     [Fact]

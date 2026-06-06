@@ -42,9 +42,19 @@ public sealed class DurableApprovalRecoveryTests : IAsyncLifetime
         using var cts = new CancellationTokenSource();
 
         var gate = harness.AwaitApprovalAsync("batch-1", "step-1", Config(), cts.Token);
-        await Task.Delay(50).ConfigureAwait(false);
 
-        var stored = await _store.ListPendingAsync(CancellationToken.None);
+        // The gate's create path writes the durable Pending record through the store asynchronously.
+        // The test does not await the gate (it parks awaiting a decision), so poll the store until the
+        // record lands rather than guessing with a fixed delay — under load the write-through may not
+        // have committed within any single hard-coded interval.
+        IReadOnlyList<PersistedApprovalGate> stored = Array.Empty<PersistedApprovalGate>();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            stored = await _store.ListPendingAsync(CancellationToken.None);
+            if (stored.Count > 0) break;
+            await Task.Delay(10).ConfigureAwait(false);
+        }
         stored.Should().ContainSingle("the create path writes a durable Pending record before announcing the gate");
         stored[0].BatchId.Should().Be("batch-1");
         stored[0].Status.Should().Be(ApprovalRecordStatus.Pending);

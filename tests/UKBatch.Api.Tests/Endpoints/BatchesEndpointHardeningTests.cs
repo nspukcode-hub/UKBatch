@@ -54,14 +54,30 @@ public sealed class BatchesEndpointHardeningTests : IClassFixture<SampleRestApiF
             return;
         }
 
-        // Give the batch a moment to make progress despite the disconnect.
-        await Task.Delay(500);
-        var status = await client.GetAsync(new Uri($"/api/batches/{batchId}/status", UriKind.Relative));
-        status.IsSuccessStatusCode.Should().BeTrue();
-        var sjson = await status.Content.ReadAsStringAsync();
-        using var sdoc = JsonDocument.Parse(sjson);
-        var items = sdoc.RootElement.GetProperty("items").EnumerateArray().ToList();
-        items.Should().NotBeEmpty(
+        // Wait for the batch to make progress despite the disconnect. Poll the status endpoint
+        // until the first child execution lands in the store rather than guessing with a fixed
+        // delay — under load the fire-and-forget batch task may not have dispatched a child within
+        // any single hard-coded interval.
+        HttpResponseMessage? status = null;
+        var itemCount = 0;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            status = await client.GetAsync(new Uri($"/api/batches/{batchId}/status", UriKind.Relative));
+            if (status.IsSuccessStatusCode)
+            {
+                var pollJson = await status.Content.ReadAsStringAsync();
+                using var pollDoc = JsonDocument.Parse(pollJson);
+                itemCount = pollDoc.RootElement.GetProperty("items").GetArrayLength();
+                if (itemCount > 0)
+                {
+                    break;
+                }
+            }
+            await Task.Delay(50);
+        }
+        status!.IsSuccessStatusCode.Should().BeTrue();
+        itemCount.Should().BeGreaterThan(0,
             "batch lifetime must not be tied to the HTTP request — at least one child execution should land in the store.");
     }
 
