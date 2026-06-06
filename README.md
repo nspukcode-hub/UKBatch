@@ -2,7 +2,11 @@
 
 Lite, pluggable batch and job orchestration for .NET 8 and .NET 10 microservices.
 
-> Status: 0.1.0-alpha — under active development; not yet on NuGet.
+> Status: 0.1.0-alpha — early preview, [available on NuGet](https://www.nuget.org/packages?q=UKBatch).
+
+```bash
+dotnet add package UKBatch.AspNetCore --prerelease
+```
 
 ## What it is
 

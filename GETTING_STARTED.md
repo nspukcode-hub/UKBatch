@@ -14,7 +14,7 @@ This guide walks the common path. Each section links to a runnable sample under 
 - **.NET 10 SDK** to build this repo (the repo pins a version in `global.json`). Consuming apps need only their own SDK: the packages target both `net8.0` and `net10.0`, so a plain .NET 8 SDK project works.
 - **Docker** (optional) — only for the EF Core PostgreSQL path and the server + workers Compose stack.
 
-> Packages are not on NuGet yet (0.1.0-alpha). To follow along now, clone the repo and reference the projects, or build the packages with `dotnet pack`. The `dotnet add package` lines below are what consumers will use once published.
+> Packages are on NuGet as 0.1.0-alpha pre-releases — install with `dotnet add package <PackageId> --prerelease` (or tick "Include prerelease" in your IDE's package manager).
 
 ## 1. Embedded mode — your first job
 
