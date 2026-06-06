@@ -1,0 +1,144 @@
+name: Release
+
+# Publishes the UKBatch package family to nuget.org and creates the matching GitHub release.
+# Triggered by pushing a version tag (e.g. `git push origin v0.1.0-alpha`).
+#
+# Authentication uses nuget.org Trusted Publishing: the job exchanges its GitHub OIDC token
+# for a short-lived NuGet API key via NuGet/login, so no long-lived secret is stored anywhere.
+# The trust policy on nuget.org pins this repository and this workflow file by name.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write  # create the GitHub release
+  id-token: write  # mint the OIDC token exchanged for a temporary NuGet API key
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The version's single source of truth is Directory.Build.props; the tag is only the
+      # trigger. If they do not match exactly, fail before building anything so a stale props
+      # file can never publish under a mismatched tag.
+      - name: Verify tag matches Directory.Build.props version
+        run: |
+          prefix=$(sed -n 's:.*<VersionPrefix>\(.*\)</VersionPrefix>.*:\1:p' Directory.Build.props)
+          suffix=$(sed -n 's:.*<VersionSuffix>\(.*\)</VersionSuffix>.*:\1:p' Directory.Build.props)
+          if [ -z "$prefix" ]; then
+            echo "::error::VersionPrefix not found in Directory.Build.props"
+            exit 1
+          fi
+          version="$prefix"
+          [ -n "$suffix" ] && version="$prefix-$suffix"
+          expected_tag="v$version"
+          if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' does not match Directory.Build.props version '$version' (expected tag '$expected_tag')."
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "VERSION_SUFFIX=$suffix" >> "$GITHUB_ENV"
+
+      # Both runtimes: packages multi-target net10.0;net8.0, so `dotnet build` compiles and
+      # `dotnet test` runs every test assembly once per target framework.
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      # ContinuousIntegrationBuild normalizes the source paths embedded in the PDBs so the
+      # published symbol packages are machine-independent (Source Link practice for official builds).
+      - name: Build
+        run: dotnet build --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
+
+      # Docker-free gate — same filter as CI. The PostgreSQL Testcontainers and RabbitMQ broker
+      # tests require a container runtime and are validated outside hosted runners.
+      - name: Test
+        run: dotnet test --configuration Release --no-build --verbosity normal --filter "Category!=RequiresDocker"
+
+      - name: Pack
+        run: dotnet pack --configuration Release --no-build --output ./artifacts -p:ContinuousIntegrationBuild=true
+
+      # The solution packs exactly nine packages (the server host, samples, and test projects are
+      # not packable). Guard the count and the version stamp so a packaging regression cannot
+      # reach nuget.org.
+      - name: Verify package set
+        run: |
+          count=$(ls artifacts/*.nupkg | wc -l)
+          if [ "$count" -ne 9 ]; then
+            echo "::error::Expected 9 .nupkg files, found $count:"
+            ls -l artifacts/
+            exit 1
+          fi
+          for f in artifacts/*.nupkg; do
+            case "$f" in
+              *".$VERSION.nupkg") ;;
+              *) echo "::error::Package '$f' does not carry version $VERSION"; exit 1 ;;
+            esac
+          done
+          ls -l artifacts/
+
+      - name: NuGet login (trusted publishing)
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: nspukcode
+
+      # Symbol packages (.snupkg) sitting next to the .nupkg files are pushed automatically.
+      # --skip-duplicate makes re-running a partially failed job safe: already-published
+      # versions are reported and skipped instead of failing the run.
+      - name: Push to nuget.org
+        run: |
+          dotnet nuget push "artifacts/*.nupkg" \
+            --source https://api.nuget.org/v3/index.json \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
+            --skip-duplicate
+
+      - name: Upload published packages (audit artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-packages
+          path: artifacts/*
+
+      # Cut this version's section out of CHANGELOG.md for the release notes. Stops at the next
+      # version heading or at the link-reference block at the bottom of the file.
+      - name: Extract release notes
+        run: |
+          awk -v ver="$VERSION" '
+            !found && index($0, "## [" ver "]") == 1 { found = 1; next }
+            found && (/^## \[/ || /^\[/) { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! [ -s release-notes.md ]; then
+            echo "CHANGELOG section for $VERSION not found; using a pointer instead."
+            echo "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md)." > release-notes.md
+          fi
+
+      # Versions with a suffix (e.g. -alpha) are flagged as pre-releases; a suffix-less tag
+      # becomes a normal release. Skips quietly if the release already exists (job re-runs).
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; skipping."
+            exit 0
+          fi
+          prerelease_flag=""
+          [ -n "$VERSION_SUFFIX" ] && prerelease_flag="--prerelease"
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            $prerelease_flag \
+            --title "UKBatch $VERSION" \
+            --notes-file release-notes.md

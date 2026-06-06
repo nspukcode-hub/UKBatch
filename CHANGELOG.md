@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.1.0-alpha] - 2026-06-05
+## [0.1.0-alpha] - 2026-06-06
 
 First public preview of the UKBatch package family.
 
@@ -34,3 +34,6 @@ First public preview of the UKBatch package family.
 - **In-memory transport dedupe.** Transport message-dedupe caches are in-memory per process and reset on restart.
 - **Single-node orphan reaper.** The orphaned-execution reaper assumes a single orchestrator node.
 - **Adapters not yet available.** Kafka, Azure Service Bus, and Redis adapters are not part of this release.
+
+[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.0-alpha...HEAD
+[0.1.0-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.0-alpha
