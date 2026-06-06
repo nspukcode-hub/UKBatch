@@ -1,6 +1,6 @@
 # UKBatch.Core
 
-The runtime for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 8 and .NET 10. This package contains the dispatcher, the cron scheduler (via [Cronos](https://github.com/HangfireIO/Cronos)), the job/batch executors, the in-memory stores, and the in-process transport. It is everything you need to run jobs inside a single process; adapter packages swap in persistence and cross-service transport without code changes.
+The runtime for [UKBatch](https://github.com/nspukcode-hub/UKBatch) — a lightweight, pluggable batch/job orchestration library for .NET 8 and .NET 10. This package contains the dispatcher, the cron scheduler, the job/batch executors, the in-memory stores, and the in-process transport. It is everything you need to run jobs inside a single process; adapter packages swap in persistence and cross-service transport without code changes.
 
 > **Status:** part of the UKBatch 0.1.0-alpha package family.
 

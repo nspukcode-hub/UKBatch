@@ -14,7 +14,7 @@ First public preview of the UKBatch package family.
 
 - **Multi-targeting** — every package ships `net8.0` and `net10.0` builds in a single NuGet package; the consuming app's target framework picks the right build automatically. On `net8.0` the EF Core adapter rides the EF Core 8 (LTS) line.
 - **UKBatch.Abstractions** — zero-dependency contracts (interfaces, attributes, DTOs) shared by every package.
-- **UKBatch.Core** — the runtime: dispatcher, cron scheduler (via Cronos), per-job retries, sequential/parallel/approval-gate workflows, partitioned data-parallel jobs, the in-memory store, and the in-process transport.
+- **UKBatch.Core** — the runtime: dispatcher, cron scheduler, per-job retries, sequential/parallel/approval-gate workflows, partitioned data-parallel jobs, the in-memory store, and the in-process transport.
 - **UKBatch.AspNetCore** — host integration with `HttpContext`-aware `TriggeredBy` enrichment, W3C trace propagation, and a readiness health check.
 - **UKBatch.Api** — REST endpoints, an OpenAPI document, and a SignalR hub for live job-status updates.
 - **UKBatch.Dashboard** — a Blazor Server UI for monitoring, triggering, approvals, a visual drag-and-drop batch editor, a live DAG view, and multi-service support.

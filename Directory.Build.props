@@ -26,8 +26,9 @@
     <PackageProjectUrl>https://github.com/nspukcode-hub/UKBatch</PackageProjectUrl>
     <RepositoryUrl>https://github.com/nspukcode-hub/UKBatch.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>batch;job;orchestration;workflow;background-jobs;blazor;dashboard;microservices;hangfire-alternative</PackageTags>
+    <PackageTags>batch;job;orchestration;workflow;background-jobs;blazor;dashboard;microservices;batch-processing</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
     <PackageReleaseNotes>See https://github.com/nspukcode-hub/UKBatch/blob/main/CHANGELOG.md</PackageReleaseNotes>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
@@ -44,6 +45,7 @@
 
   <ItemGroup Condition="'$(IsPackable)' == 'true'">
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Condition="Exists('$(MSBuildThisFileDirectory)README.md')" />
+    <None Include="$(MSBuildThisFileDirectory)icon.png" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
 </Project>
