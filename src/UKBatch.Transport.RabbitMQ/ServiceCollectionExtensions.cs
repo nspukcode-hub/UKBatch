@@ -46,8 +46,11 @@ public static class ServiceCollectionExtensions
         }
 
         // Options binding — appsettings section + optional programmatic overlay.
+        // ValidateOnStart promotes the registered validator to host StartAsync, so invalid
+        // configuration fails fast at boot rather than lazily on the first connect/publish.
         var optionsBuilder = services.AddOptions<RabbitMqTransportOptions>()
-            .BindConfiguration("UKBatch:Transport:RabbitMQ");
+            .BindConfiguration("UKBatch:Transport:RabbitMQ")
+            .ValidateOnStart();
         if (configure is not null)
         {
             optionsBuilder.Configure(configure);
