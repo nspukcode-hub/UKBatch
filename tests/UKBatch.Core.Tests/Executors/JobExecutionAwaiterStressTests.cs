@@ -24,7 +24,32 @@ public class JobExecutionAwaiterStressTests
         var store = new InMemoryJobStore(TimeProvider.System, Options.Create(new UKBatchOptions { WatchBufferCapacity = 65536 }), new JobExecutionWatchHub(NullLogger<JobExecutionWatchHub>.Instance));
         var awaiter = new JobExecutionAwaiter(store, NullLogger<JobExecutionAwaiter>.Instance);
         await awaiter.StartAsync(default).ConfigureAwait(false);
-        await Task.Delay(200).ConfigureAwait(false); // ensure watch loop subscribed
+
+        // Deterministic warmup — a fixed delay is not enough on a cold, contended CI runner.
+        // A sentinel waiter is registered while its execution is still absent (the catch-up read
+        // sees nothing), so its resolution proves the watch loop delivers events end-to-end.
+        // Retries with a fresh sentinel until the pipeline is demonstrably live.
+        var warmedUp = false;
+        for (var attempt = 0; attempt < 100 && !warmedUp; attempt++)
+        {
+            var sentinelId = IdGenerator.NewExecutionId();
+            var sentinelWait = awaiter.WaitForTerminalAsync(sentinelId, default);
+            await store.InsertAsync(NewExecution(sentinelId), default).ConfigureAwait(false);
+            await store.UpdateStatusAsync(sentinelId, JobStatus.Running, null, default).ConfigureAwait(false);
+            await store.UpdateStatusAsync(sentinelId, JobStatus.Completed, null, default).ConfigureAwait(false);
+            try
+            {
+                await sentinelWait.WaitAsync(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+                warmedUp = true;
+            }
+            catch (TimeoutException)
+            {
+                // Watch loop not subscribed yet — the sentinel's events were published before the
+                // subscription existed. Try again with a fresh sentinel.
+            }
+        }
+
+        warmedUp.Should().BeTrue("the watch pipeline did not become live within the warmup budget");
 
         var heapBefore = GC.GetTotalMemory(forceFullCollection: true);
 
@@ -40,24 +65,36 @@ public class JobExecutionAwaiterStressTests
             // Trip every one to terminal in parallel.
             await Task.WhenAll(pairs.Select(p => Task.Run(async () =>
             {
-                var ex = new JobExecution
-                {
-                    ExecutionId = p.id,
-                    JobName = "j",
-                    Status = JobStatus.Pending,
-                    Parameters = new Dictionary<string, object?>(),
-                    EnqueuedAtUtc = DateTimeOffset.UtcNow,
-                    AttemptNumber = 1,
-                    MaxRetries = 0,
-                    Processed = 0,
-                    Failed = 0,
-                };
-                await store.InsertAsync(ex, default).ConfigureAwait(false);
+                await store.InsertAsync(NewExecution(p.id), default).ConfigureAwait(false);
                 await store.UpdateStatusAsync(p.id, JobStatus.Running, null, default).ConfigureAwait(false);
                 await store.UpdateStatusAsync(p.id, JobStatus.Completed, null, default).ConfigureAwait(false);
             }))).ConfigureAwait(false);
 
-            await Task.WhenAll(pairs.Select(p => p.wait)).WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+            // Progress-aware wait — a fixed wall-clock budget flakes on slow CI runners. As long as
+            // waiters keep resolving, keep waiting; thirty seconds with ZERO progress is the actual
+            // deadlock signature this test exists to catch. Arming and elapsed measurement share the
+            // same clock source on purpose.
+            var waits = pairs.Select(p => p.wait).ToList();
+            var lastCompleted = 0;
+            var stallStartedAt = Environment.TickCount64;
+            while (!Task.WhenAll(waits).IsCompleted)
+            {
+                var completed = waits.Count(w => w.IsCompleted);
+                if (completed > lastCompleted)
+                {
+                    lastCompleted = completed;
+                    stallStartedAt = Environment.TickCount64;
+                }
+                else if (Environment.TickCount64 - stallStartedAt > 30_000)
+                {
+                    throw new TimeoutException(
+                        $"Waiter resolution stalled: {completed}/{N} completed with no progress for 30s.");
+                }
+
+                await Task.Delay(100).ConfigureAwait(false);
+            }
+
+            await Task.WhenAll(waits).ConfigureAwait(false);
 
             // Every waiter must have completed.
             pairs.All(p => p.wait.IsCompletedSuccessfully).Should().BeTrue();
@@ -73,4 +110,17 @@ public class JobExecutionAwaiterStressTests
             await awaiter.DisposeAsync().ConfigureAwait(false);
         }
     }
+
+    private static JobExecution NewExecution(string id) => new()
+    {
+        ExecutionId = id,
+        JobName = "j",
+        Status = JobStatus.Pending,
+        Parameters = new Dictionary<string, object?>(),
+        EnqueuedAtUtc = DateTimeOffset.UtcNow,
+        AttemptNumber = 1,
+        MaxRetries = 0,
+        Processed = 0,
+        Failed = 0,
+    };
 }
