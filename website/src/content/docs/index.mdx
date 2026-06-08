@@ -1,0 +1,91 @@
+---
+title: UKBatch
+description: Lite, pluggable batch and job orchestration for .NET 8 and .NET 10 microservices.
+template: splash
+hero:
+  tagline: Lite, pluggable batch and job orchestration for .NET 8 and .NET 10 microservices. Write a job once; decide later where its state lives and how services talk.
+  image:
+    file: ../../assets/logo.png
+  actions:
+    - text: Get started
+      link: /UKBatch/getting-started/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/nspukcode-hub/UKBatch
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+```bash
+dotnet add package UKBatch.AspNetCore --prerelease
+```
+
+## What it is
+
+UKBatch is a NuGet package family that orchestrates jobs and batches across one
+service or many, with minimal code. You write a job once and decide later where
+its state lives (in-memory or a database) and how services talk to each other
+(in-process, HTTP, or RabbitMQ) — the job code does not change. Run it embedded
+in your app with a built-in dashboard, or as a standalone server with worker
+microservices.
+
+<CardGrid stagger>
+	<Card title="One-line integration" icon="rocket">
+		`builder.AddUKBatchAspNetCore(b => b.AddJob<MyJob>())`. An in-memory store and
+		in-process transport are wired by default — nothing else is required to run.
+	</Card>
+	<Card title="Two modes, same code" icon="puzzle">
+		Embed the library + dashboard in your app, or run a standalone server with
+		workers. Only configuration differs.
+	</Card>
+	<Card title="Pluggable storage & transport" icon="setting">
+		Storage: InMemory / PostgreSQL / SQLite (EF Core). Transport: in-process /
+		HTTP / RabbitMQ.
+	</Card>
+	<Card title="Real workflow patterns" icon="approve-check">
+		Sequential, parallel fan-out/fan-in, manual approval gates, and cross-service
+		steps via `.OnService("...")`.
+	</Card>
+	<Card title="Data-parallel jobs" icon="random">
+		"Fetch a set, process on N workers" as a first-class primitive —
+		`IPartitionedJob<TItem>`.
+	</Card>
+	<Card title="Dashboard + REST" icon="laptop">
+		A Blazor Server UI for monitoring, triggering, approvals, and a visual batch
+		editor — plus a REST API, OpenAPI document, and a live SignalR hub.
+	</Card>
+</CardGrid>
+
+## Where to next
+
+<CardGrid>
+	<LinkCard
+		title="Get started"
+		description="Your first job, the dashboard, persistent storage, and cross-service workflows."
+		href="/UKBatch/getting-started/"
+	/>
+	<LinkCard
+		title="Concepts"
+		description="Deployment modes, workflow building blocks, and the gotchas worth knowing up front."
+		href="/UKBatch/concepts/deployment-modes/"
+	/>
+	<LinkCard
+		title="Packages"
+		description="The nine packages in the family and what each one is for."
+		href="/UKBatch/packages/"
+	/>
+	<LinkCard
+		title="Changelog"
+		description="Release notes and the known limitations of this preview."
+		href="/UKBatch/changelog/"
+	/>
+</CardGrid>
+
+:::note
+UKBatch is an early preview (0.1.x-alpha). Packages are on NuGet as pre-releases —
+install with `--prerelease`. See [Gotchas](/UKBatch/concepts/gotchas/) and the
+[Changelog](/UKBatch/changelog/) for current limitations.
+:::

@@ -1,0 +1,48 @@
+name: Deploy website
+
+# Builds the Astro Starlight documentation site in website/ and publishes it to GitHub Pages.
+# Independent of the .NET CI and the NuGet release workflow: it never builds, packs, or
+# publishes any package, and it only runs when the website changes.
+#
+# Note: GitHub Pages serves a public repository for free. While the repository is private,
+# enabling Pages requires a paid plan; until then this workflow builds but cannot publish.
+# Repo Settings -> Pages -> Source must be set to "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/website-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; let an in-progress run finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build with Astro
+        uses: withastro/action@v3
+        with:
+          path: website # the Astro Starlight project lives here
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
