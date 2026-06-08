@@ -46,6 +46,17 @@ public sealed class RabbitMqTransportOptions
     /// <summary>Enable TLS (AMQPS) for the discrete-field connection. Ignored when <see cref="Uri"/> is set.</summary>
     public bool UseTls { get; set; }
 
+    /// <summary>
+    /// Opt-in escape hatch for the default <c>guest</c>/<c>guest</c> credentials on a NON-loopback broker
+    /// host. Default <c>false</c>: host start FAILS when a non-loopback broker is reached with the default
+    /// credentials, because there is no application-level HMAC on this transport — the broker layer is the
+    /// only authentication boundary, so default credentials reachable off-box are a real exposure. Set to
+    /// <c>true</c> to acknowledge an internal/trusted-network broker explicitly. Loopback hosts (localhost,
+    /// 127.0.0.1, ::1) are always exempt. TLS (<see cref="UseTls"/> / <c>amqps://</c>) is independently
+    /// recommended for any non-loopback broker but is not enforced by this flag.
+    /// </summary>
+    public bool AllowInsecureBroker { get; set; }
+
     // ===== Topology =====
 
     /// <summary>Direct, durable job exchange. Default <c>ukbatch.jobs</c>. Routing key = target service name.</summary>

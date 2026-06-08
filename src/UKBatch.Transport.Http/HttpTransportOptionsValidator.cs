@@ -79,9 +79,15 @@ internal sealed class HttpTransportOptionsValidator : IValidateOptions<HttpTrans
             failures.Add($"CircuitBreakerWindow must be >= 1s (got {options.CircuitBreakerWindow}).");
         }
 
-        if (options.MaxBodyBytes < 1)
+        // Upper bound: the HMAC filter buffers up to MaxBodyBytes in memory BEFORE signature
+        // verification, so this value is an unauthenticated per-request memory ceiling. Cap it so a
+        // misconfiguration cannot turn the receiver into a pre-auth memory-exhaustion target.
+        const int MaxBodyBytesCeiling = 16 * 1024 * 1024; // 16 MB
+        if (options.MaxBodyBytes < 1 || options.MaxBodyBytes > MaxBodyBytesCeiling)
         {
-            failures.Add($"MaxBodyBytes must be >= 1 (got {options.MaxBodyBytes}).");
+            failures.Add(
+                $"MaxBodyBytes must be in [1, {MaxBodyBytesCeiling}] (got {options.MaxBodyBytes}). " +
+                $"The HMAC filter buffers up to this size before authenticating the request.");
         }
 
         if (options.RetryDelays is not null)

@@ -162,19 +162,28 @@ internal static class ApprovalsEndpoints
     /// </remarks>
     private static ApproverContext BuildApproverFromHttpContext(HttpContext http, UKBatchOptions options)
     {
-        var identity = http.User.Identity?.IsAuthenticated == true
-            ? (http.User.Identity.Name ?? "anonymous")
+        var isAuthenticated = http.User.Identity?.IsAuthenticated == true;
+        var identity = isAuthenticated
+            ? (http.User.Identity!.Name ?? "anonymous")
             : "anonymous";
 
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        // Harvest roles ONLY from an authenticated principal. An unauthenticated caller therefore
+        // always yields an empty role set, so the role-based authorization path can never admit it —
+        // the wildcard ("*") rejection of anonymous callers is then matched structurally by the role
+        // path, not merely by the identity-string check. A host auth scheme that attaches role claims
+        // to a principal whose Identity reports IsAuthenticated == false cannot reach a role-gated gate.
         var roles = new List<string>();
-        foreach (var claimType in options.ApprovalRoleClaimTypes)
+        if (isAuthenticated)
         {
-            foreach (var claim in http.User.FindAll(claimType))
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var claimType in options.ApprovalRoleClaimTypes)
             {
-                if (seen.Add(claim.Value))
+                foreach (var claim in http.User.FindAll(claimType))
                 {
-                    roles.Add(claim.Value);
+                    if (seen.Add(claim.Value))
+                    {
+                        roles.Add(claim.Value);
+                    }
                 }
             }
         }

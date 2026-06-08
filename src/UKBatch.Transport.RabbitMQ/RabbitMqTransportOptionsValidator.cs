@@ -24,6 +24,7 @@ internal sealed class RabbitMqTransportOptionsValidator : IValidateOptions<Rabbi
         ValidateTopologyNames(options, failures);
         ValidateBehavior(options, failures);
         ValidateResilience(options, failures);
+        ValidateInsecureBroker(options, failures);
 
         return failures.Count > 0
             ? ValidateOptionsResult.Fail(failures)
@@ -148,6 +149,59 @@ internal sealed class RabbitMqTransportOptionsValidator : IValidateOptions<Rabbi
         {
             failures.Add($"RabbitMqTransportOptions.CircuitBreakerWindow must be positive (got {options.CircuitBreakerWindow}).");
         }
+    }
+
+    private static void ValidateInsecureBroker(RabbitMqTransportOptions options, List<string> failures)
+    {
+        if (options.AllowInsecureBroker)
+        {
+            return; // operator explicitly accepted an internal/trusted-network broker.
+        }
+
+        string host;
+        bool isGuestDefault;
+
+        if (!string.IsNullOrWhiteSpace(options.Uri))
+        {
+            if (!System.Uri.TryCreate(options.Uri, UriKind.Absolute, out var parsed))
+            {
+                return; // a malformed Uri is reported by ValidateConnection; nothing to assess here.
+            }
+            host = parsed.Host;
+            var userInfo = parsed.UserInfo;
+            isGuestDefault = userInfo.Length == 0
+                || string.Equals(userInfo, "guest", StringComparison.Ordinal)
+                || string.Equals(userInfo, "guest:guest", StringComparison.Ordinal);
+        }
+        else
+        {
+            host = options.HostName;
+            isGuestDefault = string.Equals(options.UserName, "guest", StringComparison.Ordinal)
+                && string.Equals(options.Password, "guest", StringComparison.Ordinal);
+        }
+
+        // Only the default guest/guest credentials on a NON-loopback broker are rejected: there is no
+        // application-level HMAC on this transport, so default credentials reachable off-box are the
+        // concrete exposure. Cleartext AMQP without TLS is independently discouraged (see UseTls) but is
+        // NOT failed here — a dedicated user on a trusted private network is a legitimate operator choice.
+        if (!isGuestDefault || string.IsNullOrWhiteSpace(host) || IsLoopbackHost(host))
+        {
+            return; // loopback broker (local dev / same host) is exempt, matching the HTTP transport.
+        }
+
+        failures.Add(
+            $"RabbitMqTransportOptions targets a non-loopback broker host ('{host}') with the default "
+            + "guest/guest credentials. Provision a dedicated broker user, or set "
+            + "RabbitMqTransportOptions.AllowInsecureBroker=true to accept an internal/trusted-network broker explicitly.");
+    }
+
+    private static bool IsLoopbackHost(string host)
+    {
+        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return System.Net.IPAddress.TryParse(host, out var ip) && System.Net.IPAddress.IsLoopback(ip);
     }
 
     private static void RequireNonWhitespace(string? value, string fieldName, List<string> failures)

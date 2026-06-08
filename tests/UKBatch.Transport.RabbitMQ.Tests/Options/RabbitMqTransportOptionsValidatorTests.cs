@@ -333,4 +333,59 @@ public sealed class RabbitMqTransportOptionsValidatorTests
         validator.Validate(Microsoft.Extensions.Options.Options.DefaultName, bad)
             .Succeeded.Should().BeFalse();
     }
+
+    // ===== Insecure-broker guard: default guest/guest on a non-loopback host =====
+
+    [Fact]
+    public void Validate_NonLoopbackHostWithGuestDefault_Fails()
+    {
+        var options = new RabbitMqTransportOptions { HostName = "broker.internal" };
+        var result = Validate(options);
+        result.Succeeded.Should().BeFalse();
+        result.Failures.Should().ContainMatch("*default*guest/guest credentials*");
+    }
+
+    [Fact]
+    public void Validate_NonLoopbackHostWithGuestDefault_AllowInsecureBroker_Succeeds()
+    {
+        var options = new RabbitMqTransportOptions { HostName = "broker.internal", AllowInsecureBroker = true };
+        Validate(options).Succeeded.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_NonLoopbackHostWithDedicatedUser_Succeeds()
+    {
+        var options = new RabbitMqTransportOptions
+        {
+            HostName = "broker.internal",
+            UserName = "appuser",
+            Password = "s3cret",
+        };
+        Validate(options).Succeeded.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("localhost")]
+    [InlineData("127.0.0.1")]
+    [InlineData("::1")]
+    public void Validate_LoopbackHostWithGuestDefault_Succeeds(string host)
+    {
+        // Loopback brokers (local dev / same host) are exempt even with the guest/guest default.
+        var options = new RabbitMqTransportOptions { HostName = host };
+        Validate(options).Succeeded.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_UriWithGuestOnNonLoopback_Fails()
+    {
+        var options = new RabbitMqTransportOptions { Uri = "amqp://guest:guest@broker.internal:5672/" };
+        Validate(options).Failures.Should().ContainMatch("*default*guest/guest credentials*");
+    }
+
+    [Fact]
+    public void Validate_UriWithDedicatedUserOnNonLoopback_Succeeds()
+    {
+        var options = new RabbitMqTransportOptions { Uri = "amqps://appuser:s3cret@broker.internal:5671/" };
+        Validate(options).Succeeded.Should().BeTrue();
+    }
 }
