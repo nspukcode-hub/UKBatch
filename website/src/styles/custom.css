@@ -1,0 +1,17 @@
+/* UKBatch brand accent — purple, derived from the package icon. */
+:root {
+	--sl-color-accent-low: #271561;
+	--sl-color-accent: #6d28d9;
+	--sl-color-accent-high: #c9b8f6;
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent-low: #ede9fe;
+	--sl-color-accent: #6d28d9;
+	--sl-color-accent-high: #2e1065;
+}
+
+/* Keep the wordmark tight next to the square icon. */
+.site-title img {
+	border-radius: 6px;
+}
