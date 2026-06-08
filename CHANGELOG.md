@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.1.2-alpha] - 2026-06-08
+## [0.1.3-alpha] - 2026-06-08
 
 ### Fixed
 
@@ -61,7 +61,7 @@ First public preview of the UKBatch package family.
 - **Single-node orphan reaper.** The orphaned-execution reaper assumes a single orchestrator node.
 - **Adapters not yet available.** Kafka, Azure Service Bus, and Redis adapters are not part of this release.
 
-[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.2-alpha...HEAD
-[0.1.2-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.2-alpha
+[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.3-alpha...HEAD
+[0.1.3-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.3-alpha
 [0.1.1-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.1-alpha
 [0.1.0-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.0-alpha
