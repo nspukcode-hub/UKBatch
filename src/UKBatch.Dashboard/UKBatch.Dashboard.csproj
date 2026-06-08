@@ -32,12 +32,20 @@
     <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
-  <!-- build/UKBatch.Dashboard.props is auto-included in the NuGet package
-       by the SDK's build-folder convention — any file under <project>/build/*.props matching the
-       package id is shipped at the package's build/ path and applied to PackageReference
-       consumers automatically. Without it the Web SDK skips emitting _framework/blazor.web.js
-       into the host's static asset manifest and dashboard interactivity (button clicks, SignalR
-       live updates) silently fails. ProjectReference does NOT propagate this — solution-internal
-       hosts (samples, integration tests) must set the prop manually in their own csproj. -->
+  <!-- A .NET 10 host that consumes this package as a NuGet library and runs the dashboard MUST set
+       <RequiresAspNetWebAssets>true</RequiresAspNetWebAssets> in its own project. The .NET Web SDK only
+       emits the Razor Components framework assets (blazor.web.js) when it detects the host as a Razor
+       host, which it is not when App.razor lives inside this package. That property is consumed during
+       NuGet restore, before a package's build assets are imported, so a package cannot supply it
+       automatically — only the consuming project (or its Directory.Build.props) can. Without it
+       _framework/blazor.web.js returns 404 at runtime and dashboard interactivity silently fails.
+       The .targets below turns that silent runtime 404 into a build-time warning on .NET 10 when the
+       property is missing. (.NET 8 hosts do not need it — MapRazorComponents serves the assets there.) -->
+  <ItemGroup>
+    <!-- buildTransitive/ alone reaches both direct and indirect consumers; packing into build/ too
+         would import the target twice and emit the warning twice. -->
+    <None Include="build/UKBatch.Dashboard.targets" Pack="true"
+          PackagePath="buildTransitive/UKBatch.Dashboard.targets" />
+  </ItemGroup>
 
 </Project>

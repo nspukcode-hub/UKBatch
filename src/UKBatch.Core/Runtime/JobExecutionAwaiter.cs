@@ -36,35 +36,50 @@ internal sealed class JobExecutionAwaiter : IJobExecutionAwaiter, IHostedService
     {
         _stoppingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var token = _stoppingCts.Token;
-        _watchTask = Task.Run(() => WatchLoopAsync(token), CancellationToken.None);
+
+        // Large buffer so the awaiter never blocks the store's publisher. NOTE: delivery is
+        // best-effort, not guaranteed — the in-memory adapter implements Backpressure as a
+        // non-blocking DropNewest, so if more than BufferCapacity events queue while this
+        // consumer lags, the tail is dropped and a dropped terminal event leaves its waiter
+        // pending. The 65536 buffer plus the catch-up read in WaitForTerminalAsync makes that
+        // practically unreachable; a periodic re-poll fallback is a planned hardening.
+        var watchOptions = new WatchOptions
+        {
+            OverflowPolicy = WatchOverflowPolicy.Backpressure,
+            BufferCapacity = 65536,
+        };
+
+        // Register the subscription synchronously before returning. The watch enumerator's body runs
+        // up to its first await — where the subscription is registered — during this first
+        // MoveNextAsync call, so any event published after StartAsync returns is guaranteed to be
+        // observed. The cancellation token is embedded in WatchAsync, not passed to
+        // GetAsyncEnumerator, so StopAsync's cancellation unblocks a pending MoveNextAsync.
+        var enumerator = _reader.WatchAsync(watchOptions, token).GetAsyncEnumerator(CancellationToken.None);
+
+        // MoveNextAsync returns a ValueTask; because the result is awaited inside the background
+        // loop (a different context), convert it to a Task immediately — the pooled IValueTaskSource
+        // backing an async-iterator's ValueTask must not be awaited across contexts.
+        Task<bool> firstMove = enumerator.MoveNextAsync().AsTask();
+
+        _watchTask = Task.Run(() => WatchLoopAsync(enumerator, firstMove, token), CancellationToken.None);
         return Task.CompletedTask;
     }
 
-    private async Task WatchLoopAsync(CancellationToken ct)
+    private async Task WatchLoopAsync(IAsyncEnumerator<JobExecution> enumerator, Task<bool> firstMove, CancellationToken ct)
     {
         try
         {
-            // Large buffer so the awaiter never blocks the store's publisher. NOTE: delivery is
-            // best-effort, not guaranteed — the in-memory adapter implements Backpressure as a
-            // non-blocking DropNewest, so if more than BufferCapacity events queue while this
-            // consumer lags, the tail is dropped and a dropped terminal event leaves its waiter
-            // pending. The 65536 buffer plus the catch-up read in WaitForTerminalAsync makes that
-            // practically unreachable; a periodic re-poll fallback is a planned hardening.
-            var watchOptions = new WatchOptions
+            var hasNext = await firstMove.ConfigureAwait(false);
+            while (hasNext)
             {
-                OverflowPolicy = WatchOverflowPolicy.Backpressure,
-                BufferCapacity = 65536,
-            };
-            await foreach (var ex in _reader.WatchAsync(watchOptions, ct).ConfigureAwait(false))
-            {
-                if (!BatchStateMachine.IsTerminal(ex.Status))
-                {
-                    continue;
-                }
-                if (_waiters.TryRemove(ex.ExecutionId, out var tcs))
+                var ex = enumerator.Current;
+                if (BatchStateMachine.IsTerminal(ex.Status) && _waiters.TryRemove(ex.ExecutionId, out var tcs))
                 {
                     tcs.TrySetResult(ex);
                 }
+                // Hot path: the in-loop ValueTask is awaited immediately on the same context, so it
+                // stays a ValueTask (no per-event allocation).
+                hasNext = await enumerator.MoveNextAsync().ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -74,6 +89,12 @@ internal sealed class JobExecutionAwaiter : IJobExecutionAwaiter, IHostedService
         catch (Exception ex)
         {
             _logger.LogError(ex, "JobExecutionAwaiter watch loop terminated unexpectedly.");
+        }
+        finally
+        {
+            // The enumerator is owned here (StartAsync created it), so dispose it on every path —
+            // including cancellation — exactly as the previous await-foreach did automatically.
+            await enumerator.DisposeAsync().ConfigureAwait(false);
         }
     }
 

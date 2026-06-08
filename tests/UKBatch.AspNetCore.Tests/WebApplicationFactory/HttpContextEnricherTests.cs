@@ -6,7 +6,6 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using Sample.SimpleJob.DevAuth;
 using UKBatch.Abstractions.Jobs;
 using UKBatch.Abstractions.Models;
 using UKBatch.AspNetCore;
@@ -18,8 +17,8 @@ using Xunit;
 namespace UKBatch.AspNetCore.Tests.WebApplicationFactory;
 
 /// <summary>
-/// Integration tests for the HttpContext-aware TriggeredBy enrichment. The DevAuth handler from
-/// <c>Sample.SimpleJob</c> is reused so the <c>X-Dev-User</c> header drives
+/// Integration tests for the HttpContext-aware TriggeredBy enrichment. <see cref="BasicWebHost"/>
+/// registers a header-trusting test auth handler so the <c>X-Dev-User</c> header drives
 /// <see cref="HttpContext.User.Identity.Name"/>.
 /// </summary>
 public sealed class HttpContextEnricherTests

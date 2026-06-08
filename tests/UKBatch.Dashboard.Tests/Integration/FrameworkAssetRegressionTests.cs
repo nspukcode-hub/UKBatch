@@ -19,8 +19,10 @@ namespace UKBatch.Dashboard.Tests.Integration;
 /// observable symptom over the live <see cref="SampleDashboardFactory"/> TestServer pipeline.</para>
 /// <para>The SUT host is <c>Sample.Dashboard</c>; its csproj sets the prop explicitly (project
 /// reference path) and <c>Program.cs</c> calls <c>app.MapStaticAssets</c>. This guard is an
-/// INTEGRATION invariant (host-side wiring), not a library DEFAULT — PackageReference consumers
-/// receive the prop automatically via the bundled <c>build/UKBatch.Dashboard.props</c>.</para>
+/// INTEGRATION invariant (host-side wiring), not a library DEFAULT. A PackageReference consumer
+/// must set the prop in its own .NET 10 host too: it is read during restore, before package build
+/// assets are imported, so the package cannot supply it — it ships only a build-time warning
+/// (UKBATCH001) when the prop is missing.</para>
 /// </remarks>
 [Trait("Category", "Integration")]
 public sealed class FrameworkAssetRegressionTests : IClassFixture<SampleDashboardFactory>

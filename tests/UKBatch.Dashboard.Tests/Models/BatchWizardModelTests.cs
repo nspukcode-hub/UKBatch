@@ -60,6 +60,40 @@ public sealed class BatchWizardModelTests
  "edit-load hydrates Metadata so a subsequent save round-trips operator-set hints ");
     }
 
+    [Fact]
+    public void FromDefinition_ApprovalGateTimeout_RoundTripsIntoDraft()
+    {
+        // A persisted gate with a 30s timeout must hydrate the editable seconds field on edit-load, so
+        // the operator sees (and keeps) the value they configured — not a blank that silently drops it.
+        var dto = new BatchDefinitionDto
+        {
+            Id = "id", Name = "b", Source = BatchSource.Dashboard, Version = 1,
+            FailurePolicy = BatchFailurePolicy.StopOnFailure,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            Steps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "gate-1",
+                    Order = 0,
+                    StepType = BatchStepType.ApprovalGate,
+                    Approval = new ApprovalGateConfig
+                    {
+                        Title = "Confirm",
+                        AllowedRoles = new[] { "ops" },
+                        OnTimeout = ApprovalTimeoutAction.AutoApprove,
+                        TimeoutAfter = TimeSpan.FromSeconds(30),
+                    },
+                },
+            },
+        };
+
+        var draft = BatchWizardModel.FromDefinition(dto).Steps.Single();
+
+        draft.TimeoutSecondsApproval.Should().Be(30, "edit-load must not lose the configured gate timeout");
+        draft.OnTimeout.Should().Be(ApprovalTimeoutAction.AutoApprove);
+    }
+
     // ── compensation policy helpers ────────────
     // EnsureCompensatePolicy (flip-on-first-add) + ShouldWarnEmptyCompensate (warn-don't-revert) are
     // the two pure helpers extracted from the Editor's drop/remove handlers so they are unit-testable.

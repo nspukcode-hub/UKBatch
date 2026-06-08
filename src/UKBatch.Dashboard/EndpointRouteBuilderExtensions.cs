@@ -23,27 +23,28 @@ public static class EndpointRouteBuilderExtensions
     /// "Endpoint /dashboard contains anti-forgery metadata, but a middleware was not found
     /// that supports anti-forgery." Place <c>UseAntiforgery()</c> after <c>UseRouting()</c> /
     /// <c>UseAuthorization()</c> in the standard ASP.NET Core pipeline order.</para>
-    /// <para><b>Service registry <c>BaseUrl</c> MUST end with a
-    /// trailing slash.</b> <see cref="System.Net.Http.HttpClient.BaseAddress"/> per RFC 3986
-    /// strips the last segment when joining a relative URI; the typed-HttpClient REST calls
-    /// inside <c>RestUKBatchClient</c> use bare relative paths (e.g. <c>"jobs"</c>) so the
-    /// final URI for a base of <c>http://localhost:5000/api/</c> is <c>.../api/jobs</c>, while
-    /// a base of <c>http://localhost:5000/api</c> drops the <c>api</c> segment and resolves to
-    /// <c>http://localhost:5000/jobs</c> (404 against any UKBatch.Api mount). The validator
-    /// does NOT enforce this in v0.1; v0.2 may auto-append.</para>
-    /// <para><b>HOST PROJECT MUST set
-    /// <c>&lt;RequiresAspNetWebAssets&gt;true&lt;/RequiresAspNetWebAssets&gt;</c> in its csproj
-    /// PropertyGroup,</b> OR install <c>UKBatch.Dashboard</c> via PackageReference (the NuGet
-    /// package ships <c>build/UKBatch.Dashboard.props</c> which auto-applies the prop). Without
-    /// it, the Web SDK's auto-detection (Microsoft.NET.Sdk.Web.ProjectSystem.targets:32) does NOT
-    /// add the Razor Components framework assets (notably <c>_framework/blazor.web.js</c> and
-    /// <c>_framework/blazor.server.js</c>) to the static-web-assets manifest because no
-    /// <c>.razor</c> files exist in the host project — they all live inside
-    /// <c>UKBatch.Dashboard</c>. The dashboard page then renders as static HTML but button
-    /// clicks and SignalR live updates silently fail with a network 404 the operator only
-    /// discovers from browser DevTools. ProjectReference does NOT propagate the NuGet
-    /// <c>build/*.props</c> file, so solution-internal hosts (samples, integration tests) must
-    /// set the prop manually.</para>
+    /// <para><b>Service registry <c>BaseUrl</c> trailing slash:</b>
+    /// <see cref="System.Net.Http.HttpClient.BaseAddress"/> per RFC 3986 strips the last segment
+    /// when joining a relative URI; the typed-HttpClient REST calls inside <c>RestUKBatchClient</c>
+    /// use bare relative paths (e.g. <c>"jobs"</c>) so the base must end with a trailing slash for
+    /// the final URI to be <c>.../api/jobs</c> rather than <c>.../jobs</c> (which would drop the
+    /// <c>api</c> segment and 404 against any UKBatch.Api mount).
+    /// <see cref="Configuration.UKBatchServiceDescriptor.BaseUrl"/> now auto-appends the missing
+    /// trailing slash, so a configured base of <c>http://localhost:5000/api</c> works the same as
+    /// <c>http://localhost:5000/api/</c> — no operator action required.</para>
+    /// <para><b>On .NET 10, the host project MUST set
+    /// <c>&lt;RequiresAspNetWebAssets&gt;true&lt;/RequiresAspNetWebAssets&gt;</c> in its own csproj
+    /// PropertyGroup</b> — for BOTH ProjectReference and PackageReference. The Web SDK only adds the
+    /// Razor Components framework assets (notably <c>_framework/blazor.web.js</c> and
+    /// <c>_framework/blazor.server.js</c>) to the static-web-assets manifest when it detects
+    /// <c>.razor</c> files in the host (Microsoft.NET.Sdk.Web.ProjectSystem.targets:32); here they
+    /// all live inside <c>UKBatch.Dashboard</c>, so the host needs the explicit prop. NuGet cannot
+    /// supply it automatically — the property is read during restore, before a package's build
+    /// assets are imported. Without it the dashboard renders as static HTML and button clicks and
+    /// SignalR live updates fail with a network 404 only browser DevTools reveals. The package ships
+    /// a build target that raises warning <c>UKBATCH001</c> on .NET 10 when the prop is missing,
+    /// turning that silent runtime 404 into a build-time message. (.NET 8 hosts do not need it —
+    /// <c>MapRazorComponents</c> serves the framework assets there.)</para>
     /// </remarks>
     public static RazorComponentsEndpointConventionBuilder MapUKBatchDashboard(this IEndpointRouteBuilder endpoints)
     {

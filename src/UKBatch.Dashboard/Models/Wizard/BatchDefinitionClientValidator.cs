@@ -69,6 +69,13 @@ public static class BatchDefinitionClientValidator
             case BatchStepType.ApprovalGate:
                 if (string.IsNullOrWhiteSpace(step.ApprovalTitle))
                     errors.Add(($"{path}.Approval.Title", "must be non-empty"));
+                // An on-timeout action other than Fail only fires when a timeout is set. Picking
+                // AutoApprove or Hold with no duration leaves the gate waiting forever while the UI
+                // implies the action will run — reject the inconsistent combination up front. (Fail with
+                // no timeout is a legitimate indefinite wait that only ends on a manual reject.)
+                var hasTimeout = step.TimeoutSecondsApproval is { } secs && secs > 0;
+                if (step.OnTimeout != ApprovalTimeoutAction.Fail && !hasTimeout)
+                    errors.Add(($"{path}.Approval.Timeout", "required when the on-timeout action is AutoApprove or Hold"));
                 break;
         }
     }

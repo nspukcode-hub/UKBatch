@@ -19,7 +19,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -47,7 +47,7 @@ jobs:
       # Both runtimes: packages multi-target net10.0;net8.0, so `dotnet build` compiles and
       # `dotnet test` runs every test assembly once per target framework.
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: |
             8.0.x
@@ -88,6 +88,13 @@ jobs:
           done
           ls -l artifacts/
 
+      # The dashboard package ships a build target that warns .NET 10 consumers to set
+      # RequiresAspNetWebAssets — a host property NuGet cannot supply at restore time. Assert that
+      # target is actually inside the package so a packaging regression cannot drop the only safety
+      # net the consumer gets.
+      - name: Verify dashboard web-assets guard
+        run: bash scripts/pack-content-assert.sh ./artifacts
+
       - name: NuGet login (trusted publishing)
         id: nuget-login
         uses: NuGet/login@v1
@@ -105,7 +112,7 @@ jobs:
             --skip-duplicate
 
       - name: Upload published packages (audit artifact)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: published-packages
           path: artifacts/*

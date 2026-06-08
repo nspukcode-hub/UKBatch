@@ -1,11 +1,11 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
-using Sample.BatchWorkflow.DevAuth;
 using Sample.BatchWorkflow.Jobs;
 using UKBatch.Abstractions.Batches;
 using UKBatch.Abstractions.Models;
 using UKBatch.Abstractions.Storage;
 using UKBatch.AspNetCore;
+using UKBatch.AspNetCore.DevAuth;
 using UKBatch.AspNetCore.Triggering;
 using UKBatch.Runtime;
 
@@ -13,7 +13,7 @@ string[] OpsRoles = { "ops" };
 var builder = WebApplication.CreateBuilder(args);
 const string InvoicePipelineId = "invoice-pipeline";
 
-// S4: timeout configurable via Sample:ApprovalTimeoutSeconds (default 30 for manual runs).
+// Approval timeout is configurable via Sample:ApprovalTimeoutSeconds (default 30 for manual runs).
 var approvalTimeoutSeconds = builder.Configuration.GetValue<int>("Sample:ApprovalTimeoutSeconds", 30);
 
 builder.AddUKBatchAspNetCore(b =>
@@ -46,11 +46,8 @@ builder.AddUKBatchAspNetCore(b =>
         .FailurePolicy(BatchFailurePolicy.Compensate));
 });
 
-// DEVELOPMENT ONLY — header-based dev auth (X-Dev-User / X-Dev-Roles).
-builder.Services
-    .AddAuthentication(DevAuthSchemeOptions.SchemeName)
-    .AddScheme<DevAuthSchemeOptions, DevAuthHandler>(DevAuthSchemeOptions.SchemeName, _ => { });
-builder.Services.AddAuthorization();
+// DEVELOPMENT ONLY — header-trusting dev auth (X-Dev-User / X-Dev-Roles). Refused in Production.
+builder.Services.AddUKBatchDevAuth();
 
 var app = builder.Build();
 app.UseAuthentication();
@@ -83,9 +80,10 @@ app.MapGet("/batches/{id}/status",
         return Results.Ok(new { batchId = id, executions });
     });
 
-// S6: [Authorize] attribute drives role enforcement; identity read from ClaimTypes.Name.
+// [Authorize] attribute drives role enforcement; identity read from ClaimTypes.Name. The scheme name
+// matches the dev-auth scheme registered by AddUKBatchDevAuth.
 app.MapPost("/approvals/{id}/approve",
-    [Authorize(AuthenticationSchemes = DevAuthSchemeOptions.SchemeName, Roles = "ops")]
+    [Authorize(AuthenticationSchemes = "DevAuth", Roles = "ops")]
     async (IApprovalGateService svc, string id, HttpContext http, CancellationToken ct) =>
     {
         var identity = http.User.Identity?.Name ?? "anonymous";
@@ -96,7 +94,7 @@ app.MapPost("/approvals/{id}/approve",
     });
 
 app.MapPost("/approvals/{id}/reject",
-    [Authorize(AuthenticationSchemes = DevAuthSchemeOptions.SchemeName, Roles = "ops")]
+    [Authorize(AuthenticationSchemes = "DevAuth", Roles = "ops")]
     async (IApprovalGateService svc, string id, string reason, HttpContext http, CancellationToken ct) =>
     {
         var identity = http.User.Identity?.Name ?? "anonymous";

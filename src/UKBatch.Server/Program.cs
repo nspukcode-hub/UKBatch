@@ -1,8 +1,8 @@
 using UKBatch.Api;
 using UKBatch.AspNetCore;
+using UKBatch.AspNetCore.DevAuth;
 using UKBatch.Dashboard;
 using UKBatch.Dashboard.Configuration;
-using UKBatch.Server.DevAuth;
 using UKBatch.Storage.EntityFrameworkCore;
 using UKBatch.Transport.Http;
 using UKBatch.Transport.RabbitMQ;
@@ -50,17 +50,19 @@ if (!allowAnonymous && !enableDevAuth)
 if (enableDevAuth)
 {
     // Header-trusting dev scheme: an operator can approve via curl with `X-Dev-User` + `X-Dev-Roles: ops`.
-    // Callers self-assert identity with no verification — demos only.
-    builder.Services.AddAuthentication("DevAuth")
-        .AddScheme<DevAuthSchemeOptions, DevAuthHandler>("DevAuth", _ => { });
+    // Callers self-assert identity with no verification — demos only. The helper registers the scheme +
+    // authorization and a startup guard that logs a loud warning. The server's own fail-closed posture
+    // gate above already forced the operator to consciously set UKBATCH_DEV_AUTH=true, so allow it even
+    // when the container runs in the Production environment (the operator opted in explicitly).
+    builder.Services.AddUKBatchDevAuth(o => o.AllowInProduction = true);
 }
 else
 {
     // allowAnonymous == true here. No scheme → the auth/authorization middleware is a genuine no-op;
     // the operator has explicitly accepted anonymous access behind their own gateway.
     builder.Services.AddAuthentication();
+    builder.Services.AddAuthorization();
 }
-builder.Services.AddAuthorization();
 
 // ── 3. Storage (UKBATCH_STORAGE) — MUST be AFTER AddUKBatchApi: the EF adapter RemoveAll's the
 //       in-memory store descriptors then re-adds the EF-backed singletons ──
@@ -142,7 +144,7 @@ if (enableDashboard)
                 DisplayName = "Server",
                 // When DevAuth is on, the dashboard's own REST + hub calls (incl. the
                 // Approve/Reject POSTs) must carry the ops identity, else the server sees anonymous and
-                // returns 403. These DevAuth header names match DevAuthHandler (X-Dev-User / X-Dev-Roles)
+                // returns 403. These header names match the dev-auth scheme (X-Dev-User / X-Dev-Roles)
                 // and live ONLY here in the server host. Production (DevAuth off) → null → unchanged.
                 Headers = enableDevAuth
                     ? new Dictionary<string, string>
@@ -159,7 +161,8 @@ if (enableDashboard)
 
 var app = builder.Build();
 
-// Loud startup warnings for both insecure postures (the throw above guarantees one of them is set).
+// Loud startup warning for the anonymous posture (the throw above guarantees a posture is set; the
+// DevAuth helper logs its own warning via the startup guard it registers).
 if (allowAnonymous && !enableDevAuth)
 {
     app.Logger.LogWarning(
@@ -167,13 +170,6 @@ if (allowAnonymous && !enableDevAuth)
         "delete, worker registration, SignalR) are reachable WITHOUT authentication. This is safe ONLY " +
         "behind a trusted network or an external auth gateway. Do NOT expose this server directly to " +
         "untrusted networks.");
-}
-if (enableDevAuth)
-{
-    app.Logger.LogWarning(
-        "UKBatch.Server is running with UKBATCH_DEV_AUTH=true: the header-trusting dev auth scheme is " +
-        "active. Callers self-assert identity via X-Dev-User / X-Dev-Roles with NO verification. This is " +
-        "for demos only — never use it in production.");
 }
 
 // ── 6. Middleware + endpoints ────────────────────────────────────────────────────────────────────

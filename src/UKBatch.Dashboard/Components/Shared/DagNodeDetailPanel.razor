@@ -196,7 +196,7 @@
                 <div class="dag-node-detail__row"><dt>Step ID</dt><dd class="mono">@Step.StepId</dd></div>
                 <div class="dag-node-detail__row"><dt>Title</dt><dd>@(cfg?.Title ?? "—")</dd></div>
                 <div class="dag-node-detail__row"><dt>Timeout</dt><dd>@ApprovalTimeoutDisplay(cfg?.TimeoutAfter)</dd></div>
-                <div class="dag-node-detail__row"><dt>On timeout</dt><dd>@(cfg?.OnTimeout.ToString() ?? "—")</dd></div>
+                <div class="dag-node-detail__row"><dt>On timeout</dt><dd>@ApprovalOnTimeoutDisplay(cfg)</dd></div>
             </dl>
         </section>
         @if (!string.IsNullOrWhiteSpace(cfg?.Description))
@@ -259,5 +259,14 @@
     };
 
     private static string ApprovalTimeoutDisplay(TimeSpan? after)
-        => after is { } t ? $"{t.TotalSeconds:F0}s" : "wait indefinitely";
+        => after is { } t ? $"{t.TotalSeconds:F0}s" : "no timeout — waits indefinitely";
+
+    // With no timeout the on-timeout action can never fire, so showing its name (e.g. "AutoApprove")
+    // would mislead the operator into thinking the gate auto-resolves. Show a dash instead; only render
+    // the action name when a real timeout exists for it to trigger.
+    private static string ApprovalOnTimeoutDisplay(ApprovalGateConfig? cfg)
+    {
+        if (cfg is null) return "—";
+        return cfg.TimeoutAfter is { } t && t > TimeSpan.Zero ? cfg.OnTimeout.ToString() : "—";
+    }
 }

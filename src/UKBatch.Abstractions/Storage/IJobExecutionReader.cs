@@ -21,5 +21,13 @@ public interface IJobExecutionReader
     /// Streams change-feed events as they happen; consumed by SignalR push. The overflow contract
     /// is set by <paramref name="options"/> — see <see cref="WatchOverflowPolicy"/>.
     /// </summary>
+    /// <remarks>
+    /// The returned sequence MUST register its subscription synchronously during the first
+    /// <c>MoveNextAsync</c> call — before its first <c>await</c> — so a consumer can guarantee it will
+    /// observe every subsequent event by issuing that first move before publishing. Adapters that
+    /// delegate to the shared in-process fan-out hub satisfy this automatically; a custom adapter that
+    /// implements its own async iterator must preserve this ordering (do no work that awaits before
+    /// the subscription is registered).
+    /// </remarks>
     IAsyncEnumerable<JobExecution> WatchAsync(WatchOptions options, CancellationToken cancellationToken);
 }

@@ -272,6 +272,70 @@ public class BatchDefinitionValidatorTests
         result.IsValid.Should().BeFalse();
     }
 
+    private static BatchDefinition WithGate(ApprovalTimeoutAction onTimeout, TimeSpan? timeoutAfter) =>
+        MinimalValid() with
+        {
+            Steps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "g",
+                    Order = 0,
+                    StepType = BatchStepType.ApprovalGate,
+                    Approval = new ApprovalGateConfig
+                    {
+                        Title = "Confirm",
+                        AllowedRoles = new[] { "ops" },
+                        OnTimeout = onTimeout,
+                        TimeoutAfter = timeoutAfter,
+                    },
+                },
+            },
+        };
+
+    [Theory]
+    [InlineData(ApprovalTimeoutAction.AutoApprove)]
+    [InlineData(ApprovalTimeoutAction.Hold)]
+    public void Validate_ApprovalGate_OnTimeoutNotFail_NoTimeout_Fails(ApprovalTimeoutAction onTimeout)
+    {
+        // AutoApprove/Hold with no timeout leaves the gate waiting forever, contradicting the action.
+        var def = WithGate(onTimeout, timeoutAfter: null);
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "Steps[0].Approval.Timeout");
+    }
+
+    [Fact]
+    public void Validate_ApprovalGate_OnTimeoutNotFail_ZeroTimeout_Fails()
+    {
+        // A zero/negative timeout is treated as no timeout, so the same rule applies.
+        var def = WithGate(ApprovalTimeoutAction.AutoApprove, timeoutAfter: TimeSpan.Zero);
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "Steps[0].Approval.Timeout");
+    }
+
+    [Fact]
+    public void Validate_ApprovalGate_FailWithNoTimeout_Succeeds()
+    {
+        // Fail + no timeout is a legitimate indefinite wait that only ends on a manual reject.
+        var def = WithGate(ApprovalTimeoutAction.Fail, timeoutAfter: null);
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(ApprovalTimeoutAction.AutoApprove)]
+    [InlineData(ApprovalTimeoutAction.Hold)]
+    [InlineData(ApprovalTimeoutAction.Fail)]
+    public void Validate_ApprovalGate_AnyActionWithTimeout_Succeeds(ApprovalTimeoutAction onTimeout)
+    {
+        // Any action paired with a real duration is valid — the action has a time to fire.
+        var def = WithGate(onTimeout, timeoutAfter: TimeSpan.FromSeconds(30));
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeTrue();
+    }
+
     [Fact]
     public void Validate_OnFailureStepBlankJobName_Fails()
     {

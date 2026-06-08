@@ -1,12 +1,22 @@
 namespace UKBatch.Abstractions.Jobs;
 
 /// <summary>
+/// Non-generic base marker for every <see cref="IPartitionedJob{TItem}"/>, independent of the item
+/// type. It carries no members; its sole purpose is to let fluent builders constrain a type
+/// parameter to "any partitioned job regardless of its item type" — which the open generic
+/// <see cref="IPartitionedJob{TItem}"/> cannot express in a generic constraint.
+/// </summary>
+public interface IPartitionedJobMarker
+{
+}
+
+/// <summary>
 /// Data-parallel job: streams items from a source and processes each item across N worker tasks
 /// configured at registration. The runtime owns the producer-consumer plumbing; the implementer
 /// only declares <see cref="SourceAsync"/> and <see cref="ProcessAsync"/>.
 /// </summary>
 /// <typeparam name="TItem">Item produced by the source and consumed by the processor.</typeparam>
-public interface IPartitionedJob<TItem>
+public interface IPartitionedJob<TItem> : IPartitionedJobMarker
 {
     /// <summary>
     /// Produces work items as an async stream and MUST honour <paramref name="cancellationToken"/>.

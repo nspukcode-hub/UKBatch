@@ -1,5 +1,6 @@
 @* Root layout. Sidebar + header + content + connection banner + toasts. *@
 @inherits LayoutComponentBase
+@implements IDisposable
 @inject IUKBatchServiceRegistry Registry
 @inject IDashboardState State
 
@@ -44,4 +45,27 @@
     // so the user's preferred theme is applied BEFORE first paint. The theme TOGGLE handler
     // lives on Settings.razor (page-scoped @inject IJSRuntime). The layout itself stays free
     // of JS interop — it only consumes the registry + state.
+
+    protected override void OnInitialized()
+    {
+        // The header breadcrumb + the sidebar/banner both read State.CurrentService from THIS layout.
+        // Subscribe so a page swapping the current service (or Settings clearing it to null) repaints
+        // the shell immediately, instead of lagging one navigation behind.
+        State.CurrentServiceChanged += OnCurrentServiceChanged;
+    }
+
+    private void OnCurrentServiceChanged(UKBatchServiceDescriptor? service)
+    {
+        // The event is raised synchronously from the circuit thread; InvokeAsync is still the correct,
+        // safe way to schedule the re-render on the render dispatcher. Fire-and-forget is fine here —
+        // there is no continuation to await.
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        // Unsubscribe so a torn-down circuit can't receive a late callback that calls StateHasChanged
+        // on a disposed component.
+        State.CurrentServiceChanged -= OnCurrentServiceChanged;
+    }
 }

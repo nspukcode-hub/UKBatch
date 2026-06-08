@@ -54,6 +54,69 @@ public sealed class StaticServiceRegistryTests
     }
 
     [Fact]
+    public void BaseUrl_WithoutTrailingSlash_NormalizedToHaveSlash()
+    {
+        var descriptor = new UKBatchServiceDescriptor
+        {
+            Name = "self",
+            BaseUrl = new Uri("http://x:5000/api"),
+        };
+        descriptor.BaseUrl.AbsoluteUri.Should().EndWith("/");
+        descriptor.BaseUrl.AbsoluteUri.Should().Be("http://x:5000/api/");
+    }
+
+    [Fact]
+    public void BaseUrl_AlreadySlashed_UnchangedNoDoubleSlash()
+    {
+        var descriptor = new UKBatchServiceDescriptor
+        {
+            Name = "self",
+            BaseUrl = new Uri("http://x:5000/api/"),
+        };
+        descriptor.BaseUrl.AbsoluteUri.Should().Be("http://x:5000/api/");
+        descriptor.BaseUrl.AbsoluteUri.Should().NotContain("api//");
+    }
+
+    [Fact]
+    public void NormalizedBaseUrl_ResolvesRelativePath_PreservingApiSegment()
+    {
+        // The REST client uses bare relative paths (e.g. "jobs") against HttpClient.BaseAddress.
+        // With the trailing slash normalized in, RFC 3986 resolution keeps the /api segment.
+        var descriptor = new UKBatchServiceDescriptor
+        {
+            Name = "self",
+            BaseUrl = new Uri("http://x:5000/api"),
+        };
+        using var http = new HttpClient { BaseAddress = descriptor.BaseUrl };
+        var resolved = new Uri(http.BaseAddress!, "jobs");
+        resolved.AbsoluteUri.Should().Be("http://x:5000/api/jobs");
+    }
+
+    [Fact]
+    public void NormalizedBaseUrl_DerivesHubUrl_PreservingApiSegment()
+    {
+        // Mirrors RestUKBatchClient hub-URL derivation: new Uri(BaseUrl, HubPath.TrimStart('/')).
+        // Normalization makes the /api segment survive so the hub lands at /api/hubs/jobs.
+        var descriptor = new UKBatchServiceDescriptor
+        {
+            Name = "self",
+            BaseUrl = new Uri("http://x:5000/api"),
+            HubPath = "/hubs/jobs",
+        };
+        var hubUrl = new Uri(descriptor.BaseUrl, descriptor.HubPath.TrimStart('/'));
+        hubUrl.AbsoluteUri.Should().Be("http://x:5000/api/hubs/jobs");
+    }
+
+    [Fact]
+    public void BaseUrl_DiffersOnlyByTrailingSlash_DescriptorsCompareEqual()
+    {
+        // Record value-equality: a slashed and slash-less BaseUrl normalize to the same value.
+        var a = new UKBatchServiceDescriptor { Name = "self", BaseUrl = new Uri("http://x:5000/api") };
+        var b = new UKBatchServiceDescriptor { Name = "self", BaseUrl = new Uri("http://x:5000/api/") };
+        a.Should().Be(b);
+    }
+
+    [Fact]
     public void ConfigBinding_FromAppsettings_PopulatesServices()
     {
         // echo: Services must be List<T> (not IReadOnlyList<T>) for the
@@ -78,6 +141,7 @@ public sealed class StaticServiceRegistryTests
 
         opts.Services.Should().HaveCount(2);
         opts.Services[0].Name.Should().Be("alpha");
-        opts.Services[1].BaseUrl.Should().Be(new Uri("http://localhost:5001/api"));
+        // BaseUrl auto-normalizes a missing trailing slash, so the bound value gains the slash.
+        opts.Services[1].BaseUrl.Should().Be(new Uri("http://localhost:5001/api/"));
     }
 }

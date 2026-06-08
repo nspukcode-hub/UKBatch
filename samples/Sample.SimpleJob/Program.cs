@@ -1,8 +1,8 @@
-using Sample.SimpleJob.DevAuth;
 using Sample.SimpleJob.Jobs;
 using UKBatch.Abstractions.Jobs;
 using UKBatch.Abstractions.Storage;
 using UKBatch.AspNetCore;
+using UKBatch.AspNetCore.DevAuth;
 using UKBatch.AspNetCore.Triggering;
 using UKBatch.Runtime;
 
@@ -20,11 +20,8 @@ builder.AddUKBatchAspNetCore(b =>
     b.AddPartitionedJob<ItemProcessorJob, int>().Named(nameof(ItemProcessorJob)).WithParallelism(4);
 });
 
-// DEVELOPMENT ONLY — header-based dev auth (X-Dev-User / X-Dev-Roles).
-builder.Services
-    .AddAuthentication(DevAuthSchemeOptions.SchemeName)
-    .AddScheme<DevAuthSchemeOptions, DevAuthHandler>(DevAuthSchemeOptions.SchemeName, _ => { });
-builder.Services.AddAuthorization();
+// DEVELOPMENT ONLY — header-trusting dev auth (X-Dev-User / X-Dev-Roles). Refused in Production.
+builder.Services.AddUKBatchDevAuth();
 
 var app = builder.Build();
 app.UseAuthentication();

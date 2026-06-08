@@ -99,6 +99,23 @@ public sealed class BatchBuilder
     public BatchBuilder ThenRunJob(string jobName, Action<JobStepBuilder>? configure = null)
         => RunJob(jobName, configure);
 
+    /// <summary>
+    /// Adds a partitioned-job step by type. Partitioned jobs implement
+    /// <see cref="IPartitionedJob{TItem}"/>, so the type-parameter constrained
+    /// <see cref="RunJob{TJob}"/> (which requires <see cref="IJob"/>) cannot accept them — this is the
+    /// typed counterpart for data-parallel jobs. The job must be registered via
+    /// <c>AddPartitionedJob&lt;TJob, TItem&gt;()</c>; the step is resolved by the job's type name, which
+    /// matches that registration's default name.
+    /// </summary>
+    public BatchBuilder RunPartitionedJob<TJob>(Action<JobStepBuilder>? configure = null)
+        where TJob : class, IPartitionedJobMarker
+        => RunJob(typeof(TJob).FullName ?? typeof(TJob).Name, configure);
+
+    /// <summary>Semantic alias for <see cref="RunPartitionedJob{TJob}"/>.</summary>
+    public BatchBuilder ThenRunPartitionedJob<TJob>(Action<JobStepBuilder>? configure = null)
+        where TJob : class, IPartitionedJobMarker
+        => RunPartitionedJob<TJob>(configure);
+
     /// <summary>Adds a parallel-group step.</summary>
     public BatchBuilder ThenInParallel(Action<ParallelGroupBuilder> configure)
     {

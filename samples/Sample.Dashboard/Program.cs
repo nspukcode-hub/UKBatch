@@ -1,8 +1,8 @@
-using Sample.Dashboard.DevAuth;
 using Sample.Dashboard.Jobs;
 using UKBatch.Abstractions.Batches;
 using UKBatch.Api;
 using UKBatch.AspNetCore;
+using UKBatch.AspNetCore.DevAuth;
 using UKBatch.Dashboard;
 using UKBatch.Dashboard.Configuration;
 
@@ -90,11 +90,9 @@ builder.Services.AddUKBatchDashboard(opts =>
     }
 });
 
-// Sample-local DevAuth (mirror Sample.RestApi). The approval gate roles claim is "ops".
-builder.Services
-    .AddAuthentication(DevAuthSchemeOptions.SchemeName)
-    .AddScheme<DevAuthSchemeOptions, DevAuthHandler>(DevAuthSchemeOptions.SchemeName, _ => { });
-builder.Services.AddAuthorization();
+// DEVELOPMENT ONLY — header-trusting dev auth (X-Dev-User / X-Dev-Roles). The approval gate roles
+// claim is "ops". Refused in Production.
+builder.Services.AddUKBatchDevAuth();
 builder.Services.AddAntiforgery();
 
 var app = builder.Build();

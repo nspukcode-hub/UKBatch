@@ -44,6 +44,24 @@ public sealed class OpenApiDocumentTests : IClassFixture<SampleRestApiFactory>
     }
 
     [Fact]
+    public async Task OpenApiDocument_ServerUrls_HaveNoTrailingSlash()
+    {
+        // ServersTransformer trims the trailing slash the default OpenAPI server URL carries, so
+        // clients (Postman, openapi-generator) that join a relative route path onto the base URL
+        // do not produce a double slash that fails route matching.
+        using var doc = await FetchAsync();
+        doc.RootElement.TryGetProperty("servers", out var servers).Should().BeTrue(
+            "the OpenAPI document should declare at least one server.");
+        servers.GetArrayLength().Should().BeGreaterThan(0);
+        foreach (var server in servers.EnumerateArray())
+        {
+            var url = server.GetProperty("url").GetString();
+            url.Should().NotBeNull();
+            url!.Should().NotEndWith("/", "ServersTransformer must trim trailing slashes from servers[].url.");
+        }
+    }
+
+    [Fact]
     public async Task OpenApiDocument_EnumsAsStrings()
     {
         using var doc = await FetchAsync();
