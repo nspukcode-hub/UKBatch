@@ -70,6 +70,10 @@ services:
       UKBATCH_STORAGE_CONNECTION: "Host=postgres;Database=ukbatch;Username=ukbatch;Password=ukbatch"
       UKBATCH_TRANSPORT: rabbitmq
       UKBatch__Transport__RabbitMQ__HostName: rabbitmq
+      # Demo broker is on the internal compose network with default guest/guest over cleartext AMQP
+      # (the AMQP port is NOT host-exposed). Explicitly opt in to that insecure-broker posture — the
+      # validator otherwise fails host start for a non-loopback broker without TLS / a dedicated user.
+      UKBatch__Transport__RabbitMQ__AllowInsecureBroker: "true"
       UKBATCH_ENABLE_DASHBOARD: "true"
       # Opt-in DevAuth — registers the sample-local header-based DevAuth scheme so the
       # approval-parallel-demo's ops-gated approval can be granted via curl (X-Dev-User +
@@ -104,6 +108,7 @@ services:
       UKBatch__Worker__WorkerName: invoicing
       UKBatch__Worker__ServerUrl: "http://ukbatch-server:8080"
       UKBatch__Transport__RabbitMQ__HostName: rabbitmq
+      UKBatch__Transport__RabbitMQ__AllowInsecureBroker: "true"   # internal demo broker (see server notes)
     ports:
       - "5170:8080"
     healthcheck:
@@ -128,6 +133,7 @@ services:
       UKBatch__Worker__WorkerName: shipping
       UKBatch__Worker__ServerUrl: "http://ukbatch-server:8080"
       UKBatch__Transport__RabbitMQ__HostName: rabbitmq
+      UKBatch__Transport__RabbitMQ__AllowInsecureBroker: "true"   # internal demo broker (see server notes)
     ports:
       - "5180:8080"
     healthcheck:
@@ -152,6 +158,7 @@ services:
       UKBatch__Worker__WorkerName: notification
       UKBatch__Worker__ServerUrl: "http://ukbatch-server:8080"
       UKBatch__Transport__RabbitMQ__HostName: rabbitmq
+      UKBatch__Transport__RabbitMQ__AllowInsecureBroker: "true"   # internal demo broker (see server notes)
     ports:
       - "5190:8080"
     healthcheck:

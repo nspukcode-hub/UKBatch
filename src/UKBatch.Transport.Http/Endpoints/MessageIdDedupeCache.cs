@@ -1,37 +1,47 @@
 using System.Collections.Concurrent;
 using UKBatch.Abstractions.Models;
-using UKBatch.Runtime;
 
 namespace UKBatch.Transport.Http.Endpoints;
 
 /// <summary>
 /// Receiver-side <c>JobMessage.MessageId</c> dedupe cache. On HIT, the cached
 /// <see cref="JobResult"/> is replayed (sender retry semantics: same MessageId, retried envelope,
-/// same result). Composes <see cref="LruDedupeCache{TKey}"/> for the LRU eviction signal; pairs
-/// with <see cref="ConcurrentDictionary{TKey,TValue}"/> for the result lookup.
+/// same result — the job does NOT re-run).
 /// </summary>
 /// <remarks>
+/// <para><b>Self-contained bounded LRU:</b> a <c>LinkedList&lt;string&gt;</c> + <c>Dictionary</c> +
+/// single-lock primitive, with the <c>_results</c> store evicted in lock-step with the LRU so BOTH
+/// structures stay bounded together — neither grows without limit. (Kept self-contained rather than
+/// reaching into Core's internal friend surface.)</para>
 /// <para><b>Capacity (default 4096):</b> 4× the nonce cache because MessageId lifetime spans
-/// sender-side retries (sender's Polly retry budget at default
-/// <c>RetryDelays = [2s, 5s, 15s]</c> ≈ 22 seconds of retry window). Receiver-side MessageId must
-/// outlive that window so retried sends collapse to the cached result.</para>
-/// <para><b>Memory growth (known trade-off):</b> the <c>_results</c> dictionary is NOT bounded —
-/// it grows monotonically with each new MessageId processed. The <c>_cache</c> LRU evicts MRU keys
-/// above capacity, but <c>_results</c> entries leak until process restart. For v0.1 this is an
-/// acceptable trade-off: MessageId lifetime is bounded by the sender's retry budget (~22s default);
-/// the leak rate at Sample.CrossServiceHttp traffic (~1 req/s) is ~5K entries/hour. Production
-/// deployments at &gt;10 req/s sustained should monitor <c>_results</c> growth.
-/// A future fix would add an LRU-eviction event hook so <c>_results.TryRemove(evictedKey)</c> fires
-/// on each LRU drop. That requires extending <see cref="LruDedupeCache{TKey}"/> with a callback API.</para>
+/// sender-side retries (sender's Polly retry budget at default <c>RetryDelays = [2s, 5s, 15s]</c>
+/// ≈ 22 seconds). Receiver-side MessageId must outlive that window so retried sends collapse to the
+/// cached result.</para>
+/// <para><b>Known race window (future fix):</b> the <c>TryAdd</c> + <c>TryGetResult</c> +
+/// <c>StoreResult</c> sequence is NOT atomic. Under sender retry pressure (retry interval ≈ 2s; job
+/// dispatch latency typically &lt; 100ms), two concurrent invokes with the same MessageId may both
+/// observe a MISS and dispatch the job twice. The window is bounded by dispatch latency, so the
+/// practical hit rate is low. A future fix would replace this with a single atomic
+/// <c>TryReserveOrGetResult</c> protocol backed by
+/// <see cref="System.Threading.Tasks.TaskCompletionSource{T}"/> so the second caller awaits the
+/// first caller's result rather than re-dispatching. Until then, the idempotency contract holds for
+/// sequential retries (sender's default 2s+ interval) but may double-execute under adversarial
+/// concurrent retries.</para>
 /// </remarks>
 internal sealed class MessageIdDedupeCache
 {
-    private readonly LruDedupeCache<string> _cache;
+    private readonly int _capacity;
+    private readonly Dictionary<string, LinkedListNode<string>> _index;
+    private readonly LinkedList<string> _order; // MRU at head, LRU at tail.
+    private readonly object _lock = new();
     private readonly ConcurrentDictionary<string, JobResult> _results;
 
     public MessageIdDedupeCache(int capacity)
     {
-        _cache = new LruDedupeCache<string>(capacity, StringComparer.Ordinal);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
+        _capacity = capacity;
+        _index = new Dictionary<string, LinkedListNode<string>>(StringComparer.Ordinal);
+        _order = new LinkedList<string>();
         _results = new ConcurrentDictionary<string, JobResult>(StringComparer.Ordinal);
     }
 
@@ -40,19 +50,31 @@ internal sealed class MessageIdDedupeCache
     /// process the message then call <see cref="StoreResult"/>). Returns <c>false</c> on dedupe
     /// HIT (caller must replay the cached <see cref="JobResult"/> via <see cref="TryGetResult"/>).
     /// </summary>
-    /// <remarks>
-    /// <para><b>Known race window (future fix):</b> the <c>TryAdd</c> + <c>TryGetResult</c>
-    /// + <c>StoreResult</c> sequence is NOT atomic. Under sender retry pressure (Polly retry interval
-    /// ≈ 2s; job dispatch latency typically &lt; 100ms), two concurrent invokes with the same
-    /// MessageId may both see TryAdd-MISS-then-MISS-but-no-result and dispatch the job twice. The
-    /// race window is bounded by job dispatch latency — typically &lt; 100ms — so practical hit rate
-    /// is low. A future fix would replace this with a single atomic <c>TryReserveOrGetResult</c> protocol backed
-    /// by <see cref="System.Threading.Tasks.TaskCompletionSource{T}"/> so the second caller awaits
-    /// the first caller's result rather than re-dispatching. Until then, idempotency contract holds
-    /// for sequential retries (sender's default 2s+ retry interval) but may double-execute under
-    /// adversarial concurrent retries.</para>
-    /// </remarks>
-    public bool TryAdd(string messageId) => _cache.TryAdd(messageId);
+    public bool TryAdd(string messageId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(messageId);
+        lock (_lock)
+        {
+            if (_index.TryGetValue(messageId, out var existing))
+            {
+                _order.Remove(existing);
+                _order.AddFirst(existing);
+                return false; // already seen (HIT)
+            }
+
+            var node = _order.AddFirst(messageId);
+            _index[messageId] = node;
+            if (_index.Count > _capacity)
+            {
+                var lru = _order.Last!;
+                _order.RemoveLast();
+                _index.Remove(lru.Value);
+                _results.TryRemove(lru.Value, out _); // couple result eviction to LRU → both structures stay bounded.
+            }
+
+            return true; // new (MISS)
+        }
+    }
 
     /// <summary>
     /// Retrieves the cached <see cref="JobResult"/> for a previously-seen MessageId. Returns
@@ -70,9 +92,18 @@ internal sealed class MessageIdDedupeCache
     {
         ArgumentException.ThrowIfNullOrEmpty(messageId);
         ArgumentNullException.ThrowIfNull(result);
-        _results.AddOrUpdate(messageId, result, (_, _) => result);
+        _results[messageId] = result;
     }
 
     /// <summary>Current LRU entry count (diagnostic / test surface).</summary>
-    public int Count => _cache.Count;
+    public int Count
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _index.Count;
+            }
+        }
+    }
 }
