@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.2-alpha] - 2026-06-08
+
+### Fixed
+
+- **The dashboard no longer flashes a spurious "Disconnected" banner on first load.** The service conductor was connecting to the (embedded) SignalR hub before the host had finished starting, so the initial connect failed and the banner stayed red until a manual reconnect or the 60-second retry. The initial connect is now deferred until the host has started, and the retry interval is shortened, so the dashboard connects cleanly on first load.
+
 ## [0.1.1-alpha] - 2026-06-08
 
 ### Added
@@ -55,6 +61,7 @@ First public preview of the UKBatch package family.
 - **Single-node orphan reaper.** The orphaned-execution reaper assumes a single orchestrator node.
 - **Adapters not yet available.** Kafka, Azure Service Bus, and Redis adapters are not part of this release.
 
-[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.1-alpha...HEAD
+[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.2-alpha...HEAD
+[0.1.2-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.2-alpha
 [0.1.1-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.1-alpha
 [0.1.0-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.0-alpha
