@@ -11,9 +11,11 @@ using Xunit;
 namespace UKBatch.Core.Tests.Executors;
 
 /// <summary>
-/// N- invariants:
+/// JobExecutionAwaiter invariants:
 /// (A) WaitForTerminalAsync registers the waiter synchronously before returning the Task.
 /// (B) ct.Register is disposed on TCS completion.
+/// (C) StartAsync registers the watch subscription synchronously, so a waiter registered (and its
+///     terminal event published) immediately afterwards is never lost.
 /// Plus CancelWaiter idempotency.
 /// </summary>
 public class JobExecutionAwaiterTests
@@ -26,13 +28,55 @@ public class JobExecutionAwaiterTests
     }
 
     [Fact]
+    public async Task StartAsync_RegistersSubscriptionSynchronously_NoEventLostWithoutWarmup()
+    {
+        // Regression lock for the subscription-warmup race: StartAsync must register the underlying
+        // WatchAsync subscription synchronously (during its first MoveNextAsync) before returning. We
+        // register a waiter and publish that execution's terminal event IMMEDIATELY after StartAsync
+        // returns, with NO warmup delay. Before the fix, the background watch loop registered the
+        // subscription only when it happened to be scheduled, so an event published this early could
+        // be dropped and the waiter would hang. The catch-up read is deliberately not what completes
+        // this waiter — the execution is inserted AFTER the waiter is registered, so only the live
+        // subscription can deliver the terminal event.
+        var (awaiter, store) = NewAwaiterWithStore();
+        await awaiter.StartAsync(default).ConfigureAwait(false);
+        try
+        {
+            var execId = IdGenerator.NewExecutionId();
+            var wait = awaiter.WaitForTerminalAsync(execId, default);
+
+            // Publish the lifecycle with no warmup — the subscription is guaranteed live.
+            var execution = new JobExecution
+            {
+                ExecutionId = execId,
+                JobName = "j",
+                Status = JobStatus.Pending,
+                Parameters = new Dictionary<string, object?>(),
+                EnqueuedAtUtc = DateTimeOffset.UtcNow,
+                AttemptNumber = 1,
+                MaxRetries = 0,
+                Processed = 0,
+                Failed = 0,
+            };
+            await store.InsertAsync(execution, default).ConfigureAwait(false);
+            await store.UpdateStatusAsync(execId, JobStatus.Running, null, default).ConfigureAwait(false);
+            await store.UpdateStatusAsync(execId, JobStatus.Completed, null, default).ConfigureAwait(false);
+
+            var terminal = await wait.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            terminal.Status.Should().Be(JobStatus.Completed);
+        }
+        finally
+        {
+            await awaiter.StopAsync(default).ConfigureAwait(false);
+            await awaiter.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    [Fact]
     public async Task WaitForTerminalAsync_TerminalEvent_CompletesTcs()
     {
         var (awaiter, store) = NewAwaiterWithStore();
         await awaiter.StartAsync(default).ConfigureAwait(false);
-        // Allow Task.Run-launched watch loop to actually call WatchAsync + register its subscription
-        // BEFORE we trigger any status writes (otherwise the early events are emitted into the void).
-        await Task.Delay(100).ConfigureAwait(false);
         try
         {
             var def = new JobDefinition
@@ -46,7 +90,7 @@ public class JobExecutionAwaiterTests
             };
             var execution = await store.CreateAsync(def, default).ConfigureAwait(false);
 
-            // Register waiter FIRST (Fix 5A).
+            // Register the waiter before triggering the transition.
             var wait = awaiter.WaitForTerminalAsync(execution.ExecutionId, default);
 
             // Then transition.
@@ -66,11 +110,10 @@ public class JobExecutionAwaiterTests
     [Fact]
     public async Task WaitForTerminalAsync_OrderingInvariant_TerminalBeforeAwait_RaceSafe()
     {
-        // Fix 5A — register BEFORE trigger. To stress the race we register, then trigger MANY
-        // terminal events in tight succession, and assert no event is missed.
+        // Register before trigger. To stress the race we register, then trigger MANY terminal events
+        // in tight succession, and assert no event is missed.
         var (awaiter, store) = NewAwaiterWithStore();
         await awaiter.StartAsync(default).ConfigureAwait(false);
-        await Task.Delay(100).ConfigureAwait(false);
         try
         {
             const int N = 100;

@@ -101,4 +101,67 @@ public sealed class WizardStepDraftTests
         step.Job!.Parameters!["a"].Should().Be("1");
         step.Job!.Parameters!["b"].Should().Be("2");
     }
+
+    // ── approval-gate timeout binding round-trip ─────────────────────────────────────────
+    // The editor binds the timeout field to TimeoutSecondsApproval; these pin that the value survives
+    // the projection to ApprovalGateConfig and back, so a configured timeout is never lost.
+
+    private static WizardStepDraft GateDraft(int? timeoutSeconds, ApprovalTimeoutAction onTimeout) => new()
+    {
+        StepId = "gate-1",
+        StepType = BatchStepType.ApprovalGate,
+        ApprovalTitle = "Confirm",
+        AllowedRoles = { "ops" },
+        TimeoutSecondsApproval = timeoutSeconds,
+        OnTimeout = onTimeout,
+    };
+
+    [Fact]
+    public void ToBatchStep_ApprovalTimeoutSeconds_ProjectsToTimeoutAfter()
+    {
+        var draft = GateDraft(timeoutSeconds: 30, ApprovalTimeoutAction.AutoApprove);
+
+        var step = draft.ToBatchStep(0);
+
+        step.Approval!.TimeoutAfter.Should().Be(TimeSpan.FromSeconds(30),
+            "the bound timeout must reach ApprovalGateConfig.TimeoutAfter");
+        step.Approval!.OnTimeout.Should().Be(ApprovalTimeoutAction.AutoApprove);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    public void ToBatchStep_ApprovalTimeoutNullOrZero_ProjectsNullTimeoutAfter(int? timeoutSeconds)
+    {
+        // Empty or zero means "no timeout" — projected as a null TimeoutAfter (indefinite wait).
+        var draft = GateDraft(timeoutSeconds, ApprovalTimeoutAction.Fail);
+
+        var step = draft.ToBatchStep(0);
+
+        step.Approval!.TimeoutAfter.Should().BeNull("an empty/zero timeout maps to no timeout");
+    }
+
+    [Fact]
+    public void FromBatchStep_ApprovalTimeoutAfter_HydratesTimeoutSeconds()
+    {
+        // Edit-load: a persisted 30s gate must round-trip back into the editable seconds field.
+        var step = new BatchStep
+        {
+            StepId = "gate-1",
+            Order = 0,
+            StepType = BatchStepType.ApprovalGate,
+            Approval = new ApprovalGateConfig
+            {
+                Title = "Confirm",
+                AllowedRoles = new[] { "ops" },
+                OnTimeout = ApprovalTimeoutAction.AutoApprove,
+                TimeoutAfter = TimeSpan.FromSeconds(30),
+            },
+        };
+
+        var draft = WizardStepDraft.FromBatchStep(step);
+
+        draft.TimeoutSecondsApproval.Should().Be(30, "edit-load must not lose the configured timeout");
+        draft.OnTimeout.Should().Be(ApprovalTimeoutAction.AutoApprove);
+    }
 }

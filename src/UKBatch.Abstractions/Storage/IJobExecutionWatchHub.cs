@@ -18,6 +18,13 @@ namespace UKBatch.Abstractions.Storage;
 public interface IJobExecutionWatchHub
 {
     /// <summary>Subscribe to the live stream; the returned enumerator drains on cancellation/disposal.</summary>
+    /// <remarks>
+    /// The returned sequence MUST register its subscription synchronously during the first
+    /// <c>MoveNextAsync</c> call — before its first <c>await</c> — so a consumer can guarantee it will
+    /// observe every subsequent <see cref="Publish"/> by issuing that first move before publishing.
+    /// The in-process hub implementation registers the subscriber set entry before its first await; a
+    /// custom implementation must preserve this ordering.
+    /// </remarks>
     IAsyncEnumerable<JobExecution> WatchAsync(WatchOptions options, CancellationToken cancellationToken);
 
     /// <summary>Non-blocking fan-out of one execution snapshot to all current subscribers (post-commit for durable stores).</summary>

@@ -66,6 +66,17 @@ public sealed class ParallelGroupBuilder
         return this;
     }
 
+    /// <summary>
+    /// Adds a partitioned-job child step by type. Partitioned jobs implement
+    /// <see cref="IPartitionedJob{TItem}"/>, so the <see cref="IJob"/>-constrained
+    /// <see cref="RunJob{TJob}"/> cannot accept them — this is the typed counterpart for data-parallel
+    /// jobs. The job must be registered via <c>AddPartitionedJob&lt;TJob, TItem&gt;()</c>; the child step
+    /// is resolved by the job's type name, which matches that registration's default name.
+    /// </summary>
+    public ParallelGroupBuilder RunPartitionedJob<TJob>(Action<JobStepBuilder>? configure = null)
+        where TJob : class, IPartitionedJobMarker
+        => RunJob(typeof(TJob).FullName ?? typeof(TJob).Name, configure);
+
     /// <summary>Sets the join policy. Default is <see cref="ParallelJoinPolicy.WaitAll"/>.</summary>
     public ParallelGroupBuilder JoinPolicy(ParallelJoinPolicy policy)
     {

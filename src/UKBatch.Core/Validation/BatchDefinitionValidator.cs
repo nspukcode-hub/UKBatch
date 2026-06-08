@@ -117,9 +117,23 @@ internal static class BatchDefinitionValidator
                 {
                     errors.Add(new ValidationError($"{path}.Approval", "ApprovalGate step requires payload"));
                 }
-                else if (string.IsNullOrWhiteSpace(step.Approval.Title))
+                else
                 {
-                    errors.Add(new ValidationError($"{path}.Approval.Title", "must be non-empty"));
+                    if (string.IsNullOrWhiteSpace(step.Approval.Title))
+                    {
+                        errors.Add(new ValidationError($"{path}.Approval.Title", "must be non-empty"));
+                    }
+
+                    // An on-timeout action other than Fail only fires when a timeout is set. AutoApprove
+                    // or Hold with no duration leaves the gate waiting forever, contradicting the chosen
+                    // action. (Fail with no timeout is a legitimate indefinite wait.)
+                    if (step.Approval.OnTimeout != ApprovalTimeoutAction.Fail
+                        && (step.Approval.TimeoutAfter is null || step.Approval.TimeoutAfter <= TimeSpan.Zero))
+                    {
+                        errors.Add(new ValidationError(
+                            $"{path}.Approval.Timeout",
+                            "required when the on-timeout action is AutoApprove or Hold"));
+                    }
                 }
                 break;
 

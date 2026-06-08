@@ -108,6 +108,24 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
                 Steps = { },
             },
         },
+        new object[]
+        {
+            "ApprovalGate AutoApprove with no timeout",
+            new BatchWizardModel
+            {
+                Name = "ok",
+                Steps = { ApprovalDraftTimeout("ag1", ApprovalTimeoutAction.AutoApprove, timeoutSeconds: null) },
+            },
+        },
+        new object[]
+        {
+            "ApprovalGate Hold with no timeout",
+            new BatchWizardModel
+            {
+                Name = "ok",
+                Steps = { ApprovalDraftTimeout("ag1", ApprovalTimeoutAction.Hold, timeoutSeconds: null) },
+            },
+        },
     };
 
     [Theory]
@@ -179,6 +197,82 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
         var errors = BatchDefinitionClientValidator.Validate(model);
 
         errors.Should().NotContainKey("OnFailureSteps[0].Job.JobName");
+    }
+
+    // ── approval gate on-timeout / timeout consistency (client-only focused cases; the WAF
+    // parity rows above prove the server agrees on the path) ─────────────────────────
+
+    [Theory]
+    [InlineData(ApprovalTimeoutAction.AutoApprove)]
+    [InlineData(ApprovalTimeoutAction.Hold)]
+    public void Validate_OnTimeoutNotFail_NoTimeout_ReportsTimeoutPath(ApprovalTimeoutAction onTimeout)
+    {
+        // AutoApprove/Hold with no duration leaves the gate waiting forever while the UI implies the
+        // action fires — the wizard must surface it so the operator fixes the combination before submit.
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Steps = { ApprovalDraftTimeout("ag1", onTimeout, timeoutSeconds: null) },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().ContainKey("Steps[0].Approval.Timeout",
+            "an on-timeout action other than Fail requires a timeout duration");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public void Validate_OnTimeoutNotFail_NonPositiveTimeout_ReportsTimeoutPath(int timeoutSeconds)
+    {
+        // A zero/negative duration projects to a null TimeoutAfter (no timeout), so the same rule applies.
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Steps = { ApprovalDraftTimeout("ag1", ApprovalTimeoutAction.AutoApprove, timeoutSeconds) },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().ContainKey("Steps[0].Approval.Timeout",
+            "a non-positive timeout is treated as no timeout, so AutoApprove/Hold still needs a real duration");
+    }
+
+    [Fact]
+    public void Validate_OnTimeoutFail_NoTimeout_IsValid()
+    {
+        // Fail + no timeout is a legitimate indefinite wait that only ends on a manual reject. The shared
+        // ApprovalDraft() helper already uses this combination, so it MUST stay valid under the new rule.
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Steps = { ApprovalDraft("ag1", "Confirm") },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().NotContainKey("Steps[0].Approval.Timeout",
+            "Fail with no timeout is a valid indefinite wait");
+    }
+
+    [Theory]
+    [InlineData(ApprovalTimeoutAction.AutoApprove)]
+    [InlineData(ApprovalTimeoutAction.Hold)]
+    [InlineData(ApprovalTimeoutAction.Fail)]
+    public void Validate_OnTimeoutWithTimeout_IsValid(ApprovalTimeoutAction onTimeout)
+    {
+        // Any on-timeout action paired with a real duration is valid — the action has a time to fire.
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Steps = { ApprovalDraftTimeout("ag1", onTimeout, timeoutSeconds: 30) },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().NotContainKey("Steps[0].Approval.Timeout",
+            "a present timeout duration satisfies the consistency rule for every action");
     }
 
     // ── parameter-key rules (client-only safety net; the server validator does
@@ -336,6 +430,16 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
         ApprovalTitle = title,
         AllowedRoles = { "ops" },
         OnTimeout = ApprovalTimeoutAction.Fail,
+    };
+
+    private static WizardStepDraft ApprovalDraftTimeout(string id, ApprovalTimeoutAction onTimeout, int? timeoutSeconds) => new()
+    {
+        StepId = id,
+        StepType = BatchStepType.ApprovalGate,
+        ApprovalTitle = "Confirm",   // non-blank so the only possible error is the timeout combination
+        AllowedRoles = { "ops" },
+        OnTimeout = onTimeout,
+        TimeoutSecondsApproval = timeoutSeconds,
     };
 
     /// <summary>

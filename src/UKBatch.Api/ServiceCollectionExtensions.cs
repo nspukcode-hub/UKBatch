@@ -62,6 +62,7 @@ public static class ServiceCollectionExtensions
         // REST + SignalR without document generation (enum-as-string serialization is unaffected).
         services.AddOpenApi(opts =>
         {
+            opts.AddDocumentTransformer<ServersTransformer>();
             opts.AddOperationTransformer<ProblemDetailsResponseTransformer>();
             opts.AddSchemaTransformer<EnumStringTransformer>();
         });

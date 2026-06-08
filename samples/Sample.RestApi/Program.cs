@@ -1,8 +1,8 @@
-using Sample.RestApi.DevAuth;
 using Sample.RestApi.Jobs;
 using UKBatch.Abstractions.Batches;
 using UKBatch.Api;
 using UKBatch.AspNetCore;
+using UKBatch.AspNetCore.DevAuth;
 using UKBatch.Storage.EntityFrameworkCore;
 
 string[] OpsRoles = { "ops" };
@@ -90,11 +90,8 @@ switch (storage)
             $"Unknown --storage value '{storage}'. Valid: inmemory | ef-sqlite | ef-pg.");
 }
 
-// Sample-local DevAuth (copied from Sample.BatchWorkflow).
-builder.Services
-    .AddAuthentication(DevAuthSchemeOptions.SchemeName)
-    .AddScheme<DevAuthSchemeOptions, DevAuthHandler>(DevAuthSchemeOptions.SchemeName, _ => { });
-builder.Services.AddAuthorization();
+// DEVELOPMENT ONLY — header-trusting dev auth (X-Dev-User / X-Dev-Roles). Refused in Production.
+builder.Services.AddUKBatchDevAuth();
 
 var app = builder.Build();
 app.Logger.LogInformation("UKBatch sample storage provider: {Storage}", storage);

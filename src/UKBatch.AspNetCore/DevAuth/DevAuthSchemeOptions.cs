@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Authentication;
 
-namespace Sample.BatchWorkflow.DevAuth;
+namespace UKBatch.AspNetCore.DevAuth;
 
 /// <summary>
-/// Options for the development-only authentication scheme. DEVELOPMENT ONLY — not for production.
+/// Options for the development-only authentication scheme registered by
+/// <see cref="DevAuthServiceCollectionExtensions.AddUKBatchDevAuth"/>. Development / demo only —
+/// not for production.
 /// </summary>
 internal sealed class DevAuthSchemeOptions : AuthenticationSchemeOptions
 {

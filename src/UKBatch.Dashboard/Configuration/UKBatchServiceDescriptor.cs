@@ -9,8 +9,10 @@ namespace UKBatch.Dashboard.Configuration;
 /// (<c>/dashboard/{name}/jobs</c>) AND as the cache key in <see cref="Clients.IUKBatchClientFactory"/>.
 /// Validated by <see cref="DashboardOptionsValidator"/>.</para>
 /// <para><b>BaseUrl contract:</b> absolute URI ending in <c>/api</c> (or the route group the
-/// caller used at <c>MapUKBatchApi</c> time). The hub URL is constructed as
-/// <c>BaseUrl + HubPath</c> — e.g. <c>http://service.local:5000/api</c> + <c>/hubs/jobs</c>
+/// caller used at <c>MapUKBatchApi</c> time). A missing trailing slash is auto-appended on
+/// assignment, so <c>http://service.local:5000/api</c> and <c>http://service.local:5000/api/</c>
+/// behave identically. The hub URL is constructed as <c>BaseUrl + HubPath</c> — e.g.
+/// <c>http://service.local:5000/api/</c> + <c>/hubs/jobs</c>
 /// → <c>http://service.local:5000/api/hubs/jobs</c>.</para>
 /// <para><b>ApiKey reserved:</b> v0.1 does NOT consume the field at the REST or hub layer (auth is
 /// caller-opt-in via <c>RequireAuthorization</c>). The field exists for v0.2 cross-service auth
@@ -21,8 +23,34 @@ public sealed record class UKBatchServiceDescriptor
     /// <summary>Kebab-case service slug — URL path segment + cache key.</summary>
     public required string Name { get; init; }
 
-    /// <summary>Absolute REST base URL — e.g. <c>http://service.local:5000/api</c>.</summary>
-    public required Uri BaseUrl { get; init; }
+    /// <summary>
+    /// Absolute REST base URL — e.g. <c>http://service.local:5000/api</c>. Auto-normalized to end
+    /// with a trailing slash on assignment. <see cref="System.Net.Http.HttpClient.BaseAddress"/>
+    /// per RFC 3986 drops the last path segment when joining a relative URI, so a base of
+    /// <c>http://service.local:5000/api</c> would resolve <c>"jobs"</c> to <c>.../jobs</c> (losing
+    /// the <c>/api</c> segment). Appending the slash makes the base safe to combine with the bare
+    /// relative paths used by the REST client. A relative URI is passed through unchanged so the
+    /// options validator can report the "must be an absolute URI" error.
+    /// </summary>
+    public required Uri BaseUrl
+    {
+        get => _baseUrl;
+        init => _baseUrl = Normalize(value);
+    }
+
+    private readonly Uri _baseUrl = null!;
+
+    private static Uri Normalize(Uri value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        // Relative URIs cannot expose AbsoluteUri; leave them for the validator to reject.
+        if (!value.IsAbsoluteUri)
+        {
+            return value;
+        }
+        var absolute = value.AbsoluteUri;
+        return absolute.EndsWith('/') ? value : new Uri(absolute + "/");
+    }
 
     /// <summary>SignalR hub path relative to <see cref="BaseUrl"/>. Default <c>/hubs/jobs</c>.</summary>
     public string HubPath { get; init; } = "/hubs/jobs";

@@ -1,7 +1,9 @@
 using System.Net;
 using System.Security.Claims;
 using FluentAssertions;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using UKBatch;
@@ -37,7 +39,54 @@ public sealed class ApprovalsClaimTypeTests
                 {
                     o.ApprovalRoleClaimTypes = new List<string>(claimTypes);
                 });
+
+                // The packaged dev-auth handler emits roles only under ClaimTypes.Role. These tests
+                // exercise ApprovalRoleClaimTypes against a CUSTOM claim type (e.g. "role" for
+                // IdentityServer-style identities), so a test-only claims transformation reads the
+                // optional X-Dev-Custom-Role-Type / X-Dev-Custom-Roles headers and adds role claims
+                // under the named custom type. This lives in the test host, never in the shipped helper.
+                services.AddSingleton<IClaimsTransformation, CustomRoleHeaderTransformation>();
             });
+        }
+    }
+
+    /// <summary>
+    /// Test-only claims transformation that mirrors the optional custom-claim-type behavior the
+    /// approval claim-type tests rely on: it reads <c>X-Dev-Custom-Role-Type</c> +
+    /// <c>X-Dev-Custom-Roles</c> from the current request and appends role claims under the named
+    /// custom claim type. Production identities never set these headers.
+    /// </summary>
+    private sealed class CustomRoleHeaderTransformation(IHttpContextAccessor httpContextAccessor)
+        : IClaimsTransformation
+    {
+        public Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
+        {
+            var request = httpContextAccessor.HttpContext?.Request;
+            if (request is null
+                || principal.Identity is not ClaimsIdentity identity
+                || !identity.IsAuthenticated)
+            {
+                return Task.FromResult(principal);
+            }
+
+            if (request.Headers.TryGetValue("X-Dev-Custom-Role-Type", out var customType)
+                && !string.IsNullOrEmpty(customType.ToString())
+                && request.Headers.TryGetValue("X-Dev-Custom-Roles", out var customRoles))
+            {
+                var type = customType.ToString();
+                foreach (var role in customRoles.ToString()
+                             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    // Avoid duplicating a claim that an earlier transformation pass already added
+                    // (IClaimsTransformation can run more than once per principal).
+                    if (!identity.HasClaim(type, role))
+                    {
+                        identity.AddClaim(new Claim(type, role));
+                    }
+                }
+            }
+
+            return Task.FromResult(principal);
         }
     }
 

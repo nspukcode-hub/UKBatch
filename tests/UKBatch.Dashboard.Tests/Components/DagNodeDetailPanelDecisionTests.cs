@@ -43,6 +43,21 @@ public sealed class DagNodeDetailPanelDecisionTests : TestContext
         Job = new JobStepData { JobName = name },
     };
 
+    private static BatchStep GateWithTimeout(
+        ApprovalTimeoutAction onTimeout, TimeSpan? timeoutAfter, string id = "gate-1") => new()
+    {
+        StepId = id,
+        Order = 0,
+        StepType = BatchStepType.ApprovalGate,
+        Approval = new ApprovalGateConfig
+        {
+            Title = "Release approval",
+            AllowedRoles = new[] { "ops" },
+            OnTimeout = onTimeout,
+            TimeoutAfter = timeoutAfter,
+        },
+    };
+
     // ── pending gate → decision section renders ─────────────────────────────────────────
 
     [Fact]
@@ -209,5 +224,54 @@ public sealed class DagNodeDetailPanelDecisionTests : TestContext
 
         cut.Markup.Should().NotContain("Decision");
         cut.FindAll("button.btn--danger").Should().BeEmpty();
+    }
+
+    // ── timeout / on-timeout display honesty ────────────────────────────────────────────
+    // With no timeout the on-timeout action can never fire, so the panel must not name it (that would
+    // imply the gate auto-resolves) and the Timeout row must say so explicitly.
+
+    [Fact]
+    public void NoTimeout_TimeoutRowSaysWaitsIndefinitely_OnTimeoutRowShowsDash()
+    {
+        // AutoApprove configured but no duration → the action never triggers; show "—", not "AutoApprove".
+        var cut = RenderComponent<DagNodeDetailPanel>(p => p
+            .Add(d => d.Step, GateWithTimeout(ApprovalTimeoutAction.AutoApprove, timeoutAfter: null)));
+
+        DetailRowValue(cut, "Timeout").Should().Contain("waits indefinitely",
+            "a null timeout must be spelled out so the operator knows the action never fires");
+        DetailRowValue(cut, "On timeout").Should().Be("—",
+            "without a timeout the action can never run — naming it would mislead the operator");
+    }
+
+    [Fact]
+    public void RealTimeout_ShowsActionNameAndDuration()
+    {
+        // A real duration → the action has a time to fire; show its name and the duration.
+        var cut = RenderComponent<DagNodeDetailPanel>(p => p
+            .Add(d => d.Step, GateWithTimeout(ApprovalTimeoutAction.AutoApprove, timeoutAfter: TimeSpan.FromSeconds(30))));
+
+        DetailRowValue(cut, "Timeout").Should().Be("30s");
+        DetailRowValue(cut, "On timeout").Should().Be("AutoApprove",
+            "with a real timeout the action name is accurate and informative");
+    }
+
+    [Fact]
+    public void FailWithNoTimeout_OnTimeoutRowShowsDash()
+    {
+        // Fail + no timeout is a valid indefinite wait; the on-timeout row still shows "—" because no
+        // duration means nothing fires.
+        var cut = RenderComponent<DagNodeDetailPanel>(p => p
+            .Add(d => d.Step, GateWithTimeout(ApprovalTimeoutAction.Fail, timeoutAfter: null)));
+
+        DetailRowValue(cut, "On timeout").Should().Be("—");
+    }
+
+    /// <summary>Reads the <c>dd</c> value of the <c>dt</c>/<c>dd</c> row whose label matches <paramref name="label"/>.</summary>
+    private static string DetailRowValue(IRenderedComponent<DagNodeDetailPanel> cut, string label)
+    {
+        var dt = cut.FindAll("dt").Single(e => e.TextContent.Trim() == label);
+        var dd = dt.NextElementSibling;
+        dd.Should().NotBeNull($"the '{label}' row must have a value cell");
+        return dd!.TextContent.Trim();
     }
 }

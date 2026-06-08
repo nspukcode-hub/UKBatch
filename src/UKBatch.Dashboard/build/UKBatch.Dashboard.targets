@@ -1,0 +1,25 @@
+<Project>
+  <!-- A .NET 10 host that consumes this package as a NuGet library and runs the Blazor dashboard must
+       set RequiresAspNetWebAssets in its own project. The .NET Web SDK only emits the Razor Components
+       framework assets (blazor.web.js and its fingerprinted variants) when it detects the host as a
+       Razor host — which it is not, because App.razor lives inside this package, not the host. That
+       property is consumed during NuGet restore, before a package's build assets are imported, so a
+       package cannot supply it automatically; only the host project (or its Directory.Build.props) can.
+
+       Without it, _framework/blazor.web.js returns 404 at runtime and dashboard interactivity (button
+       clicks, SignalR live updates) silently fails — a failure only browser DevTools reveals. This
+       target surfaces that as a build-time warning on .NET 10 so the operator fixes it up front.
+
+       The warning is scoped to .NET 10+ (on .NET 8 MapRazorComponents serves the assets, so the
+       property is unnecessary) and does not fire once the property is set. Reference this package
+       without hosting the dashboard? Silence it with <NoWarn>UKBATCH001</NoWarn>. -->
+  <Target Name="_UKBatchDashboardCheckRequiresAspNetWebAssets"
+          BeforeTargets="Build"
+          Condition="'$(RequiresAspNetWebAssets)' != 'true'
+                     and '$(TargetFrameworkIdentifier)' == '.NETCoreApp'
+                     and '$(_TargetFrameworkVersionWithoutV)' != ''
+                     and $([MSBuild]::VersionGreaterThanOrEquals('$(_TargetFrameworkVersionWithoutV)', '10.0'))">
+    <Warning Code="UKBATCH001"
+             Text="UKBatch.Dashboard: set &lt;RequiresAspNetWebAssets&gt;true&lt;/RequiresAspNetWebAssets&gt; in this project. Without it the .NET Web SDK omits _framework/blazor.web.js, so at runtime the dashboard returns 404 for its framework script and has no interactivity (button clicks, SignalR live updates). This must live in the host project because NuGet supplies it too late (it is read during restore). See https://github.com/nspukcode-hub/UKBatch/blob/main/GETTING_STARTED.md . If you reference this package without hosting the dashboard, suppress with NoWarn=UKBATCH001." />
+  </Target>
+</Project>

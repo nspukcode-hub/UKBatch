@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.1-alpha] - 2026-06-08
+
+### Added
+
+- **Typed partitioned-job batch steps** — `RunPartitionedJob<TJob>()` and `ThenRunPartitionedJob<TJob>()` on the batch, parallel-group, and on-failure builders, so a partitioned job can be added to a batch by type like a regular job. Backed by a new `IPartitionedJobMarker` base interface.
+- **`AddUKBatchDevAuth()`** — an opt-in, header-based development authentication scheme in `UKBatch.AspNetCore`, so an embedded host can exercise the approval buttons in a demo without hand-writing an authentication handler. It trusts `X-Dev-User` / `X-Dev-Roles` with no verification and refuses to start in the Production environment unless explicitly allowed.
+
+### Changed
+
+- **OpenAPI `servers` URLs no longer carry a trailing slash**, so a Postman / OpenAPI client importing the document no longer builds double-slashed request paths that 404.
+- **A dashboard service `BaseUrl` is normalized to a trailing slash automatically** — `http://host/api` now behaves the same as `http://host/api/`, removing a long-standing configuration footgun.
+- **Approval gates reject an inconsistent timeout configuration** — choosing an `AutoApprove` or `Hold` on-timeout action now requires a timeout duration, validated on both the dashboard and the server; the run-detail panel shows "no timeout — waits indefinitely" when a gate has none.
+- **The dashboard sidebar and breadcrumb update immediately when switching services** — the layout now reacts to the current-service change instead of lagging one navigation behind.
+- **CI workflows** updated to the current GitHub Actions majors (Node 24 runtime).
+
+### Fixed
+
+- **A job completing immediately after startup could be missed by the awaiter**, leaving a caller waiting until its timeout. The process-wide watch subscription is now registered synchronously before `StartAsync` returns.
+- **`UKBatch.Dashboard` now raises build warning `UKBATCH001` when a .NET 10 host has not set `<RequiresAspNetWebAssets>true</>`**, instead of failing silently with a runtime 404 for `_framework/blazor.web.js`. The property must be set by the host project — NuGet cannot supply it during restore — and the docs now say so plainly. (.NET 8 hosts are unaffected.)
+
 ## [0.1.0-alpha] - 2026-06-06
 
 First public preview of the UKBatch package family.
@@ -35,5 +55,6 @@ First public preview of the UKBatch package family.
 - **Single-node orphan reaper.** The orphaned-execution reaper assumes a single orchestrator node.
 - **Adapters not yet available.** Kafka, Azure Service Bus, and Redis adapters are not part of this release.
 
-[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.0-alpha...HEAD
+[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.1-alpha...HEAD
+[0.1.1-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.1-alpha
 [0.1.0-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.0-alpha

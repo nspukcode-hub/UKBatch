@@ -60,11 +60,20 @@ public sealed class ReconcileInvoicesJob : IPartitionedJob<ReconcileInvoicesJob.
     public async Task ProcessAsync(InvoiceRow item, JobContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(item);
-        _logger.LogInformation("ReconcileInvoices: START invoice #{Id} (amount {Amount}).", item.Id, item.Amount);
+        // Count how many rows are being processed at the same instant. The work here is await-based
+        // (Task.Delay), so the N concurrent workers cooperatively share thread-pool threads rather than
+        // pinning one thread each — the live count is the honest proof of the parallelism. It rises to
+        // WithParallelism(3) and stays there until the source is drained.
+        var concurrent = Interlocked.Increment(ref _inFlight);
+        _logger.LogInformation("ReconcileInvoices: START invoice #{Id} (amount {Amount}) — {Concurrent} workers busy now.", item.Id, item.Amount, concurrent);
         await Task.Delay(TimeSpan.FromMilliseconds(700), cancellationToken).ConfigureAwait(false);     // simulated reconcile work
         _reconciled.Add(item);                                                                          // unit-of-work accumulation
+        Interlocked.Decrement(ref _inFlight);
         _logger.LogInformation("ReconcileInvoices: DONE  invoice #{Id}.", item.Id);
     }
+
+    // Live count of rows being processed concurrently — peaks at the configured worker count.
+    private int _inFlight;
 
     // Unit-of-work accumulation: workers stash results here; FinalizeAsync commits ONCE.
     private readonly System.Collections.Concurrent.ConcurrentBag<InvoiceRow> _reconciled = new();

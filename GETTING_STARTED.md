@@ -192,6 +192,22 @@ b.AddBatch("rollout", batch => batch
 
 The gate holds until an authenticated caller with a matching role approves it. Roles are matched against `ClaimTypes.Role` by default — see Gotchas if you use Azure AD / Auth0 / SAML.
 
+**Approving needs an authenticated caller.** The approve/reject endpoints derive the approver from `HttpContext.User`, so an app with no authentication rejects every decision — anonymous callers cannot approve, and even a wildcard `"*"` role gate still requires an *authenticated* user. For local development and demos, add the header-based dev scheme instead of hand-writing an auth handler:
+
+```csharp
+builder.Services.AddUKBatchDevAuth();   // dev/demo only — refuses to start in Production
+builder.Services.AddAuthorization();
+// ... then in the pipeline:
+app.UseAuthentication();
+app.UseAuthorization();
+```
+
+Callers then send `X-Dev-User` and `X-Dev-Roles: ops` headers (the embedded `Sample.Dashboard` wires these on its service descriptor's `Headers` so its own REST/SignalR calls authenticate). `AddUKBatchDevAuth` trusts those headers with **no verification** and throws on startup in the Production environment unless you opt in explicitly — for production, wire real authentication (e.g. `AddJwtBearer` + OIDC) and map your identity provider's role claim.
+
+**Set a timeout when the on-timeout action acts.** If `onTimeout` is `AutoApprove` or `Hold`, you must also give a `timeout` — otherwise the gate waits indefinitely and the action never fires. The wizard and the REST validators now reject that combination. `onTimeout: Fail` with no timeout is valid: the gate just waits until a human decides.
+
+**A pending gate is a snapshot of its definition at creation time.** Editing a batch definition does not change a gate that is already waiting — its roles, timeout, and on-timeout action are fixed when the run reaches the gate. A stuck, undecidable gate is resolved by deciding it through the approvals API with proper authentication, or by restarting the host (a run-level cancel / gate-dismiss action is on the roadmap).
+
 ### Partitioned (data-parallel) jobs
 
 For "fetch a set of items, then process them on N workers", implement `IPartitionedJob<TItem>`. The runtime owns the producer/consumer plumbing; you declare the source stream and the per-item work, with an optional commit hook:
@@ -221,8 +237,8 @@ builder.AddUKBatchAspNetCore(b => b.ScanAssemblies(typeof(Program).Assembly));
 ## Gotchas
 
 - **`app.UseAntiforgery()` is required when mapping the dashboard.** Razor Components emit anti-forgery metadata; without the middleware, `/dashboard` returns HTTP 500 ("endpoint contains anti-forgery metadata").
-- **A dashboard service `BaseUrl` must end with a trailing slash** (`http://localhost:5050/api/`). `HttpClient.BaseAddress` drops the last path segment otherwise (RFC 3986), so `jobs` resolves to `/jobs` and 404s.
-- **Referencing `UKBatch.Dashboard` via ProjectReference** (not NuGet) needs `<RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>` in the host csproj — otherwise the dashboard renders as static HTML and buttons do nothing. NuGet consumers get this automatically via the package's build props.
+- **A dashboard service `BaseUrl` is auto-normalized to a trailing slash** — `http://localhost:5050/api` and `.../api/` behave identically. (A missing slash would otherwise make `HttpClient.BaseAddress` drop the last path segment per RFC 3986, resolving `jobs` to `/jobs` and 404ing; the library appends the slash for you.)
+- **On .NET 10, ANY host that runs the dashboard needs `<RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>` in its own csproj** — both ProjectReference and NuGet PackageReference. NuGet cannot supply it automatically: the .NET Web SDK reads this property during restore, before a package's build assets are imported. The package instead raises build warning `UKBATCH001` on .NET 10 when it is missing. Without the prop the dashboard renders as static HTML and buttons do nothing (a silent runtime 404 for `_framework/blazor.web.js`, visible only in browser DevTools). .NET 8 hosts do not need it — `MapRazorComponents` serves the assets there.
 - **Approval roles read `ClaimTypes.Role` by default.** Azure AD / Auth0 / SAML emit other claim types — configure `UKBatch:ApprovalRoleClaimTypes` in `appsettings.json` (it binds `UKBatchOptions.ApprovalRoleClaimTypes`), or approvals 403 even with the right role present.
 - **macOS port 5000 is held by AirPlay Receiver** — it answers every request with `403`. The samples use ports 5050+; pick a non-5000 port or disable AirPlay Receiver.
 

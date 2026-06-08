@@ -11,8 +11,8 @@ using Xunit;
 namespace UKBatch.Core.Tests.Executors;
 
 /// <summary>
-/// #7 / S1 verification — JobExecutionAwaiter scales to N=11000 concurrent waiters
-/// (single WatchAsync subscription, no event drift, bounded heap growth).
+/// Verifies JobExecutionAwaiter scales to N=11000 concurrent waiters (single WatchAsync
+/// subscription, no event drift, bounded heap growth).
 /// </summary>
 [Trait("Category", "Stress")]
 public class JobExecutionAwaiterStressTests
@@ -23,33 +23,10 @@ public class JobExecutionAwaiterStressTests
         const int N = 11_000;
         var store = new InMemoryJobStore(TimeProvider.System, Options.Create(new UKBatchOptions { WatchBufferCapacity = 65536 }), new JobExecutionWatchHub(NullLogger<JobExecutionWatchHub>.Instance));
         var awaiter = new JobExecutionAwaiter(store, NullLogger<JobExecutionAwaiter>.Instance);
+        // StartAsync registers the watch subscription synchronously before returning, so no warmup
+        // probe is needed — waiters registered immediately afterwards are guaranteed to observe the
+        // events that follow.
         await awaiter.StartAsync(default).ConfigureAwait(false);
-
-        // Deterministic warmup — a fixed delay is not enough on a cold, contended CI runner.
-        // A sentinel waiter is registered while its execution is still absent (the catch-up read
-        // sees nothing), so its resolution proves the watch loop delivers events end-to-end.
-        // Retries with a fresh sentinel until the pipeline is demonstrably live.
-        var warmedUp = false;
-        for (var attempt = 0; attempt < 100 && !warmedUp; attempt++)
-        {
-            var sentinelId = IdGenerator.NewExecutionId();
-            var sentinelWait = awaiter.WaitForTerminalAsync(sentinelId, default);
-            await store.InsertAsync(NewExecution(sentinelId), default).ConfigureAwait(false);
-            await store.UpdateStatusAsync(sentinelId, JobStatus.Running, null, default).ConfigureAwait(false);
-            await store.UpdateStatusAsync(sentinelId, JobStatus.Completed, null, default).ConfigureAwait(false);
-            try
-            {
-                await sentinelWait.WaitAsync(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
-                warmedUp = true;
-            }
-            catch (TimeoutException)
-            {
-                // Watch loop not subscribed yet — the sentinel's events were published before the
-                // subscription existed. Try again with a fresh sentinel.
-            }
-        }
-
-        warmedUp.Should().BeTrue("the watch pipeline did not become live within the warmup budget");
 
         var heapBefore = GC.GetTotalMemory(forceFullCollection: true);
 
@@ -99,10 +76,10 @@ public class JobExecutionAwaiterStressTests
             // Every waiter must have completed.
             pairs.All(p => p.wait.IsCompletedSuccessfully).Should().BeTrue();
 
-            // Heap delta < 100MB (per #7 acceptance). Forces a GC and measures.
+            // Bounded heap growth: per-waiter overhead must stay small. Forces a GC and measures.
             var heapAfter = GC.GetTotalMemory(forceFullCollection: true);
             var delta = heapAfter - heapBefore;
-            delta.Should().BeLessThan(150L * 1024 * 1024, $"heap delta {delta:N0} bytes; budget < 150MB (spec says <100MB but we allow CI headroom)");
+            delta.Should().BeLessThan(150L * 1024 * 1024, $"heap delta {delta:N0} bytes; budget < 150MB allowing CI headroom");
         }
         finally
         {
