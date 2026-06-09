@@ -51,30 +51,6 @@ export default defineConfig({
 						{ label: 'Gotchas', slug: 'concepts/gotchas' },
 					],
 				},
-				{
-					label: 'Packages',
-					items: [
-						{ label: 'Overview', slug: 'packages' },
-						{ label: 'UKBatch.Abstractions', slug: 'packages/abstractions' },
-						{ label: 'UKBatch.Core', slug: 'packages/core' },
-						{ label: 'UKBatch.AspNetCore', slug: 'packages/aspnetcore' },
-						{ label: 'UKBatch.Worker', slug: 'packages/worker' },
-						{ label: 'UKBatch.Api', slug: 'packages/api' },
-						{ label: 'UKBatch.Dashboard', slug: 'packages/dashboard' },
-						{
-							label: 'UKBatch.Transport.Http',
-							slug: 'packages/transport-http',
-						},
-						{
-							label: 'UKBatch.Transport.RabbitMQ',
-							slug: 'packages/transport-rabbitmq',
-						},
-						{
-							label: 'UKBatch.Storage.EntityFrameworkCore',
-							slug: 'packages/storage-efcore',
-						},
-					],
-				},
 				{ label: 'Changelog', slug: 'changelog' },
 			],
 		}),

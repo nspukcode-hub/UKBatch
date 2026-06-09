@@ -4,9 +4,11 @@ on:
   push:
     branches: [main]
     paths-ignore: ['website/**']
+  # No path filter here: every PR runs CI so the required "build" check always reports.
+  # A path-filtered PR (for example a docs-only change) would otherwise skip CI and leave
+  # the required check stuck at "Expected — waiting for status to be reported".
   pull_request:
     branches: [main]
-    paths-ignore: ['website/**']
   workflow_dispatch:
 
 jobs:
