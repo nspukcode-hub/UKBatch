@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon.png" alt="UKBatch" width="140" />
+</p>
+
 # UKBatch
 
 Lite, pluggable batch and job orchestration for .NET 8 and .NET 10 microservices.
