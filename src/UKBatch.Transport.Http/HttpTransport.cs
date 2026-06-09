@@ -151,6 +151,18 @@ public sealed class HttpTransport : ITransport
                     bodyBytes: ReadOnlyMemory<byte>.Empty);
 
                 response = await SendAsync(client, request, additionalTimeoutHeader: null, cancellationToken).ConfigureAwait(false);
+
+                // A long-poll cancelled mid-flight can come back as a client-abort status
+                // (e.g. 499) instead of throwing OperationCanceledException, depending on which
+                // side observes the cancellation first. Treat a cancelled subscription as a
+                // graceful stop regardless of how the abort surfaced, rather than letting it
+                // bubble up as a spurious transport error.
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    response.Dispose();
+                    yield break;
+                }
+
                 if (response.StatusCode == HttpStatusCode.Unauthorized)
                 {
                     throw new InvalidOperationException(
