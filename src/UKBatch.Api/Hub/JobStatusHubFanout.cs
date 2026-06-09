@@ -266,7 +266,12 @@ internal sealed class JobStatusHubFanout : IHostedService, IAsyncDisposable
     /// <inheritdoc/>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        _stoppingCts?.Cancel();
+        // DisposeAsync owns disposal via Interlocked.Exchange. During an abrupt or overlapping
+        // host shutdown, StopAsync and DisposeAsync can run concurrently; if DisposeAsync already
+        // disposed the CTS, swallow the resulting ObjectDisposedException — the pumps are already
+        // being cancelled there, so this stop has nothing left to signal.
+        try { _stoppingCts?.Cancel(); }
+        catch (ObjectDisposedException) { /* concurrent DisposeAsync won the race */ }
         var tasks = new List<Task>();
         if (_watchPumpTask is { } w) tasks.Add(w);
         if (_approvalPumpTask is { } a) tasks.Add(a);
