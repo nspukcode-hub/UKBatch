@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="icon.png" alt="UKBatch" width="140" />
+  <img src="banner.webp" alt="UKBatch — Distributed Job &amp; Batch Orchestration Framework for .NET" width="720" />
 </p>
 
 # UKBatch
