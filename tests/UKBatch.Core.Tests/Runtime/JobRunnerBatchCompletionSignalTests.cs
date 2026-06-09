@@ -60,8 +60,10 @@ public class JobRunnerBatchCompletionSignalTests
 
             var batchId = await runner.TriggerBatchAsync(def.Id, null, "test", default).ConfigureAwait(false);
 
-            // Wait for the signal payload (up to 5s).
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            // Await the completion signal. The batch runs fire-and-forget on a detached task (DI scope +
+            // dispatch + worker pickup + finalize), so on a cold/loaded CI runner the full pipeline can
+            // take seconds; this is a generous deadlock backstop, not a tight success ceiling.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
             BatchCompletionSignalPayload? observed = null;
             await foreach (var payload in signalEvents.CompletedBatchRunIds.ReadAllAsync(cts.Token))
             {
@@ -72,7 +74,7 @@ public class JobRunnerBatchCompletionSignalTests
                 }
             }
 
-            observed.Should().NotBeNull("the runtime must signal completion within 5s.");
+            observed.Should().NotBeNull("the runtime must eventually signal completion (60s deadlock backstop).");
             observed!.BatchRunId.Should().Be(batchId);
             observed.BatchDefinitionId.Should().Be(def.Id);
             observed.BatchName.Should().Be(defName);

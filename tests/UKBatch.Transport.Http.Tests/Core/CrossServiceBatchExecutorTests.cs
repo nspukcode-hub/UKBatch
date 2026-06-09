@@ -71,8 +71,19 @@ public sealed class CrossServiceBatchExecutorTests
         {
             var def = lookup.TryGetByName("local-only")!;
             var batchRun = await runner.TriggerBatchAsync(def.Id, JobParameters.Empty, triggeredBy: "test", CancellationToken.None);
-            // Wait briefly for the batch to complete (in-memory).
-            await Task.Delay(500);
+            // Wait for the local step to reach a terminal row BEFORE the negative assertion, so "no
+            // transport call" is checked only after the batch demonstrably ran. A fixed delay could
+            // assert before the fire-and-forget batch task was even scheduled (vacuous pass under load).
+            var store = host.Services.GetRequiredService<IJobStore>();
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            IReadOnlyList<JobExecution> rows;
+            do
+            {
+                rows = await store.QueryAsync(new JobQuery { BatchId = batchRun, Limit = 100 }, CancellationToken.None);
+                if (rows.Any(r => JobStatusTransitions.IsTerminal(r.Status))) break;
+                await Task.Delay(50);
+            } while (DateTime.UtcNow < deadline);
+            rows.Count(r => JobStatusTransitions.IsTerminal(r.Status)).Should().Be(1, "the local step must finish before asserting no cross-service dispatch occurred");
             await transport.DidNotReceiveWithAnyArgs().RequestReplyAsync(default!, default!, default, default);
             await host.StopAsync();
         }
@@ -286,8 +297,19 @@ public sealed class CrossServiceBatchExecutorTests
         using (host)
         {
             var def = lookup.TryGetByName("all-local")!;
-            await runner.TriggerBatchAsync(def.Id, JobParameters.Empty, triggeredBy: "t", CancellationToken.None);
-            await Task.Delay(500);
+            var batchRun = await runner.TriggerBatchAsync(def.Id, JobParameters.Empty, triggeredBy: "t", CancellationToken.None);
+            // Wait for BOTH local steps to reach terminal rows before the negative assertion (a fixed
+            // delay could assert before the two-step batch finished — vacuous pass under load).
+            var store = host.Services.GetRequiredService<IJobStore>();
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            IReadOnlyList<JobExecution> rows;
+            do
+            {
+                rows = await store.QueryAsync(new JobQuery { BatchId = batchRun, Limit = 100 }, CancellationToken.None);
+                if (rows.Count(r => JobStatusTransitions.IsTerminal(r.Status)) >= 2) break;
+                await Task.Delay(50);
+            } while (DateTime.UtcNow < deadline);
+            rows.Count(r => JobStatusTransitions.IsTerminal(r.Status)).Should().Be(2, "both local steps must finish before asserting no cross-service dispatch occurred");
             await transport.DidNotReceiveWithAnyArgs().RequestReplyAsync(default!, default!, default, default);
             await host.StopAsync();
         }

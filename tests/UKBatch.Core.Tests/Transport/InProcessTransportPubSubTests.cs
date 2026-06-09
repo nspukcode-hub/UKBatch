@@ -32,49 +32,61 @@ public class InProcessTransportPubSubTests
 
         using var subCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var counters = Enumerable.Range(0, Subs).Select(_ => new List<string>()).ToArray();
-        var subscribers = new List<Task>();
-        var readyTasks = new List<TaskCompletionSource>();
 
+        // Register every subscriber channel synchronously BEFORE publishing. SubscribeAsync's iterator
+        // runs up to its first await on the first MoveNextAsync, and AddSubscriber happens before that
+        // await — so the channel provably exists when the call returns. (PublishToAll only fans out to
+        // channels present at publish time; a fixed delay here flaked when registration slipped past it.)
+        var enumerators = new IAsyncEnumerator<JobMessage>[Subs];
+        var firstMoves = new Task<bool>[Subs];
         for (var i = 0; i < Subs; i++)
         {
-            var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            readyTasks.Add(ready);
-            var idx = i;
-            subscribers.Add(Task.Run(async () =>
+            enumerators[i] = transport.SubscribeAsync("topic1", subCts.Token).GetAsyncEnumerator(subCts.Token);
+            firstMoves[i] = enumerators[i].MoveNextAsync().AsTask();  // registers the channel, then suspends on the empty channel
+        }
+        try
+        {
+            var drains = new Task[Subs];
+            for (var i = 0; i < Subs; i++)
             {
-                ready.TrySetResult();
-                try
+                var idx = i;
+                drains[idx] = Task.Run(async () =>
                 {
-                    await foreach (var msg in transport.SubscribeAsync("topic1", subCts.Token).ConfigureAwait(false))
+                    try
                     {
-                        counters[idx].Add(msg.MessageId);
-                        if (counters[idx].Count == N)
+                        if (await firstMoves[idx].ConfigureAwait(false))
                         {
-                            // each subscriber breaks out when complete
-                            return;
+                            counters[idx].Add(enumerators[idx].Current.MessageId);
+                            while (counters[idx].Count < N && await enumerators[idx].MoveNextAsync().ConfigureAwait(false))
+                            {
+                                counters[idx].Add(enumerators[idx].Current.MessageId);
+                            }
                         }
                     }
-                }
-                catch (OperationCanceledException) { }
-            }));
+                    catch (OperationCanceledException) { }
+                });
+            }
+
+            for (var i = 0; i < N; i++)
+            {
+                await transport.PublishAsync(NewMessage($"m{i}"), default).ConfigureAwait(false);
+            }
+
+            await Task.WhenAll(drains).WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+
+            // EVERY subscriber must have received EVERY message (invariant).
+            for (var i = 0; i < Subs; i++)
+            {
+                counters[i].Should().HaveCount(N, $"subscriber {i} should receive all {N} messages (pub/sub, not competing-consumer)");
+            }
         }
-
-        // Wait for all subscriptions to start.
-        await Task.WhenAll(readyTasks.Select(r => r.Task)).WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
-        await Task.Delay(100).ConfigureAwait(false); // ensure SubscribeAsync's GetOrAdd path executed
-
-        // Publish N messages.
-        for (var i = 0; i < N; i++)
+        finally
         {
-            await transport.PublishAsync(NewMessage($"m{i}"), default).ConfigureAwait(false);
-        }
-
-        await Task.WhenAll(subscribers).WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
-
-        // EVERY subscriber must have received EVERY message (invariant).
-        for (var i = 0; i < Subs; i++)
-        {
-            counters[i].Should().HaveCount(N, $"subscriber {i} should receive all {N} messages (pub/sub, not competing-consumer)");
+            subCts.Cancel();
+            foreach (var e in enumerators)
+            {
+                await e.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 
@@ -84,35 +96,46 @@ public class InProcessTransportPubSubTests
         var transport = new InProcessTransport(NullLogger<InProcessTransport>.Instance);
         const int N = 100;
 
-        using var subCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var subCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var received = new List<string>();
-        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var subscriber = Task.Run(async () =>
+
+        // Register the subscriber channel synchronously before publishing (AddSubscriber runs before the
+        // iterator's first await), so no ordered message is dropped regardless of CPU load.
+        var e = transport.SubscribeAsync("orderly", subCts.Token).GetAsyncEnumerator(subCts.Token);
+        var firstMove = e.MoveNextAsync().AsTask();  // registers the channel, then suspends on the empty channel
+        try
         {
-            ready.TrySetResult();
-            try
+            var drain = Task.Run(async () =>
             {
-                await foreach (var msg in transport.SubscribeAsync("orderly", subCts.Token).ConfigureAwait(false))
+                try
                 {
-                    received.Add(msg.MessageId);
-                    if (received.Count == N) return;
+                    if (await firstMove.ConfigureAwait(false))
+                    {
+                        received.Add(e.Current.MessageId);
+                        while (received.Count < N && await e.MoveNextAsync().ConfigureAwait(false))
+                        {
+                            received.Add(e.Current.MessageId);
+                        }
+                    }
                 }
+                catch (OperationCanceledException) { }
+            });
+
+            for (var i = 0; i < N; i++)
+            {
+                await transport.PublishAsync(NewMessage($"m{i:D3}", "orderly"), default).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { }
-        });
 
-        await ready.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
-        await Task.Delay(100).ConfigureAwait(false);
+            await drain.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
-        for (var i = 0; i < N; i++)
-        {
-            await transport.PublishAsync(NewMessage($"m{i:D3}", "orderly"), default).ConfigureAwait(false);
+            var expected = Enumerable.Range(0, N).Select(i => $"m{i:D3}").ToList();
+            received.Should().BeEquivalentTo(expected, opts => opts.WithStrictOrdering());
         }
-
-        await subscriber.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
-
-        var expected = Enumerable.Range(0, N).Select(i => $"m{i:D3}").ToList();
-        received.Should().BeEquivalentTo(expected, opts => opts.WithStrictOrdering());
+        finally
+        {
+            subCts.Cancel();
+            await e.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Fact]

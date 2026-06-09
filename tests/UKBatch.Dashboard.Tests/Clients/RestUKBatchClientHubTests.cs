@@ -167,12 +167,22 @@ public sealed class RestUKBatchClientHubTests : IClassFixture<SampleRestApiFacto
         // from compounding to 8× delivery for two triggers (we'd expect at most 2-3
         // unique (id, status, attempt) keys per job).
         await client.TriggerJobAsync("Sample.RestApi.Jobs.InvoiceGenerationJob", parameters: null, triggeredBy: "test1", cts.Token);
-        await Task.Delay(2000);
-        // After a single trigger, the SignalR hub fan-out delivers up to 4× per (id, status, attempt)
-        // tuple. The dedupe cache reduces this to ≤ 4 unique events for one full execution lifecycle
-        // (Pending → Running → Completed → ~3 states). With 4× fan-out and no dedupe we'd see ~12;
-        // with dedupe we see ~3.
-        deliveryCount.Should().BeGreaterThan(0);
-        deliveryCount.Should().BeLessThan(20, "LRU dedupe must filter the 4× group fan-out duplicates");
+
+        // Poll until the first delivery round-trips over LongPolling rather than guessing with a fixed
+        // delay that can be too short on a loaded runner. deliveryCount is mutated on the SignalR receive
+        // loop, so read it through Volatile.Read.
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        while (Volatile.Read(ref deliveryCount) == 0 && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(25, cts.Token);
+        }
+        Volatile.Read(ref deliveryCount).Should().BeGreaterThan(0,
+            "at least one ExecutionStateChanged event must round-trip within 15s of the trigger");
+
+        // Let any remaining 4× group fan-out duplicates arrive so the upper-bound assertion proves the
+        // dedupe cache filtered them. The dedupe cache reduces ~12 (4× fan-out over ~3 lifecycle states)
+        // to ≤ ~4 unique (id, status, attempt) keys.
+        await Task.Delay(500, cts.Token);
+        Volatile.Read(ref deliveryCount).Should().BeLessThan(20, "LRU dedupe must filter the 4× group fan-out duplicates");
     }
 }
