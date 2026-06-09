@@ -35,6 +35,7 @@ jobs:
         uses: withastro/action@v3
         with:
           path: website # the Astro Starlight project lives here
+          node-version: 22 # Astro 6 requires Node >=22.12; the action otherwise defaults to 20
 
   deploy:
     needs: build
