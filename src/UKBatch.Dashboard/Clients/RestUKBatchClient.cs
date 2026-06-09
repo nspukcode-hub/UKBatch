@@ -58,7 +58,7 @@ internal sealed class RestUKBatchClient : IUKBatchClient
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     private int _state; // backing field for State (UKBatchClientState as int for Interlocked)
-    private int _connectFailureCount; // for circuit breaker (UKBatchServiceConductor reads this)
+    private int _connectFailureCount; // circuit-breaker connect-failure backoff (internal)
     private int _disposed; // 0 = live, 1 = disposed
 
     public RestUKBatchClient(
@@ -124,9 +124,6 @@ internal sealed class RestUKBatchClient : IUKBatchClient
     public UKBatchClientState State => (UKBatchClientState)Volatile.Read(ref _state);
 
     public event Func<UKBatchClientState, Task>? StateChanged;
-
-    /// <summary>For tests + UKBatchServiceConductor observational use; reset on successful connect.</summary>
-    internal int ConnectFailureCount => Volatile.Read(ref _connectFailureCount);
 
     /// <summary>Test-only: snapshot of currently-tracked hub groups (for re-subscribe-on-reconnect contract).</summary>
     internal IReadOnlyCollection<string> ActiveGroupsSnapshot => _activeGroups.Keys.ToArray();

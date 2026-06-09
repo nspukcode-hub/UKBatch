@@ -50,16 +50,9 @@ internal sealed class HttpTransportReceiver
     }
 
     /// <summary>
-    /// Long-poll drain — waits up to <see cref="HttpTransportOptions.LongPollMaxWait"/> for at least
-    /// one message; returns an empty array on timeout.
-    /// </summary>
-    public Task<IReadOnlyList<JobMessage>> AwaitMessagesAsync(string topic, CancellationToken ct)
-        => AwaitMessagesAsync(topic, clientWait: null, ct);
-
-    /// <summary>
-    /// Long-poll drain with caller-supplied wait override. Actual wait is
-    /// <c>min(clientWait, LongPollMaxWait)</c>; honors client tuning while
-    /// enforcing server policy as a hard cap.
+    /// Long-poll drain — waits up to <c>min(clientWait ?? LongPollMaxWait, LongPollMaxWait)</c> for at
+    /// least one message; returns an empty array on timeout. Honors client tuning while enforcing the
+    /// server's <see cref="HttpTransportOptions.LongPollMaxWait"/> as a hard cap.
     /// </summary>
     public Task<IReadOnlyList<JobMessage>> AwaitMessagesAsync(string topic, TimeSpan? clientWait, CancellationToken ct)
     {

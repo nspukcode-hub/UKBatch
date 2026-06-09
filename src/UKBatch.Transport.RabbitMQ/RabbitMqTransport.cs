@@ -35,8 +35,6 @@ public sealed class RabbitMqTransport : ITransport
     internal const string HeaderBatch = "x-ukbatch-batch";
     internal const string HeaderStep = "x-ukbatch-step";
     internal const string HeaderAttempt = "x-ukbatch-attempt";
-    internal const string HeaderTraceParent = "traceparent";
-    internal const string HeaderTraceState = "tracestate";
 
     /// <summary>
     /// JSON options for wire (de)serialization. Camel-case + <see cref="JsonStringEnumConverter"/>:

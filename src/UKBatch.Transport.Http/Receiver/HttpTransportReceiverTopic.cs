@@ -38,16 +38,9 @@ internal sealed class HttpTransportReceiverTopic
 
     /// <summary>
     /// Long-poll: returns up to N messages buffered for this topic, blocking up to
-    /// <see cref="HttpTransportOptions.LongPollMaxWait"/> for the first message. Once at least one is
-    /// available, returns the entire batch present in the buffer.
-    /// </summary>
-    public Task<IReadOnlyList<JobMessage>> DrainLongPollAsync(CancellationToken ct)
-        => DrainLongPollAsync(clientWait: null, ct);
-
-    /// <summary>
-    /// Long-poll with caller-supplied wait override. Actual wait is
-    /// <c>min(clientWait ?? LongPollMaxWait, LongPollMaxWait)</c>. Clients can tune for low-latency
-    /// without breaking server policy (operator's LongPollMaxWait is the hard cap).
+    /// <c>min(clientWait ?? LongPollMaxWait, LongPollMaxWait)</c> for the first message. Clients can tune
+    /// for low-latency without breaking server policy (operator's LongPollMaxWait is the hard cap). Once
+    /// at least one is available, returns the entire batch present in the buffer.
     /// </summary>
     public async Task<IReadOnlyList<JobMessage>> DrainLongPollAsync(TimeSpan? clientWait, CancellationToken ct)
     {
