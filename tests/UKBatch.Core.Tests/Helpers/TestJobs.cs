@@ -61,18 +61,6 @@ public sealed class TransientThenSucceedJob : IJob
     }
 }
 
-public sealed class LongRunningJob : IJob
-{
-    public static readonly TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-    public async Task ExecuteAsync(JobContext context, CancellationToken cancellationToken)
-    {
-        Started.TrySetResult();
-        // Honour cancellation; throw OCE when token cancels.
-        await Task.Delay(TimeSpan.FromMinutes(5), cancellationToken).ConfigureAwait(false);
-    }
-}
-
 public sealed class CountingPartitionedJob : IPartitionedJob<int>
 {
     private readonly int _itemCount;
@@ -114,25 +102,5 @@ public sealed class CountingPartitionedJob : IPartitionedJob<int>
         Interlocked.Exchange(ref FailAt, -1);
         Interlocked.Exchange(ref FailCount, 0);
         Interlocked.Exchange(ref Processed, 0);
-    }
-}
-
-/// <summary>
-/// Records each invocation timestamp so tests can assert ordering / progression.
-/// </summary>
-public sealed class TimestampedJob : IJob
-{
-    public static readonly List<DateTimeOffset> Timestamps = new();
-    private static readonly object _lock = new();
-
-    public Task ExecuteAsync(JobContext context, CancellationToken cancellationToken)
-    {
-        lock (_lock) { Timestamps.Add(DateTimeOffset.UtcNow); }
-        return Task.CompletedTask;
-    }
-
-    public static void Reset()
-    {
-        lock (_lock) { Timestamps.Clear(); }
     }
 }
