@@ -58,13 +58,15 @@ public sealed class BatchWorkflowSmokeTests
             var batchId = triggerDoc.RootElement.GetProperty("batchId").GetString();
             batchId.Should().NotBeNullOrEmpty();
 
-            // Poll up to 8s (auto-approve fires at 2s; full pipeline must finish ArchiveJob soon after).
-            var deadline = DateTime.UtcNow.AddSeconds(8);
+            // Poll to a generous deadlock backstop (auto-approve fires at 2s; a healthy run finishes in
+            // ~2.x s, so 30s is generous-but-bounded). The 250ms delay is at the END of the loop so the
+            // first status check is immediate — a tight 8s ceiling flaked on a loaded 2-core runner where
+            // host boot + scheduler latency + in-process dispatch ate most of the window.
+            var deadline = DateTime.UtcNow.AddSeconds(30);
             bool archiveCompleted = false;
             string lastSeen = "<none>";
             while (DateTime.UtcNow < deadline)
             {
-                await Task.Delay(250);
                 var statusResponse = await client.GetAsync(new Uri($"/batches/{batchId}/status", UriKind.Relative));
                 var statusBody = await statusResponse.ShouldBeAsync(HttpStatusCode.OK);
                 lastSeen = statusBody;
@@ -83,6 +85,7 @@ public sealed class BatchWorkflowSmokeTests
                     }
                 }
                 if (archiveCompleted) break;
+                await Task.Delay(250);
             }
 
             archiveCompleted.Should().BeTrue(

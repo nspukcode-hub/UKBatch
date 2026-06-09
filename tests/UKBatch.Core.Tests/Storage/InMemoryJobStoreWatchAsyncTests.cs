@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using UKBatch;
 using UKBatch.Abstractions.Models;
 using UKBatch.Abstractions.Storage;
+using UKBatch.Core.Tests.Helpers;
 using UKBatch.Storage;
 using Xunit;
 
@@ -39,34 +40,39 @@ public class InMemoryJobStoreWatchAsyncTests
         var store = CreateStore();
         const int N = 100;
         var received = new List<JobExecution>();
-        var receivedAll = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var subCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var subCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var consumer = Task.Run(async () =>
+        // MoveNextAsync runs the async-iterator body synchronously up to its first await, so the
+        // subscription is REGISTERED when the call returns — no wall-clock race. (Same deterministic
+        // handshake as the DropOldest/DropNewest siblings; the default 1024 buffer holds all N, so a
+        // fast consumer receives every event. The previous version raced a Task.Run consumer against a
+        // fixed 50ms "let it subscribe" delay — a late registration silently lost the early creates.)
+        var watch = store.WatchAsync(WatchOptions.Default, subCts.Token).GetAsyncEnumerator(subCts.Token);
+        try
         {
-            await foreach (var ex in store.WatchAsync(WatchOptions.Default, subCts.Token).ConfigureAwait(false))
+            var firstMove = watch.MoveNextAsync();  // registers the subscription, then suspends on the empty buffer
+            _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);  // event #1 completes the pending read
+            (await firstMove.AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+            received.Add(watch.Current);
+
+            for (var i = 1; i < N; i++)  // remaining N-1 events
             {
-                received.Add(ex);
-                if (received.Count == N)
-                {
-                    receivedAll.TrySetResult();
-                }
+                _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);
             }
-        });
 
-        // Give consumer a moment to subscribe.
-        await Task.Delay(50).ConfigureAwait(false);
+            for (var i = 1; i < N; i++)  // drain — default 1024 buffer holds all, fast consumer drops nothing
+            {
+                (await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false)).Should().BeTrue();
+                received.Add(watch.Current);
+            }
 
-        for (var i = 0; i < N; i++)
-        {
-            _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);
+            received.Should().HaveCount(N);
         }
-
-        await receivedAll.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
-        subCts.Cancel();
-        try { await consumer.ConfigureAwait(false); } catch (OperationCanceledException) { }
-
-        received.Should().HaveCountGreaterOrEqualTo(N);
+        finally
+        {
+            subCts.Cancel();
+            await watch.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Fact]
@@ -183,44 +189,54 @@ public class InMemoryJobStoreWatchAsyncTests
         const int N = 50;
         var r1 = new List<JobExecution>();
         var r2 = new List<JobExecution>();
-        using var subCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var subCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var c1 = Task.Run(async () =>
+        // Register both subscriptions synchronously BEFORE publishing: MoveNextAsync runs the
+        // async-iterator body up to its first await, so each subscription exists when the call returns.
+        // The previous version raced two Task.Run consumers against a fixed 100ms "let them subscribe"
+        // delay, then asserted on background-mutated lists after a fixed 200ms drain — under load a late
+        // registration lost early events, or the drain had not finished. (.AsTask() so each stored
+        // ValueTask is consumed once across the Task.Run boundary.)
+        var e1 = store.WatchAsync(WatchOptions.Default, subCts.Token).GetAsyncEnumerator(subCts.Token);
+        var e2 = store.WatchAsync(WatchOptions.Default, subCts.Token).GetAsyncEnumerator(subCts.Token);
+        try
         {
-            try
-            {
-                await foreach (var ex in store.WatchAsync(WatchOptions.Default, subCts.Token).ConfigureAwait(false))
-                {
-                    r1.Add(ex);
-                }
-            }
-            catch (OperationCanceledException) { }
-        });
-        var c2 = Task.Run(async () =>
-        {
-            try
-            {
-                await foreach (var ex in store.WatchAsync(WatchOptions.Default, subCts.Token).ConfigureAwait(false))
-                {
-                    r2.Add(ex);
-                }
-            }
-            catch (OperationCanceledException) { }
-        });
-        await Task.Delay(100).ConfigureAwait(false);
+            var m1 = e1.MoveNextAsync().AsTask();  // registers subscriber 1, suspends on the empty buffer
+            var m2 = e2.MoveNextAsync().AsTask();  // registers subscriber 2
 
-        for (var i = 0; i < N; i++)
-        {
-            _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);
+            var c1 = Task.Run(async () =>
+            {
+                try { if (await m1.ConfigureAwait(false)) { r1.Add(e1.Current); while (await e1.MoveNextAsync().ConfigureAwait(false)) r1.Add(e1.Current); } }
+                catch (OperationCanceledException) { }
+            });
+            var c2 = Task.Run(async () =>
+            {
+                try { if (await m2.ConfigureAwait(false)) { r2.Add(e2.Current); while (await e2.MoveNextAsync().ConfigureAwait(false)) r2.Add(e2.Current); } }
+                catch (OperationCanceledException) { }
+            });
+
+            for (var i = 0; i < N; i++)
+            {
+                _ = await store.CreateAsync(NewDef(), default).ConfigureAwait(false);
+            }
+
+            // Poll live state to a generous deadline rather than racing a fixed drain window that a
+            // pre-emptive cancel would abort (the default 1024 buffer holds all N, so no drops occur).
+            var got = await Waits.ForAsync(() => r1.Count >= N && r2.Count >= N, TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            got.Should().BeTrue("both subscribers must receive all N events");
+
+            r1.Should().HaveCountGreaterOrEqualTo(N);
+            r2.Should().HaveCountGreaterOrEqualTo(N);
+
+            subCts.Cancel();
+            try { await Task.WhenAll(c1, c2).ConfigureAwait(false); } catch (OperationCanceledException) { }
         }
-        await Task.Delay(200).ConfigureAwait(false);
-
-        subCts.Cancel();
-        try { await Task.WhenAll(c1, c2).ConfigureAwait(false); } catch (OperationCanceledException) { }
-
-        // Both subscribers should have received all N events (or close — buffer is 1024 default).
-        r1.Should().HaveCountGreaterOrEqualTo(N);
-        r2.Should().HaveCountGreaterOrEqualTo(N);
+        finally
+        {
+            subCts.Cancel();
+            await e1.DisposeAsync().ConfigureAwait(false);
+            await e2.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Fact]

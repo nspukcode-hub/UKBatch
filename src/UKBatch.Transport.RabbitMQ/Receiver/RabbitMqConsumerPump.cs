@@ -45,10 +45,12 @@ internal sealed class RabbitMqConsumerPump : IHostedService, IDisposable
     private readonly ILogger<RabbitMqConsumerPump> _logger;
 
     private readonly CancellationTokenSource _stoppingCts = new();
+    private readonly CancellationToken _stoppingToken;
 
     private IChannel? _consumerChannel;
     private string? _consumerTag;
     private int _started;
+    private int _disposed;
 
     /// <summary>Constructs the consumer pump.</summary>
     public RabbitMqConsumerPump(
@@ -71,6 +73,11 @@ internal sealed class RabbitMqConsumerPump : IHostedService, IDisposable
         _awaiter = awaiter;
         _registry = registry;
         _logger = logger;
+        // Cache the token now. A CancellationToken (a struct) can be read safely AFTER its source is
+        // disposed; reading CancellationTokenSource.Token after Dispose() would throw. In-flight delivery
+        // handlers can resume after a concurrent shutdown disposes _stoppingCts, so every handler path
+        // reads this cached token instead of _stoppingCts.Token.
+        _stoppingToken = _stoppingCts.Token;
     }
 
     /// <inheritdoc/>
@@ -173,7 +180,7 @@ internal sealed class RabbitMqConsumerPump : IHostedService, IDisposable
                     message.MessageId);
             }
 
-            await channel.BasicAckAsync(deliveryTag, multiple: false, _stoppingCts.Token).ConfigureAwait(false);
+            await channel.BasicAckAsync(deliveryTag, multiple: false, _stoppingToken).ConfigureAwait(false);
             return;
         }
 
@@ -243,7 +250,7 @@ internal sealed class RabbitMqConsumerPump : IHostedService, IDisposable
         JobExecution terminal;
         try
         {
-            terminal = await _awaiter.WaitForTerminalAsync(execution.ExecutionId, _stoppingCts.Token)
+            terminal = await _awaiter.WaitForTerminalAsync(execution.ExecutionId, _stoppingToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (_stoppingCts.IsCancellationRequested)
@@ -273,7 +280,7 @@ internal sealed class RabbitMqConsumerPump : IHostedService, IDisposable
         await ReplyIfRequestedAsync(channel, ea, result).ConfigureAwait(false);
 
         // 9. ACK — ALWAYS (Completed OR Failed). requeue NEVER.
-        await channel.BasicAckAsync(deliveryTag, multiple: false, _stoppingCts.Token).ConfigureAwait(false);
+        await channel.BasicAckAsync(deliveryTag, multiple: false, _stoppingToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -305,7 +312,7 @@ internal sealed class RabbitMqConsumerPump : IHostedService, IDisposable
                 mandatory: false,
                 basicProperties: props,
                 body: body,
-                cancellationToken: _stoppingCts.Token).ConfigureAwait(false);
+                cancellationToken: _stoppingToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -320,7 +327,7 @@ internal sealed class RabbitMqConsumerPump : IHostedService, IDisposable
     private async Task NackToDeadLetterAsync(IChannel channel, ulong deliveryTag)
     {
         // requeue:false → routes to the queue's x-dead-letter-exchange (poison containment).
-        await channel.BasicNackAsync(deliveryTag, multiple: false, requeue: false, _stoppingCts.Token)
+        await channel.BasicNackAsync(deliveryTag, multiple: false, requeue: false, _stoppingToken)
             .ConfigureAwait(false);
     }
 
@@ -365,7 +372,14 @@ internal sealed class RabbitMqConsumerPump : IHostedService, IDisposable
     /// <inheritdoc/>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        await _stoppingCts.CancelAsync().ConfigureAwait(false);
+        // Dispose() owns disposal (latched via _disposed). If a concurrent or abrupt teardown disposed
+        // the CTS first, skip the cancel — in-flight handlers read the cached _stoppingToken which already
+        // reflects cancellation, so there is nothing left to signal.
+        if (Volatile.Read(ref _disposed) == 0)
+        {
+            try { await _stoppingCts.CancelAsync().ConfigureAwait(false); }
+            catch (ObjectDisposedException) { /* concurrent Dispose won the race */ }
+        }
 
         var channel = _consumerChannel;
         if (channel is not null)
@@ -391,8 +405,13 @@ internal sealed class RabbitMqConsumerPump : IHostedService, IDisposable
     /// <inheritdoc/>
     public void Dispose()
     {
-        // The host disposes hosted services after StopAsync — release the CTS here so a StopAsync
-        // that was never called (abrupt teardown) still frees the token source.
+        // Latched + idempotent. The host disposes hosted services after StopAsync, but an abrupt teardown
+        // can also race StopAsync. Exchange ensures the CTS is disposed exactly once and lets a concurrent
+        // StopAsync skip its cancel (see Volatile.Read(ref _disposed) there).
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
         _stoppingCts.Dispose();
     }
 }
