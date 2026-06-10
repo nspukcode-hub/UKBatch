@@ -44,13 +44,24 @@ section() { printf '\n\033[1m── %s ──\033[0m\n' "$1"; }
 http_code() { curl -sS -m 15 -o /dev/null -w '%{http_code}' "$@"; }   # status code only
 get()       { curl -sS -m 15 "$@"; }                                  # body to stdout
 
-# create_batch <name> <json-body> — idempotent: 201 (created) and 409 (already exists) both succeed.
+# create_batch <name> <json-body> — idempotent AND self-healing: 201 creates; on 409 the stored copy
+# (possibly seeded by an OLDER harness version and no longer accepted by current definition
+# validation — e.g. an on-timeout action without a timeout) is deleted and recreated from the
+# current body, so a long-lived demo stack can never pin a run to a stale, un-triggerable definition.
 create_batch() {
-  local name="$1" body="$2" code
+  local name="$1" body="$2" code id
   code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' -X POST "$BASE/batches" \
     -H 'Content-Type: application/json' -d "$body")
   case "$code" in
-    201 | 409) return 0 ;;
+    201) return 0 ;;
+    409)
+      id=$(get "$BASE/batches" | jq -r --arg n "$name" '.items[] | select(.name == $n) | .id' | head -1)
+      if [ -z "$id" ]; then fail "create '$name' → 409 but no stored definition found by name"; return 1; fi
+      curl -sS -m 15 -o /dev/null -X DELETE "$BASE/batches/by-id/$id"
+      code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' -X POST "$BASE/batches" \
+        -H 'Content-Type: application/json' -d "$body")
+      [ "$code" = 201 ] && return 0
+      fail "recreate '$name' after stale-definition delete → HTTP $code (expected 201)"; return 1 ;;
     *) fail "create '$name' → HTTP $code (expected 201/409)"; return 1 ;;
   esac
 }
@@ -92,6 +103,10 @@ SIMPLE_BODY='{
 }'
 
 # parallel{invoice,ship} (order 0) → approval gate (order 1) → notify (order 2). Matches seed-batch.sh.
+# The gate sets NO timeout, so it waits indefinitely for the manual ops decision the scenario needs.
+# onTimeout MUST still be sent (required member — omitting it is a binding 400) and MUST be "Fail":
+# AutoApprove/Hold without a timeout duration are rejected by definition validation; Fail with no
+# timeout simply never fires.
 APPROVAL_PARALLEL_BODY='{
   "name": "approval-parallel-demo", "source": "Api", "failurePolicy": "StopOnFailure",
   "steps": [
@@ -103,7 +118,7 @@ APPROVAL_PARALLEL_BODY='{
           "job": { "jobName": "ShipOrder", "targetService": "shipping" } }
       ] } },
     { "stepId": "step-2-approve", "order": 1, "stepType": "ApprovalGate",
-      "approval": { "title": "Release the cross-service run", "allowedRoles": ["ops"], "onTimeout": "Hold" } },
+      "approval": { "title": "Release the cross-service run", "allowedRoles": ["ops"], "onTimeout": "Fail" } },
     { "stepId": "step-3-notify", "order": 2, "stepType": "Job",
       "job": { "jobName": "SendNotification", "targetService": "notification" } }
   ]
@@ -273,6 +288,10 @@ PARTITIONED_BODY='{
   ]
 }'
 create_batch partitioned-demo "$PARTITIONED_BODY" || true
+# Anchor the worker-log greps to an absolute pre-trigger timestamp. A fixed `--since 3m`-style
+# window is a flake on a long-lived stack: slow polls can push the grep past the window, and the
+# window can also swallow a PREVIOUS run's lines (false-green). An anchor captured here is exact.
+t_run=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 run=$(trigger_batch partitioned-demo)
 [ -n "$run" ] && pass "triggered (run=$run)" || fail "trigger returned no batchId"
 
@@ -282,12 +301,15 @@ else
   fail "partitioned job did not complete ($(status_json "$run" | jq -c '[.items[]|{j:.jobName,s:.status}]'))"
 fi
 # The 12 DONE lines in the worker log are the per-item proof (best-effort — docker may be absent).
-done_count=$(docker logs ukbatch-worker-invoicing --since 3m 2>/dev/null | grep -c 'ReconcileInvoices: DONE' || echo 0)
+# NOTE: grep -c prints "0" AND exits 1 on zero matches — an `|| echo 0` fallback would append a
+# SECOND line and break the integer comparison below; the ${var:-0} default is the safe guard.
+done_count=$(docker logs ukbatch-worker-invoicing --since "$t_run" 2>/dev/null | grep -c 'ReconcileInvoices: DONE')
 [ "${done_count:-0}" -ge 12 ] && pass "worker log shows ${done_count} DONE items (all rows processed)" \
-  || fail "expected >=12 DONE lines in worker log, got ${done_count}"
+  || fail "expected >=12 DONE lines in worker log, got ${done_count:-0}"
 
 # Per-run worker-count override: a run-level {"ukbatch.workers": N} parameter beats the
 # registration-time WithParallelism. Proof = the runner's override log line on the worker.
+t_override=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 run=$(get -X POST "$BASE/batches/by-name/partitioned-demo/run" -H 'Content-Type: application/json' \
   -d '{"initialParameters":{"ukbatch.workers":6}}' | jq -r '.batchId')
 if wait_status "$run" 60 '[.items[] | select(.jobName == "ReconcileInvoices" and .status == "Completed")] | length == 1'; then
@@ -297,7 +319,7 @@ else
 fi
 # NOTE: capture-then-grep (no `docker logs | grep -q` pipe): with `set -o pipefail`, grep -q's early
 # exit SIGPIPEs docker logs (exit 141) and the WHOLE pipeline reads as failed — a false-red.
-recent_log=$(docker logs ukbatch-worker-invoicing --since 3m 2>/dev/null || true)
+recent_log=$(docker logs ukbatch-worker-invoicing --since "$t_override" 2>/dev/null || true)
 grep -q "worker count 6 (per-run 'ukbatch.workers' override" <<<"$recent_log" \
   && pass "worker log confirms the per-run worker-count override (6, registered default 3)" \
   || fail "per-run override log line not found on the worker"
