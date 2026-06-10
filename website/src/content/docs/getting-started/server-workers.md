@@ -4,8 +4,16 @@ description: Run the standalone UKBatch.Server as orchestrator + dashboard, with
 ---
 
 Instead of embedding the runtime, run the generic `UKBatch.Server` as the orchestrator +
-dashboard and join microservices as workers. There is no published Docker image yet — build
-and run the full stack from the repo root:
+dashboard and join microservices as workers. The server image is published on GitHub
+Container Registry (`linux/amd64` + `linux/arm64`):
+
+```bash
+docker run -p 8080:8080 -e UKBATCH_DEV_AUTH=true ghcr.io/nspukcode-hub/ukbatch-server:0.1.4-alpha
+```
+
+That single container serves the dashboard at `http://localhost:8080/dashboard` with in-memory
+state — enough for a first look. For the full demo topology, build and run the Compose stack
+from the repo root:
 
 ```bash
 docker compose up --build

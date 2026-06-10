@@ -6,7 +6,7 @@
 
 Lite, pluggable batch and job orchestration for .NET 8 and .NET 10 microservices.
 
-> Status: 0.1.0-alpha — early preview, [available on NuGet](https://www.nuget.org/packages?q=UKBatch).
+> Status: alpha — early preview, [available on NuGet](https://www.nuget.org/packages?q=UKBatch). See the [CHANGELOG](CHANGELOG.md) for the current version.
 
 ```bash
 dotnet add package UKBatch.AspNetCore --prerelease
@@ -66,7 +66,13 @@ public sealed class SendWelcomeEmailsJob : IJob
 
 ## Quick start — server + workers
 
-There is no published Docker image yet — build and run the full stack from the repo root:
+The server image is published on GitHub Container Registry:
+
+```bash
+docker run -p 8080:8080 -e UKBATCH_DEV_AUTH=true ghcr.io/nspukcode-hub/ukbatch-server:0.1.4-alpha
+```
+
+That single container serves the dashboard at `http://localhost:8080/dashboard` with in-memory state — enough for a first look. For the full demo topology, build and run the Compose stack from the repo root:
 
 ```bash
 docker compose up --build

@@ -14,6 +14,10 @@
 # Build context for every app image is the REPO ROOT (`.`) so the Dockerfiles COPY their own source
 # (the root .dockerignore does NOT exclude samples/). Host ports avoid the macOS
 # 12+ AirPlay/Control Center hold on :5000 (server 5070, workers 5170/5180/5190).
+#
+# Every app image here is built from source and tagged `:local` — this stack never pulls them from
+# a registry. The published server image lives at ghcr.io/nspukcode-hub/ukbatch-server (the sample
+# workers are reference code and are not published).
 
 services:
   postgres:
@@ -54,7 +58,7 @@ services:
       retries: 10
 
   ukbatch-server:
-    image: ukbatch/server:0.1.0-alpha
+    image: ukbatch/server:local
     container_name: ukbatch-server
     build:
       context: .
@@ -93,7 +97,7 @@ services:
       retries: 10
 
   worker-invoicing:
-    image: ukbatch/sample-worker-invoicing:0.1.0-alpha
+    image: ukbatch/sample-worker-invoicing:local
     container_name: ukbatch-worker-invoicing
     build:
       context: .
@@ -118,7 +122,7 @@ services:
       retries: 10
 
   worker-shipping:
-    image: ukbatch/sample-worker-shipping:0.1.0-alpha
+    image: ukbatch/sample-worker-shipping:local
     container_name: ukbatch-worker-shipping
     build:
       context: .
@@ -143,7 +147,7 @@ services:
       retries: 10
 
   worker-notification:
-    image: ukbatch/sample-worker-notification:0.1.0-alpha
+    image: ukbatch/sample-worker-notification:local
     container_name: ukbatch-worker-notification
     build:
       context: .

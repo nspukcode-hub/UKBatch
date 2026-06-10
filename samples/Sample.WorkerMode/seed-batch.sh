@@ -11,8 +11,10 @@
 #      workers, all cross-service:
 #        step 1: ParallelGroup (joinPolicy:"WaitAll") — GenerateInvoice@invoicing + ShipOrder@shipping
 #                run concurrently (watch the two DAG nodes go blue -> green together),
-#        step 2: ApprovalGate (allowedRoles:["ops"], onTimeout:"Hold") — pauses the run AFTER the two
-#                parallel jobs complete, until an "ops" caller grants it,
+#        step 2: ApprovalGate (allowedRoles:["ops"], no timeout + onTimeout:"Fail" — waits
+#                indefinitely; AutoApprove/Hold without a timeout duration are rejected by
+#                definition validation, and onTimeout is a required member so it must be sent) —
+#                pauses the run AFTER the two parallel jobs complete, until an "ops" caller grants it,
 #        step 3: SendNotification on the "notification" worker.
 #      The approval gate needs an authenticated "ops" caller. The server must run with
 #      UKBATCH_DEV_AUTH=true (docker-compose sets it) so it can be granted via curl with the role header
@@ -43,7 +45,7 @@ BASE="${BASE:-http://localhost:5070/api}"
 #   POSTs a batch definition. Treats 201 (created) and 409 (already exists) as success; aborts on any
 #   other status. Enums serialize/deserialize as STRINGS (JsonStringEnumConverter on both ends):
 #   source: "Api" | stepType: "Job" | "ParallelGroup" | "ApprovalGate" | failurePolicy: "StopOnFailure"
-#   | joinPolicy: "WaitAll" | onTimeout: "Hold".
+#   | joinPolicy: "WaitAll" | onTimeout: "Fail".
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 create_batch() {
   local name="$1" body="$2" http
@@ -153,7 +155,7 @@ seed_approval_parallel_demo() {
           "title": "Release the cross-service run",
           "description": "The invoice + ship steps have completed; grant to fire the final notify.",
           "allowedRoles": ["ops"],
-          "onTimeout": "Hold"
+          "onTimeout": "Fail"
         }
       },
       {

@@ -3,7 +3,11 @@
 # Build context is the REPO ROOT (compose: build.context: .) so the COPY paths below are repo-relative.
 
 # ---- build ----
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+# --platform=$BUILDPLATFORM keeps the SDK stage on the build host's native architecture even when
+# producing a multi-platform image (linux/amd64 + linux/arm64). The publish below is portable
+# (no RID), so its IL output is architecture-neutral and a single native compile feeds every
+# target platform's runtime stage — instead of re-running the whole .NET build under QEMU emulation.
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 # 1) Copy solution-level props + central package versions FIRST so `dotnet restore` is cached across

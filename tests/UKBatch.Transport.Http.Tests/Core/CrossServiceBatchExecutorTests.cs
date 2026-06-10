@@ -29,6 +29,25 @@ public sealed class CrossServiceBatchExecutorTests
     }
 
     /// <summary>
+    /// Polls <paramref name="condition"/> until it holds or a 60-second deadline expires.
+    /// Batch runs are fire-and-forget, so the asserted transport interaction lands on a
+    /// background worker: a short fixed iteration budget flakes on a loaded CI runner, while a
+    /// healthy run exits this loop within milliseconds. The caller asserts the condition right
+    /// after, so an expiry still fails loudly.
+    /// </summary>
+    private static async Task PollUntilAsync(Func<bool> condition)
+    {
+        var deadline = Environment.TickCount64 + 60_000;
+        while (Environment.TickCount64 < deadline && !condition())
+        {
+            await Task.Delay(100);
+        }
+    }
+
+    private static int RequestReplyCalls(ITransport transport)
+        => transport.ReceivedCalls().Count(c => c.GetMethodInfo().Name == "RequestReplyAsync");
+
+    /// <summary>
     /// Boots a real host with the in-memory storage + InProcess seam replaced by a substitute
     /// <see cref="ITransport"/>. Returns the running app for test.
     /// </summary>
@@ -110,10 +129,7 @@ public sealed class CrossServiceBatchExecutorTests
             var def = lookup.TryGetByName("cross-call")!;
             await runner.TriggerBatchAsync(def.Id, JobParameters.Empty, triggeredBy: "t", CancellationToken.None);
             // Allow batch dispatch + cross-service hop.
-            for (var i = 0; i < 30 && transport.ReceivedCalls().Count(c => c.GetMethodInfo().Name == "RequestReplyAsync") == 0; i++)
-            {
-                await Task.Delay(100);
-            }
+            await PollUntilAsync(() => RequestReplyCalls(transport) > 0);
             await transport.Received(1).RequestReplyAsync(
                 "billing",
                 Arg.Is<JobMessage>(m => m.JobName == "RemoteJob" && m.TargetService == "billing"),
@@ -149,10 +165,7 @@ public sealed class CrossServiceBatchExecutorTests
         {
             var def = lookup.TryGetByName("needs-this-svc")!;
             await runner.TriggerBatchAsync(def.Id, JobParameters.Empty, triggeredBy: "t", CancellationToken.None);
-            for (var i = 0; i < 30 && transport.ReceivedCalls().Count(c => c.GetMethodInfo().Name == "RequestReplyAsync") == 0; i++)
-            {
-                await Task.Delay(100);
-            }
+            await PollUntilAsync(() => RequestReplyCalls(transport) > 0);
             // SourceService MUST be non-null/non-whitespace — fallback chain ensured one of (options,
             // env var, entry assembly) resolved to a usable identity.
             await transport.Received(1).RequestReplyAsync(
@@ -186,10 +199,7 @@ public sealed class CrossServiceBatchExecutorTests
             var def = lookup.TryGetByName("fails-remote")!;
             await runner.TriggerBatchAsync(def.Id, JobParameters.Empty, triggeredBy: "t", CancellationToken.None);
             // Poll until transport sees the cross-service call.
-            for (var i = 0; i < 50 && transport.ReceivedCalls().Count(c => c.GetMethodInfo().Name == "RequestReplyAsync") == 0; i++)
-            {
-                await Task.Delay(100);
-            }
+            await PollUntilAsync(() => RequestReplyCalls(transport) > 0);
             await transport.Received(1).RequestReplyAsync(Arg.Any<string>(), Arg.Any<JobMessage>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
             await host.StopAsync();
         }
@@ -210,10 +220,7 @@ public sealed class CrossServiceBatchExecutorTests
         {
             var def = lookup.TryGetByName("timeout-remote")!;
             await runner.TriggerBatchAsync(def.Id, JobParameters.Empty, triggeredBy: "t", CancellationToken.None);
-            for (var i = 0; i < 30 && transport.ReceivedCalls().Count(c => c.GetMethodInfo().Name == "RequestReplyAsync") == 0; i++)
-            {
-                await Task.Delay(100);
-            }
+            await PollUntilAsync(() => RequestReplyCalls(transport) > 0);
             await transport.Received(1).RequestReplyAsync(Arg.Any<string>(), Arg.Any<JobMessage>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
             await host.StopAsync();
         }
@@ -244,10 +251,7 @@ public sealed class CrossServiceBatchExecutorTests
         {
             var def = lookup.TryGetByName("attr-check")!;
             await runner.TriggerBatchAsync(def.Id, JobParameters.Empty, triggeredBy: "t", CancellationToken.None);
-            for (var i = 0; i < 30 && captured is null; i++)
-            {
-                await Task.Delay(100);
-            }
+            await PollUntilAsync(() => captured is not null);
             captured.Should().NotBeNull();
             captured!.SourceService.Should().Be("orchestrator-svc");
             captured.TargetService.Should().Be("billing");
@@ -276,10 +280,7 @@ public sealed class CrossServiceBatchExecutorTests
         {
             var def = lookup.TryGetByName("mixed")!;
             await runner.TriggerBatchAsync(def.Id, JobParameters.Empty, triggeredBy: "t", CancellationToken.None);
-            for (var i = 0; i < 30 && transport.ReceivedCalls().Count(c => c.GetMethodInfo().Name == "RequestReplyAsync") == 0; i++)
-            {
-                await Task.Delay(100);
-            }
+            await PollUntilAsync(() => RequestReplyCalls(transport) > 0);
             await transport.Received(1).RequestReplyAsync(Arg.Any<string>(), Arg.Any<JobMessage>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
             await host.StopAsync();
         }
@@ -337,10 +338,7 @@ public sealed class CrossServiceBatchExecutorTests
         {
             var def = lookup.TryGetByName("two-remote")!;
             await runner.TriggerBatchAsync(def.Id, JobParameters.Empty, triggeredBy: "t", CancellationToken.None);
-            for (var i = 0; i < 30 && transport.ReceivedCalls().Count(c => c.GetMethodInfo().Name == "RequestReplyAsync") < 2; i++)
-            {
-                await Task.Delay(100);
-            }
+            await PollUntilAsync(() => RequestReplyCalls(transport) >= 2);
             await transport.Received(2).RequestReplyAsync(Arg.Any<string>(), Arg.Any<JobMessage>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
             await host.StopAsync();
         }

@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.4-alpha] - 2026-06-10
+
+### Added
+
+- **Official server Docker image** — `ghcr.io/nspukcode-hub/ukbatch-server` (multi-platform: `linux/amd64` + `linux/arm64`), published automatically alongside the NuGet packages on every release. The demo Compose stack still builds its images from source (now tagged `:local`).
+- **Documentation website** — guides and concepts at <https://nspukcode-hub.github.io/UKBatch>.
+
+### Security
+
+- **Approval role claims are read only from an authenticated principal** — an unauthenticated request can no longer present role claims to the approval endpoints.
+- **HTTP transport request-body buffering is capped** — `MaxBodyBytes` is validated into the 1 byte – 16 MB range, bounding pre-authentication memory use.
+- **HTTP transport dedupe cache no longer grows unbounded** — the message-id dedupe cache is a self-contained LRU whose result map is evicted in lock-step with the id set.
+- **RabbitMQ refuses insecure defaults against a remote broker** — connecting to a non-loopback broker with the default `guest`/`guest` credentials now fails at host start unless the new `AllowInsecureBroker=true` option is set explicitly (loopback brokers are exempt). If your deployment relied on a remote demo broker with default credentials, set this option or — better — create a dedicated broker user.
+
+### Fixed
+
+- **Abrupt host shutdown no longer races disposal in two background pumps** — the SignalR status fan-out and the RabbitMQ consumer pump now guard their cancellation source against concurrent stop/dispose, eliminating spurious `ObjectDisposedException`s.
+- **A cancelled HTTP transport subscription is treated as a graceful stop** during shutdown instead of being logged as an error.
+
+### Changed
+
+- Internal cleanups only beyond the above: dead code and test-only helpers removed; no public API changes.
+
 ## [0.1.3-alpha] - 2026-06-08
 
 ### Fixed
@@ -61,7 +84,8 @@ First public preview of the UKBatch package family.
 - **Single-node orphan reaper.** The orphaned-execution reaper assumes a single orchestrator node.
 - **Adapters not yet available.** Kafka, Azure Service Bus, and Redis adapters are not part of this release.
 
-[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.3-alpha...HEAD
+[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.4-alpha...HEAD
+[0.1.4-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.4-alpha
 [0.1.3-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.3-alpha
 [0.1.1-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.1-alpha
 [0.1.0-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.0-alpha

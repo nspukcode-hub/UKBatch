@@ -17,7 +17,7 @@ image, not a hand-written app. The workers advertise themselves to the server vi
 |---|---|---|---|
 | `postgres` | `postgres:16-alpine` | 5432 | durable server state (EF Core storage) |
 | `rabbitmq` | `rabbitmq:3.13-management` | 5672 / 15672 | cross-service transport + mgmt UI |
-| `ukbatch-server` | `ukbatch/server:0.1.0-alpha` | **5070** | orchestrator + dashboard + `/api/workers/*` registry |
+| `ukbatch-server` | `ukbatch/server:local` (built from source; published as `ghcr.io/nspukcode-hub/ukbatch-server`) | **5070** | orchestrator + dashboard + `/api/workers/*` registry |
 | `worker-invoicing` | sample image | 5170 | runs `GenerateInvoice` (`WorkerName=invoicing`) |
 | `worker-shipping` | sample image | 5180 | runs `ShipOrder` (`WorkerName=shipping`) |
 | `worker-notification` | sample image | 5190 | runs `SendNotification` (`WorkerName=notification`) |
@@ -118,10 +118,10 @@ The `seed-batch.sh` helper also creates and triggers an **`approval-parallel-dem
 exercises all three workers and every v0.1 workflow shape over the broker:
 
 ```text
-step 1  ApprovalGate   (allowedRoles:["ops"], onTimeout:"Hold")     ← run pauses here until granted
-step 2  ParallelGroup  (joinPolicy:"WaitAll")
+step 1  ParallelGroup  (joinPolicy:"WaitAll")
           ├─ GenerateInvoice @ invoicing
           └─ ShipOrder       @ shipping                              ← both run concurrently
+step 2  ApprovalGate   (allowedRoles:["ops"], no timeout)            ← run pauses here until granted
 step 3  Job  SendNotification @ notification
 ```
 
