@@ -135,6 +135,10 @@ Tracked toward v0.2: Kafka, Azure Service Bus, and Redis adapters; durable workf
 - [GETTING_STARTED.md](GETTING_STARTED.md) — the guided walkthrough
 - [CHANGELOG.md](CHANGELOG.md) — release notes and known limitations
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 [MIT](LICENSE)
