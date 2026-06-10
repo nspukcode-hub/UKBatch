@@ -1,6 +1,7 @@
 name: Release
 
-# Publishes the UKBatch package family to nuget.org and creates the matching GitHub release.
+# Publishes the UKBatch package family to nuget.org, creates the matching GitHub release, and
+# then publishes the server container image to GitHub Container Registry.
 # Triggered by pushing a version tag (e.g. `git push origin v0.1.0-alpha`).
 #
 # Authentication uses nuget.org Trusted Publishing: the job exchanges its GitHub OIDC token
@@ -149,3 +150,53 @@ jobs:
             $prerelease_flag \
             --title "UKBatch $VERSION" \
             --notes-file release-notes.md
+
+  # Publishes the UKBatch.Server orchestrator image to GHCR AFTER the NuGet packages are live,
+  # so an image version never exists without its matching package set. Authentication is the
+  # workflow's own GITHUB_TOKEN (packages: write) — no long-lived secret here either.
+  docker:
+    runs-on: ubuntu-latest
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      # QEMU only executes the tiny runtime-stage RUN instruction for the non-native platform;
+      # the expensive SDK build stage stays native via --platform=$BUILDPLATFORM in the Dockerfile.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The image tag is the semver parsed from the git tag (e.g. v0.1.4-alpha -> 0.1.4-alpha);
+      # the version guard in the release job already proved it equals the package version.
+      # `latest` is applied automatically only to suffix-less stable versions — semver
+      # pre-releases never move it. The generated OCI labels (source/revision/version/licenses)
+      # link the GHCR package back to this repository.
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/ukbatch-server
+          tags: |
+            type=semver,pattern={{version}}
+
+      - name: Build and push server image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: src/UKBatch.Server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
