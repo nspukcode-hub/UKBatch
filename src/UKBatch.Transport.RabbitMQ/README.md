@@ -108,6 +108,7 @@ There is **no application-level HMAC** — trust lives at the broker layer. Prov
 
 MIT licensed. Source code, samples, issue tracker:
 
+- Docs: <https://nspukcode-hub.github.io/UKBatch/>
 - GitHub: <https://github.com/nspukcode-hub/UKBatch>
 
 Contributions welcome.

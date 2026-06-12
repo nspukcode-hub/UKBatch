@@ -132,6 +132,7 @@ Tracked toward v0.2: Kafka, Azure Service Bus, and Redis adapters; durable workf
 
 ## Documentation
 
+- **[Documentation website](https://nspukcode-hub.github.io/UKBatch/)** — guides, concepts, and deployment modes
 - [GETTING_STARTED.md](GETTING_STARTED.md) — the guided walkthrough
 - [CHANGELOG.md](CHANGELOG.md) — release notes and known limitations
 
