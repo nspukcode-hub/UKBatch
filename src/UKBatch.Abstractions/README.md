@@ -19,7 +19,7 @@ Declare a job against the contract. Nothing here executes — the type is just m
 ```csharp
 using UKBatch.Abstractions.Jobs;
 
-[Job(Name = "DailyReport", Schedule = "0 9 * * *", MaxRetries = 3)]
+[Job(Name = "DailyReport", Schedule = "0 0 9 * * *", MaxRetries = 3)]
 public sealed class DailyReportJob : IJob
 {
     public Task ExecuteAsync(JobContext context, CancellationToken cancellationToken)

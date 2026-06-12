@@ -105,10 +105,18 @@ and the effective count is capped at 128).
 Instead of registering each job explicitly, decorate it with `[Job]` and scan assemblies:
 
 ```csharp
-[Job(Name = "DailyReport", Schedule = "0 9 * * *", MaxRetries = 3, TimeoutSeconds = 600)]
+[Job(Name = "DailyReport", Schedule = "0 0 9 * * *", MaxRetries = 3, TimeoutSeconds = 600)]
 public sealed class DailyReportJob : IJob { /* ... */ }
 
 builder.AddUKBatchAspNetCore(b => b.ScanAssemblies(typeof(Program).Assembly));
 ```
 
 `[Job]` carries optional `Name`, `Schedule` (cron), `MaxRetries`, `TimeoutSeconds`, and `Tags`.
+
+:::note[Cron format]
+Schedules are **six fields with seconds first** by default
+(`sec min hour day month day-of-week` — Cronos `CronFormat.IncludeSeconds`). "Daily at 09:00" is
+`0 0 9 * * *`; "every 30 seconds" is `*/30 * * * * *`. A classic five-field crontab expression
+such as `0 9 * * *` is **rejected at startup**; to use five-field expressions set
+`UKBatchOptions.CronFormat = CronFormat.Standard`.
+:::

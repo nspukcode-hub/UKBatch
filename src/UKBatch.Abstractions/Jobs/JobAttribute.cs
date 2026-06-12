@@ -15,8 +15,10 @@ public sealed class JobAttribute : Attribute
 
     /// <summary>
     /// Cron expression for scheduled execution; <c>null</c> means trigger-only (not scheduled).
-    /// Grammar: standard 5-field or extended 6-field cron (seconds-prefix optional).
-    /// The exact dialect is determined by the configured scheduler (default: Cronos).
+    /// The field count is fixed by the configured cron format and defaults to SIX fields with
+    /// seconds first (<c>sec min hour day month day-of-week</c>, e.g. <c>0 0 9 * * *</c> for
+    /// daily at 09:00) — a classic five-field crontab expression is rejected at startup unless
+    /// the host opts into the five-field format via its scheduling options.
     /// </summary>
     public string? Schedule { get; init; }
 
