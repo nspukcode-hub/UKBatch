@@ -106,7 +106,7 @@ public class JobSchedulerBadCronTests
         }
         finally
         {
-            await scheduler.StopAsync().ConfigureAwait(false);
+            await scheduler.StopAsync(CancellationToken.None).ConfigureAwait(false);
         }
     }
 }

@@ -23,6 +23,7 @@ internal sealed class UKBatchHost : IHostedService, IAsyncDisposable
 
     private CancellationTokenSource? _stoppingCts;
     private Task[]? _workerTasks;
+    private int _started;
 
     /// <summary>Constructs the host coordinator.</summary>
     public UKBatchHost(
@@ -56,10 +57,20 @@ internal sealed class UKBatchHost : IHostedService, IAsyncDisposable
     /// <inheritdoc/>
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        // One-shot, atomically: a duplicate start would overwrite the stopping source (leaving
+        // the first worker set unstoppable) and double the workers on the same dispatcher.
+        if (Interlocked.Exchange(ref _started, 1) == 1)
+        {
+            _logger.LogWarning("UKBatchHost.StartAsync called more than once; ignoring the duplicate start.");
+            return;
+        }
+
         // Validate options eagerly (IValidateOptions runs lazily — touching the Value forces it).
         _ = _options.Value;
 
-        _stoppingCts = CancellationTokenSource.CreateLinkedTokenSource(_hostLifetime.ApplicationStopping);
+        // Link BOTH the application-stopping token and the startup token (the BackgroundService
+        // pattern): an abort during startup must reach the child services and worker loops too.
+        _stoppingCts = CancellationTokenSource.CreateLinkedTokenSource(_hostLifetime.ApplicationStopping, cancellationToken);
 
         await _progressFlusher.StartAsync(_stoppingCts.Token).ConfigureAwait(false);
         await _awaiter.StartAsync(_stoppingCts.Token).ConfigureAwait(false);
@@ -67,12 +78,14 @@ internal sealed class UKBatchHost : IHostedService, IAsyncDisposable
 
         var workerCount = _options.Value.MaxDegreeOfParallelism;
         _workerTasks = new Task[workerCount];
+        // ONE singleton JobWorker instance runs all N loops in parallel. That is safe because the
+        // worker is stateless by design: every field is a readonly dependency, and all
+        // per-execution state lives in locals and the per-execution DI scope it opens. A mutable
+        // instance field added to JobWorker would be shared by all N loops — keep it stateless.
+        var worker = _rootProvider.GetRequiredService<JobWorker>();
         for (var i = 0; i < workerCount; i++)
         {
             var idx = i;
-            // Each worker is resolved from the root provider per-iteration; JobWorker itself is
-            // a singleton type but we capture the per-worker index inside the task.
-            var worker = _rootProvider.GetRequiredService<JobWorker>();
             _workerTasks[i] = Task.Run(() => worker.RunAsync(idx, _stoppingCts.Token), CancellationToken.None);
         }
         _logger.LogInformation("UKBatch started ({Workers} workers).", workerCount);
@@ -84,7 +97,17 @@ internal sealed class UKBatchHost : IHostedService, IAsyncDisposable
         // Stop accepting new triggers first, then stop the scheduler, then drain workers.
         _dispatcher.StopAcceptingTriggers();
 
-        await _scheduler.StopAsync().ConfigureAwait(false);
+        try
+        {
+            await _scheduler.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // A faulted scheduler loop must not abort the shutdown chain: the workers still need
+            // their cancel + drain, the dispatcher its completion, and the flusher/awaiter their
+            // stops. Loud, then continue.
+            _logger.LogError(ex, "Scheduler stop failed; continuing host shutdown.");
+        }
 
         _stoppingCts?.Cancel();
 
@@ -100,9 +123,11 @@ internal sealed class UKBatchHost : IHostedService, IAsyncDisposable
                     "Workers did not drain in {Timeout}; in-flight executions remain in Cancelling state.",
                     _options.Value.ShutdownTimeout);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                // host cancelled the StopAsync grace period — continue cleanup.
+                // host cancelled the StopAsync grace period — continue cleanup. Workers exit
+                // NORMALLY on the stopping token (they swallow their own cancellation), so any
+                // other cancellation here is a genuine fault and stays loud.
             }
         }
 
