@@ -75,4 +75,4 @@ JSON columns are stored **as names** (not ordinals), so a v0.2 reader round-trip
 
 ## License
 
-MIT. See [LICENSE](https://github.com/nspukcode-hub/UKBatch/blob/main/LICENSE) in the repo root. Full docs: [UKBatch on GitHub](https://github.com/nspukcode-hub/UKBatch).
+MIT. See [LICENSE](https://github.com/nspukcode-hub/UKBatch/blob/main/LICENSE) in the repo root. Full docs: [nspukcode-hub.github.io/UKBatch](https://nspukcode-hub.github.io/UKBatch/) · [GitHub](https://github.com/nspukcode-hub/UKBatch).
