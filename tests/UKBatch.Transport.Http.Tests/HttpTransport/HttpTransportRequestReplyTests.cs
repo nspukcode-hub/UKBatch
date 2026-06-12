@@ -259,16 +259,20 @@ public sealed class HttpTransportRequestReplyTests : IClassFixture<WorkerFactory
     }
 
     [Fact]
-    public async Task RequestReplyAsync_CallWithVerySmallTimeout_StillSucceedsIfJobIsFast()
+    public async Task RequestReplyAsync_TimeoutShorterThanDefault_StillSucceedsWhenJobFinishesInTime()
     {
-        // Worker's InvoiceProcessingJob has a 500ms delay. With 5s timeout, succeeds.
+        // The contract under test: a per-call timeout SHORTER than the 30s DefaultRequestTimeout
+        // is passed through and honored, and the call succeeds when the job (a 500ms delay)
+        // finishes inside it. The budget must absorb CI load, not race it: a 5-second budget was
+        // empirically exceeded on a loaded 2-core runner (the receiver answered 499), so the
+        // margin is 40x the job's delay while still being below the default.
         var (transport, sp) = new HttpTransportTestBuilder(_factory.Server).Build();
         await using (sp.ConfigureAwait(false))
         {
             var result = await transport.RequestReplyAsync(
                 "billing-worker",
                 BuildMessage(),
-                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(20),
                 CancellationToken.None);
             result.Status.Should().Be(JobStatus.Completed);
         }
