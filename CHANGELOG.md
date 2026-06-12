@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.5-alpha] - 2026-06-12
+
+### Fixed
+
+- **Scheduled jobs no longer fire twice.** Two distinct duplicate-fire bugs were found and fixed:
+  - *Clock skew:* the scheduler's timer could complete marginally before the wall-clock deadline (timer rounding, NTP slew), firing an occurrence early and then re-arming that same occurrence. The loop now re-checks the deadline after every wake and anchors the next occurrence no earlier than the one just fired.
+  - *Duplicate registration:* a job registered explicitly through the builder under a custom name was registered a second time by attribute discovery under its attribute-derived name, arming its `[Job(Schedule = ...)]` cron twice. Discovery now skips any implementation type that is already registered — the explicit registration wins.
+- **A scheduler fire that fails to enqueue no longer strands a `Pending` execution row** — the created row is compensated to `Failed` with a descriptive error.
+- **Lifecycle hardening for the scheduler and the runtime host:** shutdown waits are bounded by `ShutdownTimeout` and honor the host's grace token; `StartAsync` is one-shot (a duplicate start is a logged no-op instead of doubling workers and leaking the stopping source); the linked stopping sources are disposed, safely even when the service provider is torn down before `StopAsync` runs; an abort during startup now reaches the worker loops.
+- **A flaky transport test raced CI load** — the short-timeout request-reply test budget was widened; no production change.
+
+### Changed
+
+- **Cron documentation corrected.** The documented schedule examples were five-field crontab expressions, which the six-field seconds-first default format rejects at startup. Examples are now six-field, the format is stated explicitly (with the `CronFormat.Standard` opt-in for five-field expressions), and the `JobAttribute.Schedule` API documentation describes the actual contract.
+- **The API samples run with a plain `dotnet run`** — launch profiles pin the port and the `Development` environment (the development-only auth scheme refuses `Production` by design), and the readmes document the `-f` flag the multi-targeted samples require.
+- **The package readmes and the root README link the documentation website** (<https://nspukcode-hub.github.io/UKBatch/>).
+
 ## [0.1.4-alpha] - 2026-06-10
 
 ### Added
@@ -84,7 +101,8 @@ First public preview of the UKBatch package family.
 - **Single-node orphan reaper.** The orphaned-execution reaper assumes a single orchestrator node.
 - **Adapters not yet available.** Kafka, Azure Service Bus, and Redis adapters are not part of this release.
 
-[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.4-alpha...HEAD
+[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.5-alpha...HEAD
+[0.1.5-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.5-alpha
 [0.1.4-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.4-alpha
 [0.1.3-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.3-alpha
 [0.1.1-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.1-alpha
