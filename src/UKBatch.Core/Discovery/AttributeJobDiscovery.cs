@@ -37,6 +37,20 @@ internal static class AttributeJobDiscovery
             scanned.Add(asm);
         }
 
+        // Types already registered (typically explicitly, through the builder) keep ONLY that
+        // registration. The builder may have renamed the job, so the name-based check inside the
+        // loop cannot see such a registration — re-registering the type here would resurrect the
+        // attribute's defaults under a second name, and a [Job(Schedule = ...)] job would then be
+        // armed twice and fire twice per cron occurrence.
+        var registeredTypes = new HashSet<Type>();
+        foreach (var existing in registry.All())
+        {
+            if (registry.TryGetImplementationType(existing.Name) is { } impl)
+            {
+                registeredTypes.Add(impl);
+            }
+        }
+
         foreach (var asm in scanned)
         {
             Type[] types;
@@ -61,16 +75,23 @@ internal static class AttributeJobDiscovery
                     continue;
                 }
 
-                var (isPartitioned, partitionedItemType) = ResolveJobShape(type);
+                var isPartitioned = IsPartitionedJob(type);
                 if (!isPartitioned && !typeof(IJob).IsAssignableFrom(type))
                 {
                     // Has [Job] but neither IJob nor IPartitionedJob<T> — skip silently.
                     continue;
                 }
 
+                if (registeredTypes.Contains(type))
+                {
+                    // The implementation type is already registered (under whatever name the
+                    // builder chose) — the explicit registration wins.
+                    continue;
+                }
+
                 if (registry.TryGet(attr.Name ?? type.FullName ?? type.Name) is not null)
                 {
-                    // Already explicitly registered via the builder — skip to avoid duplicate.
+                    // Already registered under the same name — skip to avoid duplicate.
                     continue;
                 }
 
@@ -103,25 +124,21 @@ internal static class AttributeJobDiscovery
                     }
                 }
 
-                var pipeline = def.ItemErrorPolicy == ItemErrorPolicy.RetryThenContinue && def.MaxRetries >= 1
-                    ? JobDefinitionFactory.BuildItemRetryPipeline(def)
-                    : null;
-                registry.Register(def, type, pipeline);
+                // No item-retry pipeline on this path: [Job] cannot express ItemErrorPolicy, so
+                // attribute-discovered jobs are always FailFast (the hardcoded value above) and a
+                // pipeline is only ever built for RetryThenContinue. A partitioned job that wants
+                // per-item retries must be registered through the fluent builder
+                // (WithItemErrorPolicy), which mirrors this Build + pipeline pairing.
+                registry.Register(def, type, itemRetryPipeline: null);
 
                 services.AddScoped(type);
-                _ = partitionedItemType;
             }
         }
     }
 
-    private static (bool IsPartitioned, Type? ItemType) ResolveJobShape(Type type)
-    {
-        var partitioned = type.GetInterfaces()
-            .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IPartitionedJob<>));
-        if (partitioned is not null)
-        {
-            return (true, partitioned.GetGenericArguments()[0]);
-        }
-        return (false, null);
-    }
+    // Only the partitioned/plain distinction matters here: JobDefinition carries no item type,
+    // and the partitioned runtime resolves TItem from the implementation instance at dispatch.
+    private static bool IsPartitionedJob(Type type)
+        => type.GetInterfaces()
+            .Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IPartitionedJob<>));
 }

@@ -22,8 +22,12 @@ public Task ExecuteAsync(JobContext ctx, CancellationToken ct)
 ## Run
 
 ```bash
-dotnet run --project samples/Sample.SimpleJob -- --urls http://localhost:5001
+dotnet run --project samples/Sample.SimpleJob -f net10.0
 ```
+
+`-f` is required because the sample multi-targets `net10.0;net8.0`. The launch profile pins
+`http://localhost:5001` and the `Development` environment (the development-only auth scheme
+refuses to start in `Production` by design).
 
 ## Endpoints
 

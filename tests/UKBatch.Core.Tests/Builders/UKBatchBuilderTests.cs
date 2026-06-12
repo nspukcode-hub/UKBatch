@@ -21,6 +21,11 @@ namespace UKBatch.Core.Tests.Builders;
 /// - per-job registration via AddJob
 /// cron expressions validated at Complete-time against final options (post-audit)
 /// </summary>
+// Shares a collection with AttributeCronValidationTests: these tests switch CronFormat away from
+// the default, and attribute discovery scans every assembly loaded in the process — running in
+// parallel with a test that emits a [Job]-decorated probe assembly would validate that probe's
+// schedule against this test's format and fail spuriously.
+[Collection("process-wide attribute discovery")]
 public class UKBatchBuilderTests
 {
     [Fact]

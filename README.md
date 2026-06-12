@@ -57,7 +57,7 @@ app.Run();
 Open `/dashboard`.
 
 ```csharp
-[Job(Name = "send-welcome-emails", Schedule = "0 9 * * *", MaxRetries = 3)]
+[Job(Name = "send-welcome-emails", Schedule = "0 0 9 * * *", MaxRetries = 3)]
 public sealed class SendWelcomeEmailsJob : IJob
 {
     public Task ExecuteAsync(JobContext ctx, CancellationToken ct) => /* your work */ Task.CompletedTask;
