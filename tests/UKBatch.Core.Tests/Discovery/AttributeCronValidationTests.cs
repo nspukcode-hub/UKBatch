@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -30,13 +31,18 @@ namespace UKBatch.Core.Tests.Discovery;
 /// it cannot break sibling discoveries that use the default format. The context is unloaded and collected
 /// in <c>finally</c>.</para>
 /// </remarks>
+// Attribute discovery scans EVERY assembly loaded in the process, so the probe assembly emitted
+// here is visible to any concurrently-running AddUKBatch call. A sibling that switches the cron
+// format away from the default would then validate the probe's six-field schedule against the
+// wrong grammar and fail. Sharing one collection with those siblings serializes the overlap.
+[Collection("process-wide attribute discovery")]
 public class AttributeCronValidationTests
 {
     // Six-field: valid under IncludeSeconds (default), invalid under Standard (five-field grammar).
     private const string SixFieldDailySchedule = "0 0 0 * * *";
 
 #if NET9_0_OR_GREATER
-    private static (Assembly Assembly, AssemblyLoadContext Context) EmitScheduledJobAssembly()
+    private static (Assembly Assembly, AssemblyLoadContext Context) EmitScheduledJobAssembly(string? jobName = "discovery.cron.probe")
     {
         var an = new AssemblyName("UKBatch.Tests.Emitted.Cron." + Guid.NewGuid().ToString("N"));
         var ab = new PersistedAssemblyBuilder(an, typeof(object).Assembly);
@@ -57,11 +63,10 @@ public class AttributeCronValidationTests
         var attrCtor = typeof(JobAttribute).GetConstructor(Type.EmptyTypes)!;
         var nameProp = typeof(JobAttribute).GetProperty(nameof(JobAttribute.Name))!;
         var scheduleProp = typeof(JobAttribute).GetProperty(nameof(JobAttribute.Schedule))!;
-        tb.SetCustomAttribute(new CustomAttributeBuilder(
-            attrCtor,
-            Array.Empty<object>(),
-            new[] { nameProp, scheduleProp },
-            new object[] { "discovery.cron.probe", SixFieldDailySchedule }));
+        // jobName == null emits [Job] WITHOUT a Name so discovery derives the type's full name.
+        var props = jobName is null ? new[] { scheduleProp } : new[] { nameProp, scheduleProp };
+        var values = jobName is null ? new object[] { SixFieldDailySchedule } : new object[] { jobName, SixFieldDailySchedule };
+        tb.SetCustomAttribute(new CustomAttributeBuilder(attrCtor, Array.Empty<object>(), props, values));
         tb.CreateType();
 
         using var ms = new MemoryStream();
@@ -75,6 +80,32 @@ public class AttributeCronValidationTests
 
     [Fact]
     public void DiscoverAndRegister_AttributeCronInvalidUnderFormat_ThrowsInvalidOperation_LikeFluentPath()
+    {
+        var alcRef = RunInvalidFormatScenario();
+        DrainEmittedAssembly(alcRef);
+    }
+
+    [Fact]
+    public void DiscoverAndRegister_AttributeCronValidUnderFormat_Registers()
+    {
+        var alcRef = RunValidFormatScenario();
+        DrainEmittedAssembly(alcRef);
+    }
+
+    [Fact]
+    public void DiscoverAndRegister_TypeAlreadyRegisteredByBuilder_KeepsOnlyExplicitRegistration()
+    {
+        var alcRef = RunExplicitRegistrationWinsScenario();
+        DrainEmittedAssembly(alcRef);
+    }
+
+    // The scenario bodies live in NoInlining helpers and the collect-pump runs in the CALLER:
+    // in a Debug build the JIT keeps a method's locals alive until the method returns, so the
+    // registry (which roots the probe's Type, which roots the load context) pins the emitted
+    // assembly through any GC pump placed inside the same frame — it then stays visible to
+    // AppDomain.GetAssemblies() and leaks into whichever test scans loaded assemblies next.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference RunInvalidFormatScenario()
     {
         var (emitted, alc) = EmitScheduledJobAssembly();
         try
@@ -92,21 +123,16 @@ public class AttributeCronValidationTests
 
             act.Should().Throw<InvalidOperationException>()
                 .WithMessage("*Invalid cron expression*" + SixFieldDailySchedule + "*");
+            return new WeakReference(alc);
         }
         finally
         {
             alc.Unload();
-            // Evict the emitted assembly before the next (sequential) test scans loaded assemblies.
-            for (var i = 0; i < 5; i++)
-            {
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-            }
         }
     }
 
-    [Fact]
-    public void DiscoverAndRegister_AttributeCronValidUnderFormat_Registers()
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference RunValidFormatScenario()
     {
         var (emitted, alc) = EmitScheduledJobAssembly();
         try
@@ -124,16 +150,70 @@ public class AttributeCronValidationTests
 
             act.Should().NotThrow();
             registry.TryGet("discovery.cron.probe").Should().NotBeNull();
+            return new WeakReference(alc);
         }
         finally
         {
             alc.Unload();
-            for (var i = 0; i < 5; i++)
-            {
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-            }
         }
+    }
+
+    private static Abstractions.Models.JobDefinition Def(string name, string schedule) => new()
+    {
+        Name = name,
+        ImplementationTypeName = typeof(object).AssemblyQualifiedName,
+        IsPartitioned = false,
+        Schedule = schedule,
+        MaxRetries = 0,
+        TimeoutSeconds = 0,
+        PartitionWorkerCount = 0,
+        ItemErrorPolicy = ItemErrorPolicy.FailFast,
+        DefaultParameters = new Dictionary<string, object?>(),
+        Tags = Array.Empty<string>(),
+        SourceService = null,
+    };
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference RunExplicitRegistrationWinsScenario()
+    {
+        // No attribute Name: discovery would derive the emitted type's FULL name — a different
+        // name than the explicit registration below, so only the implementation-type identity can
+        // prevent the duplicate. Without that check the type would be registered a second time
+        // with its attribute schedule, and the scheduler would fire it twice per occurrence.
+        var (emitted, alc) = EmitScheduledJobAssembly(jobName: null);
+        try
+        {
+            var services = new ServiceCollection();
+            var registry = new JobDefinitionRegistry();
+            var jobType = emitted.GetTypes().Single(t => !t.IsAbstract && typeof(IJob).IsAssignableFrom(t));
+            registry.Register(Def("explicit.heartbeat", SixFieldDailySchedule), jobType, null);
+            var options = new UKBatchOptions { AdditionalAssembliesToScan = new[] { emitted } };
+
+            AttributeJobDiscovery.DiscoverAndRegister(services, registry, options);
+
+            registry.TryGet("explicit.heartbeat").Should().NotBeNull();
+            registry.TryGet(jobType.FullName!).Should().BeNull(
+                "a type registered explicitly through the builder must not be re-registered by discovery under its attribute-derived name");
+            return new WeakReference(alc);
+        }
+        finally
+        {
+            alc.Unload();
+        }
+    }
+
+    private static void DrainEmittedAssembly(WeakReference alcRef)
+    {
+        // Pump until the collectible context is actually collected (its assemblies then leave
+        // AppDomain.GetAssemblies()). Bounded so a regression that re-roots the context fails
+        // the assertion loudly instead of looping forever.
+        for (var i = 0; i < 10 && alcRef.IsAlive; i++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+        alcRef.IsAlive.Should().BeFalse(
+            "the emitted probe assembly must be fully collected before another test scans the loaded-assembly list");
     }
 #endif
 }
