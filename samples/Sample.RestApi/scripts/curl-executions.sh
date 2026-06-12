@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-BASE="${1:-http://localhost:5000/api}"
+BASE="${1:-http://localhost:5003/api}"
 
 echo "==> Query executions (most recent 50)"
 curl -fsSL -X POST "$BASE/executions/query" \
