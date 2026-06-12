@@ -8,7 +8,7 @@
 @inject INotificationService Notifications
 @inject NavigationManager Nav
 
-<PageTitle>Execution @Id.Substring(0, Math.Min(8, Id.Length)) - UKBatch</PageTitle>
+<PageTitle>Execution @IdDisplay.Shorten(Id) - UKBatch</PageTitle>
 
 @if (_redirected) return;
 
@@ -36,7 +36,7 @@ else if (_execution is null)
 else
 {
     <div class="execution-detail__header">
-        <h1 class="page-title">Execution <span class="mono">@Id.Substring(0, Math.Min(8, Id.Length))</span></h1>
+        <h1 class="page-title">Execution <span class="mono">@IdDisplay.Shorten(Id)</span></h1>
         <div class="execution-detail__actions">
             <JobStatusBadge Status="@_execution.Status" />
             @if (CanCancel())
@@ -58,11 +58,11 @@ else
                 <dt>Job</dt><dd>@_execution.JobName</dd>
                 @if (_execution.BatchId is { } bid)
                 {
-                    <dt>Batch run</dt><dd class="mono"><a href="/dashboard/@ServiceName/runs/@bid">@bid.Substring(0, Math.Min(8, bid.Length))</a></dd>
+                    <dt>Batch run</dt><dd class="mono"><a href="/dashboard/@ServiceName/runs/@bid">@IdDisplay.Shorten(bid)</a></dd>
                 }
                 @if (_execution.BatchDefinitionId is { } bdid)
                 {
-                    <dt>Batch definition</dt><dd class="mono"><a href="/dashboard/@ServiceName/batches/@bdid">@bdid.Substring(0, Math.Min(8, bdid.Length))</a></dd>
+                    <dt>Batch definition</dt><dd class="mono"><a href="/dashboard/@ServiceName/batches/@bdid">@IdDisplay.Shorten(bdid)</a></dd>
                 }
                 <dt>Attempt</dt><dd>@_execution.AttemptNumber / @(_execution.MaxRetries + 1)</dd>
                 <dt>Enqueued</dt><dd class="mono">@_execution.EnqueuedAtUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC</dd>
@@ -119,7 +119,7 @@ else
                OnConfirm="ConfirmCancelAsync"
                OnCancel="() => { _confirmCancelOpen = false; return Task.CompletedTask; }">
     <Body>
-        <p>This will request cancellation of execution <span class="mono">@Id.Substring(0, Math.Min(8, Id.Length))</span>.
+        <p>This will request cancellation of execution <span class="mono">@IdDisplay.Shorten(Id)</span>.
            The worker may still complete the in-flight item before honoring the cancel.</p>
     </Body>
 </ConfirmDialog>
@@ -154,7 +154,7 @@ else
         {
             _client = ClientFactory.GetClient(ServiceName);
 
-            // R4 — subscribe FIRST, fetch SECOND.
+            // Subscribe FIRST, fetch SECOND — events raised during the fetch are not lost.
             _client.ExecutionStateChanged += OnExecutionStateChangedAsync;
             _client.ProgressUpdated += OnProgressUpdatedAsync;
             try

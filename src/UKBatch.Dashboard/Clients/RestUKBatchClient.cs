@@ -368,7 +368,7 @@ internal sealed class RestUKBatchClient : IUKBatchClient
     {
         ArgumentException.ThrowIfNullOrEmpty(executionId);
         EnsureConnected();
-        // S-1: track BEFORE invoke so a mid-flight reconnect picks up the group from
+        // Track BEFORE invoke so a mid-flight reconnect picks up the group from
         // _activeGroups. Roll back the entry if the server-side invoke fails so we don't
         // keep a phantom subscription on this client. Idempotent: if the caller already
         // owns this group, short-circuit without a duplicate invoke.
@@ -397,7 +397,7 @@ internal sealed class RestUKBatchClient : IUKBatchClient
     {
         ArgumentException.ThrowIfNullOrEmpty(batchRunId);
         EnsureConnected();
-        // S-1: track-before-invoke + rollback on failure (see SubscribeToExecutionAsync).
+        // Track-before-invoke + rollback on failure (see SubscribeToExecutionAsync).
         var group = $"batch:{batchRunId}";
         if (!_activeGroups.TryAdd(group, 0)) return;
         try
@@ -423,7 +423,7 @@ internal sealed class RestUKBatchClient : IUKBatchClient
     {
         ArgumentException.ThrowIfNullOrEmpty(jobName);
         EnsureConnected();
-        // S-1: track-before-invoke + rollback on failure (see SubscribeToExecutionAsync).
+        // Track-before-invoke + rollback on failure (see SubscribeToExecutionAsync).
         var group = $"job:{jobName}";
         if (!_activeGroups.TryAdd(group, 0)) return;
         try
@@ -448,7 +448,7 @@ internal sealed class RestUKBatchClient : IUKBatchClient
     public async Task SubscribeAllAsync(CancellationToken ct)
     {
         EnsureConnected();
-        // S-1: track-before-invoke + rollback on failure (see SubscribeToExecutionAsync).
+        // Track-before-invoke + rollback on failure (see SubscribeToExecutionAsync).
         const string group = "all";
         if (!_activeGroups.TryAdd(group, 0)) return;
         try

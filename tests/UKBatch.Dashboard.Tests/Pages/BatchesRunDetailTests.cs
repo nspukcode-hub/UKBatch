@@ -503,4 +503,128 @@ public sealed class BatchesRunDetailTests : TestContext
 
         await client.Received(1).ApproveAsync("appr-busy", null, Arg.Any<CancellationToken>());
     }
+
+    // ── capped newest-first live window over the Executions table ────────────────────
+    //
+    // The Executions section is a live activity window: it renders the most recent executions newest-first
+    // and caps the rendered rows. The stored list stays whole (the section header count, RebuildStatusMap,
+    // and the completion roll-up all still see every row); the full list lives on the Executions page,
+    // linked once the cap is exceeded.
+
+    private const int MaxRendered = 50;   // mirrors RunDetail.MaxRenderedRows
+
+    private static PageEnvelope<JobExecution> RowsEnvelope(string batchRunId, int count)
+    {
+        // Distinct ids AND distinct, increasing enqueue times so "newest first" is unambiguous: index 0 is
+        // the oldest, index count-1 is the newest. Ids are zero-padded so an ordinal tiebreak (if two rows
+        // shared a timestamp) would also sort by index.
+        var baseTime = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var items = Enumerable.Range(0, count)
+            .Select(i => Exec($"exec-{i:D3}", batchRunId, JobStatus.Completed)
+                with { EnqueuedAtUtc = baseTime.AddSeconds(i) })
+            .ToArray();
+        return new PageEnvelope<JobExecution>
+        {
+            Items = items,
+            TotalCount = count,
+            Offset = 0,
+            Limit = 500,
+        };
+    }
+
+    private IRenderedComponent<RunDetail> RenderRun(string batchRunId, PageEnvelope<JobExecution> envelope,
+        out IUKBatchClient client)
+    {
+        var svc = PageTestHelpers.Descriptor("svc");
+        var registry = PageTestHelpers.RegistryWith(svc);
+        client = PageTestHelpers.BuildClient();
+        client.GetBatchRunStatusAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(envelope);
+
+        Services.AddSingleton(registry);
+        Services.AddSingleton(PageTestHelpers.FactoryFor(svc.Name, client));
+        Services.AddSingleton(PageTestHelpers.NewState());
+        Services.AddSingleton(PageTestHelpers.NewOptions());
+
+        return RenderComponent<RunDetail>(p => p
+            .Add(d => d.ServiceName, svc.Name)
+            .Add(d => d.BatchRunId, batchRunId));
+    }
+
+    // The id of the first LiveExecutionRow in document order (== the topmost rendered row).
+    private static string TopRowExecutionId(IRenderedComponent<RunDetail> cut)
+        => cut.FindComponents<LiveExecutionRow>()[0].Instance.InitialModel.ExecutionId;
+
+    [Fact]
+    public void Executions_FetchBeyondCap_RendersExactlyCap_NewestFirst()
+    {
+        // 64 rows (> 50-cap). Only the 50 most recent render, newest at the top. exec-063 is the newest by
+        // EnqueuedAtUtc; the window spans indices 63..14 (50 rows), so exec-014 is the oldest still shown
+        // and exec-013 and older fall outside.
+        var cut = RenderRun("br-cap", RowsEnvelope("br-cap", 64), out _);
+
+        cut.WaitForAssertion(() =>
+            cut.FindComponents<LiveExecutionRow>().Count.Should().Be(MaxRendered,
+                "only the 50 most recent rows render, not all 64"));
+
+        TopRowExecutionId(cut).Should().Be("exec-063", "the newest execution renders first");
+        cut.Markup.Should().Contain("/executions/exec-063");
+        cut.Markup.Should().Contain("/executions/exec-014", "the 50th-newest row is still in the window");
+        cut.Markup.Should().NotContain("/executions/exec-013", "older rows fall outside the 50-cap");
+        // The section header keeps the FULL count, not the rendered count.
+        cut.Markup.Should().Contain($"Executions ({64})");
+    }
+
+    [Fact]
+    public void Executions_FetchWithinCap_RendersAllRows_NoNotice()
+    {
+        var cut = RenderRun("br-fits", RowsEnvelope("br-fits", 12), out _);
+
+        cut.WaitForAssertion(() => cut.FindComponents<LiveExecutionRow>().Count.Should().Be(12));
+        // All rows fit ⇒ no "showing the 50 most recent" notice and no deep link.
+        cut.Markup.Should().NotContain("most recent executions");
+        cut.Markup.Should().NotContain("View all in Executions");
+        TopRowExecutionId(cut).Should().Be("exec-011", "even within the cap the window is newest-first");
+    }
+
+    [Fact]
+    public void Executions_FetchBeyondCap_RendersViewAllLink_WithBatchIdQuery()
+    {
+        var cut = RenderRun("br link/special", RowsEnvelope("br link/special", 60), out _);
+
+        cut.WaitForAssertion(() =>
+            cut.FindComponents<LiveExecutionRow>().Count.Should().Be(MaxRendered));
+
+        cut.Markup.Should().Contain("most recent executions");
+        // The deep link targets the Executions query page with the batch-run id URL-encoded.
+        var link = cut.Find("p.page-subtitle a");
+        link.GetAttribute("href").Should()
+            .Be($"/dashboard/svc/executions?batchId={Uri.EscapeDataString("br link/special")}");
+        link.TextContent.Should().Contain("View all in Executions");
+    }
+
+    [Fact]
+    public void Executions_LiveEventForNewExecution_RendersAtTop_StaysCapped()
+    {
+        // A run already at the cap. A brand-new execution arrives over the hub with the newest enqueue time:
+        // it must render at the TOP, and the window must stay capped at 50.
+        var cut = RenderRun("br-live", RowsEnvelope("br-live", 60), out var client);
+
+        cut.WaitForAssertion(() => cut.FindComponents<LiveExecutionRow>().Count.Should().Be(MaxRendered));
+        TopRowExecutionId(cut).Should().Be("exec-059", "the snapshot's newest row is on top before the event");
+
+        // The new execution's enqueue time is later than every snapshot row (year 2027 > 2026 base).
+        var newest = Exec("exec-new", "br-live", JobStatus.Running)
+            with { EnqueuedAtUtc = new DateTimeOffset(2027, 1, 1, 0, 0, 0, TimeSpan.Zero) };
+        cut.InvokeAsync(() => client.ExecutionStateChanged += Raise.Event<Func<JobExecution, Task>>(newest));
+
+        cut.WaitForAssertion(() =>
+        {
+            TopRowExecutionId(cut).Should().Be("exec-new", "the newest live execution renders at the top");
+            cut.FindComponents<LiveExecutionRow>().Count.Should().Be(MaxRendered,
+                "the window stays capped at 50 after the append");
+            // The full count (header) reflects the appended row.
+            cut.Markup.Should().Contain($"Executions ({61})");
+        });
+    }
 }

@@ -82,10 +82,13 @@ internal static class ExecutionsEndpoints
                 }
                 var query = body.ToQuery() with { Offset = effectiveOffset, Limit = effectiveLimit };
                 var items = await reader.QueryAsync(query, ct).ConfigureAwait(false);
+                // CountAsync applies the same filter but ignores Offset/Limit (reader contract), so the
+                // envelope carries the filter-wide total — pagers need it to know more pages exist.
+                var totalCount = await reader.CountAsync(query, ct).ConfigureAwait(false);
                 return Results.Ok(new PageEnvelope<JobExecution>
                 {
                     Items = items,
-                    TotalCount = items.Count,
+                    TotalCount = totalCount,
                     Offset = effectiveOffset,
                     Limit = effectiveLimit,
                 });
