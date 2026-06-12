@@ -7,6 +7,29 @@ All notable changes to UKBatch are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5-alpha] - 2026-06-12
+
+### Fixed
+
+- **Scheduled jobs no longer fire twice.** Two distinct duplicate-fire bugs were found and
+  fixed: a clock-skew race (the timer completing marginally before the wall-clock deadline
+  fired an occurrence early and re-armed the same occurrence) and a duplicate registration (a
+  job registered explicitly under a custom name was registered a second time by attribute
+  discovery under its attribute-derived name, arming its cron twice).
+- **A scheduler fire that fails to enqueue no longer strands a `Pending` execution row** — the
+  created row is compensated to `Failed` with a descriptive error.
+- **Lifecycle hardening for the scheduler and the runtime host:** bounded shutdown waits,
+  one-shot start guards, safe disposal of the linked stopping sources, and startup aborts that
+  reach the worker loops.
+
+### Changed
+
+- **Cron documentation corrected.** Examples are now six-field (seconds first — the default
+  format rejects five-field crontab expressions at startup), the format is stated explicitly,
+  and `CronFormat.Standard` is documented for five-field expressions.
+- **The API samples run with a plain `dotnet run`** — launch profiles pin the port and the
+  `Development` environment, and the readmes document the `-f` flag.
+
 ## [0.1.4-alpha] - 2026-06-10
 
 ### Added
@@ -141,6 +164,7 @@ This is a 0.1.x-alpha preview. The current limitations:
 - **Adapters not yet available.** Kafka, Azure Service Bus, and Redis adapters are not part of
   this release.
 
+[0.1.5-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.5-alpha
 [0.1.4-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.4-alpha
 [0.1.3-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.3-alpha
 [0.1.1-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.1-alpha
