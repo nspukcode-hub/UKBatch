@@ -1,0 +1,69 @@
+@* Selectable full identifier + a copy-to-clipboard button. Pages abbreviate ids in their <h1>
+   (IdDisplay.Shorten) so neighbouring runs read cleanly; this surfaces the WHOLE id one place so the
+   operator can grab it for the Executions "Batch run id" / "Execution id" exact-match filter.
+
+   The copy is handled by a delegated CLIENT-SIDE listener (js/copy-id.js, keyed on the
+   data-ukbatch-copy attribute), not a Blazor @onclick: the circuit round-trip spends Safari's
+   user-activation window, after which every clipboard API rejects. The button therefore has no
+   server-side handler — this component only renders the markup and loads the module once. *@
+@implements IAsyncDisposable
+@inject IJSRuntime JsRuntime
+
+<span class="copyable-id">
+    @if (Label is { Length: > 0 })
+    {
+        <span class="copyable-id__label">@Label</span>
+    }
+    <span class="copyable-id__value mono">@Value</span>
+    <button type="button"
+            class="btn btn--ghost btn--sm copyable-id__copy"
+            data-ukbatch-copy="@Value"
+            aria-label="Copy id"
+            title="Copy">
+        <span class="material-symbols-outlined">content_copy</span>
+    </button>
+</span>
+
+@code {
+    /// <summary>The full identifier to display verbatim and copy. Selectable as plain text.</summary>
+    [Parameter, EditorRequired] public string Value { get; set; } = default!;
+
+    /// <summary>Optional leading caption (e.g. "Run id"). Omitted when null/empty.</summary>
+    [Parameter] public string? Label { get; set; }
+
+    private IJSObjectReference? _module;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try
+        {
+            // The './_content/…' specifier form is required — Safari rejects bare '_content/…'
+            // module specifiers. init() is idempotent inside the module, so multiple CopyableId
+            // instances on one page attach a single delegated listener.
+            _module = await JsRuntime.InvokeAsync<IJSObjectReference>(
+                "import", "./_content/UKBatch.Dashboard/js/copy-id.js");
+            await _module.InvokeVoidAsync("init");
+        }
+        catch (Exception)
+        {
+            // Helper unavailable (asset 404, prerender, circuit teardown) — the button is inert
+            // but the full id stays selectable for a manual copy, so the operator is never blocked.
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // Circuit already gone — there is nothing left to release on the client.
+            }
+        }
+    }
+}

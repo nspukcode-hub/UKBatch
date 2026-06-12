@@ -1176,3 +1176,60 @@ code, .mono { font-family: var(--font-mono); }
 .dag-status-fallback__item--failed { border-left-color: var(--color-status-failed); }
 .dag-status-fallback__item--cancelled { border-left-color: var(--color-status-cancelled); }
 .dag-status-fallback__item--muted { opacity: 0.6; }
+
+/* ── Pagination footer (PageEnvelopePager + ClientPager) ──────────────────────────────
+   Lives here, NOT in scoped .razor.css: the dashboard host page links only this stylesheet,
+   so component-scoped CSS bundles are never loaded. All shared component styling belongs in
+   this file's semantic class taxonomy. */
+.page-envelope-pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-surface-container);
+    border-top: 1px solid var(--color-border-subtle);
+    border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+}
+.page-envelope-pager__summary { font-size: var(--font-body-sm-size); color: var(--color-text-secondary); }
+.page-envelope-pager__controls { display: flex; align-items: center; gap: var(--space-xs); }
+.page-envelope-pager__page-indicator {
+    font-size: var(--font-body-sm-size);
+    color: var(--color-text-secondary);
+    padding: 0 var(--space-xs);
+    min-width: 100px;
+    text-align: center;
+}
+
+/* ── Copyable full identifier (CopyableId) ──────────────────────────────────────────── */
+.copyable-id {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    max-width: 100%;
+}
+.copyable-id__label {
+    color: var(--color-text-tertiary);
+    font-size: var(--font-label-md-size);
+    text-transform: uppercase;
+    letter-spacing: var(--font-label-md-tracking);
+}
+.copyable-id__value {
+    /* Selectable for manual copy when programmatic clipboard access is unavailable. */
+    user-select: all;
+    word-break: break-all;
+    font-size: var(--font-mono-md-size);
+    color: var(--color-text-secondary);
+}
+.copyable-id__copy {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+}
+.copyable-id__copy .material-symbols-outlined {
+    font-size: 16px;
+}
+/* Applied by the copy listener (js/copy-id.js) for the transient "copied" feedback window. */
+.copyable-id__copy--copied,
+.copyable-id__copy--copied .material-symbols-outlined {
+    color: var(--color-status-completed);
+}

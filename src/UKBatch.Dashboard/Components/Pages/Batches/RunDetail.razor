@@ -14,6 +14,13 @@
 
 <h1 class="page-title">Batch run <span class="mono">@IdDisplay.Shorten(BatchRunId)</span></h1>
 
+@* Full run id, one click from the operator's clipboard — the page title abbreviates it (neighbouring
+   runs share a prefix), but the Executions "Batch run id" filter is an exact match, so the whole id
+   must be obtainable somewhere. *@
+<div class="batch-run__full-id">
+    <CopyableId Value="@BatchRunId" Label="Run id" />
+</div>
+
 @if (_completion is { } summary)
 {
     <section class="surface-card batch-run__completion @(CompletionBgClass(summary.FinalStatus))">
@@ -87,8 +94,10 @@ else if (_executionRows.Count == 0 && _completion is null)
 else
 {
     <section class="surface-card">
-        <div class="surface-card__header">
+        <div class="surface-card__header batch-run__executions-header">
             <h2 class="surface-card__title">Executions (@_executionRows.Count)</h2>
+            @* Always available — the table is a capped live window; the full, queryable list lives here. *@
+            <a class="batch-run__view-all" href="@AllExecutionsHref()">View in Executions</a>
         </div>
         <div class="surface-card__body">
             <table class="data-table">
@@ -113,10 +122,8 @@ else
             </table>
             @if (_executionRows.Count > MaxRenderedRows)
             {
-                <p class="page-subtitle">
-                    Showing the @MaxRenderedRows most recent executions.
-                    <a href="@AllExecutionsHref()">View all in Executions</a>
-                </p>
+                @* The deep link now lives in the section header (always present) — don't render it twice. *@
+                <p class="page-subtitle">Showing the @MaxRenderedRows most recent executions.</p>
             }
         </div>
     </section>
@@ -484,6 +491,9 @@ else
 }
 
 <style>
+    .batch-run__full-id { margin: calc(-1 * var(--space-sm)) 0 var(--space-md); }
+    .batch-run__executions-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); flex-wrap: wrap; }
+    .batch-run__view-all { font-size: var(--font-body-sm-size); white-space: nowrap; }
     .batch-run__completion { border-width: 2px; }
     .batch-run__completion--completed { border-color: var(--color-status-completed); background: color-mix(in srgb, var(--color-status-completed) 8%, var(--color-surface-container)); }
     .batch-run__completion--failed    { border-color: var(--color-status-failed); background: color-mix(in srgb, var(--color-status-failed) 8%, var(--color-surface-container)); }

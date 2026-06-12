@@ -581,14 +581,14 @@ public sealed class BatchesRunDetailTests : TestContext
         var cut = RenderRun("br-fits", RowsEnvelope("br-fits", 12), out _);
 
         cut.WaitForAssertion(() => cut.FindComponents<LiveExecutionRow>().Count.Should().Be(12));
-        // All rows fit ⇒ no "showing the 50 most recent" notice and no deep link.
+        // All rows fit ⇒ no under-table "showing the 50 most recent" notice. The header deep link is
+        // always present (see Executions_FewRows_ViewInExecutionsLink_StillPresentInHeader).
         cut.Markup.Should().NotContain("most recent executions");
-        cut.Markup.Should().NotContain("View all in Executions");
         TopRowExecutionId(cut).Should().Be("exec-011", "even within the cap the window is newest-first");
     }
 
     [Fact]
-    public void Executions_FetchBeyondCap_RendersViewAllLink_WithBatchIdQuery()
+    public void Executions_FetchBeyondCap_RendersViewInExecutionsLink_WithBatchIdQuery()
     {
         var cut = RenderRun("br link/special", RowsEnvelope("br link/special", 60), out _);
 
@@ -596,11 +596,66 @@ public sealed class BatchesRunDetailTests : TestContext
             cut.FindComponents<LiveExecutionRow>().Count.Should().Be(MaxRendered));
 
         cut.Markup.Should().Contain("most recent executions");
-        // The deep link targets the Executions query page with the batch-run id URL-encoded.
-        var link = cut.Find("p.page-subtitle a");
+        // The deep link lives in the Executions section header and targets the query page with the
+        // batch-run id URL-encoded (a special-char id proves the escaping).
+        var link = cut.Find(".batch-run__executions-header a.batch-run__view-all");
         link.GetAttribute("href").Should()
             .Be($"/dashboard/svc/executions?batchId={Uri.EscapeDataString("br link/special")}");
-        link.TextContent.Should().Contain("View all in Executions");
+        link.TextContent.Should().Contain("View in Executions");
+    }
+
+    // ── full run id + always-present "View in Executions" link ───────────────────────────
+    //
+    // After triggering a batch the operator must be able to OBTAIN the full run id (the page title only
+    // shows the abbreviated tail, and the Executions "Batch run id" filter is an exact match). The full id
+    // is surfaced via CopyableId, and the deep link to the pre-filtered Executions page lives permanently
+    // in the Executions section header — present even when every row fits within the cap.
+
+    [Fact]
+    public void Render_FullRunIdPresentInMarkup_ViaCopyableId()
+    {
+        var cut = RenderRun("0192a9c1-7b3e-7def-bc01-fullrunid01", RowsEnvelope("0192a9c1-7b3e-7def-bc01-fullrunid01", 3), out _);
+
+        cut.WaitForAssertion(() =>
+        {
+            // The full id (not the abbreviated tail) is rendered for copy/selection.
+            cut.FindComponent<CopyableId>().Instance.Value.Should().Be("0192a9c1-7b3e-7def-bc01-fullrunid01");
+            cut.Find(".batch-run__full-id .copyable-id__value").TextContent
+                .Should().Be("0192a9c1-7b3e-7def-bc01-fullrunid01");
+        });
+    }
+
+    [Fact]
+    public void Executions_FewRows_ViewInExecutionsLink_StillPresentInHeader()
+    {
+        // Only 3 rows (well under the 50-cap) ⇒ no "showing the 50 most recent" notice, but the header
+        // link is ALWAYS available so the operator can reach the full queryable list.
+        var cut = RenderRun("br-few", RowsEnvelope("br-few", 3), out _);
+
+        cut.WaitForAssertion(() => cut.FindComponents<LiveExecutionRow>().Count.Should().Be(3));
+
+        var link = cut.Find(".batch-run__executions-header a.batch-run__view-all");
+        link.TextContent.Should().Contain("View in Executions");
+        link.GetAttribute("href").Should().Be("/dashboard/svc/executions?batchId=br-few");
+        // The under-table notice is absent within the cap, and the link is not rendered twice.
+        cut.Markup.Should().NotContain("most recent executions");
+        cut.FindAll("a.batch-run__view-all").Should().ContainSingle("the deep link lives in one place");
+    }
+
+    [Fact]
+    public void Executions_BeyondCap_NoticeReduced_HeaderLinkStillSingle()
+    {
+        // Over the cap: the under-table notice is reduced to the count sentence (no inline link), and the
+        // header link remains the single deep-link surface.
+        var cut = RenderRun("br-over", RowsEnvelope("br-over", 60), out _);
+
+        cut.WaitForAssertion(() =>
+            cut.FindComponents<LiveExecutionRow>().Count.Should().Be(MaxRendered));
+
+        cut.Find("p.page-subtitle").TextContent.Trim()
+            .Should().Be("Showing the 50 most recent executions.");
+        cut.FindAll("p.page-subtitle a").Should().BeEmpty("the link moved to the section header");
+        cut.FindAll("a.batch-run__view-all").Should().ContainSingle();
     }
 
     [Fact]

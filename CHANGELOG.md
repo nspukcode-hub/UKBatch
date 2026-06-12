@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Long execution tables are bounded.** The job detail page's "Recent executions" and the batch-run page's "Executions" are now capped live windows showing the 50 most recent rows (newest at the top; new arrivals push the oldest out) with a "View all in Executions" link. The batch detail page's run history is paginated at 30 rows per page.
 - **The Executions page accepts deep links** — `?jobName=` and `?batchId=` query parameters pre-fill the corresponding filters, so the "View all" links land on an already-filtered, fully paginated list.
+- **Full ids are copyable.** Abbreviated ids are display-only, so the batch-run page and the execution detail page now surface the full id with a copy-to-clipboard button (the Executions filters are exact-match and need the whole id). The batch-run page also links to its filtered Executions view permanently, not only past the 50-row cap.
 - **Batch schedules are labelled honestly.** A cron expression stored on a batch definition is not executed by the runtime yet (batch cron scheduling is planned); the wizard and the batch detail page now say so instead of silently accepting a schedule that never fires. Job-level cron schedules (`[Job(Schedule = ...)]` / builder registration) are unaffected and run as before.
 
 ## [0.1.5-alpha] - 2026-06-12

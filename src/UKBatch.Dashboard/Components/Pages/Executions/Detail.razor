@@ -55,6 +55,8 @@ else
         </div>
         <div class="surface-card__body">
             <dl class="execution-detail__grid">
+                @* Full execution id — the page title abbreviates it, but the Executions filters match exact ids. *@
+                <dt>Id</dt><dd><CopyableId Value="@Id" /></dd>
                 <dt>Job</dt><dd>@_execution.JobName</dd>
                 @if (_execution.BatchId is { } bid)
                 {

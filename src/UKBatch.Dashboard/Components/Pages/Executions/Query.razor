@@ -97,7 +97,7 @@ else
 @code {
     [Parameter] public string ServiceName { get; set; } = default!;
 
-    // Deep link from a batch run page (Batches/RunDetail "View all in Executions"): pre-fills the
+    // Deep link from a batch run page (Batches/RunDetail "View in Executions"): pre-fills the
     // batch-run-id filter so the first query is already scoped to that run.
     [Parameter, SupplyParameterFromQuery(Name = "batchId")] public string? BatchIdQuery { get; set; }
 
