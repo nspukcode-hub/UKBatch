@@ -137,7 +137,7 @@ else
 
         try
         {
-            // R4 — subscribe FIRST.
+            // Subscribe FIRST so approvals raised during the initial fetch are not lost.
             _client.ApprovalRequested += OnApprovalRequestedAsync;
             try
             {

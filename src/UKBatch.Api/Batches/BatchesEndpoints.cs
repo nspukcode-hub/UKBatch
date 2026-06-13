@@ -321,16 +321,20 @@ internal static class BatchesEndpoints
                 {
                     return Results.ValidationProblem(errors);
                 }
-                var executions = await reader.QueryAsync(new JobQuery
+                var query = new JobQuery
                 {
                     BatchId = batchRunId,
                     Offset = effectiveOffset,
                     Limit = effectiveLimit,
-                }, ct).ConfigureAwait(false);
+                };
+                var executions = await reader.QueryAsync(query, ct).ConfigureAwait(false);
+                // CountAsync applies the same filter but ignores Offset/Limit (reader contract), so the
+                // envelope carries the run-wide total — pagers need it to know more pages exist.
+                var totalCount = await reader.CountAsync(query, ct).ConfigureAwait(false);
                 return Results.Ok(new PageEnvelope<JobExecution>
                 {
                     Items = executions,
-                    TotalCount = executions.Count,
+                    TotalCount = totalCount,
                     Offset = effectiveOffset,
                     Limit = effectiveLimit,
                 });

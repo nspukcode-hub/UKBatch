@@ -108,6 +108,13 @@ else
                         }
                     </tbody>
                 </table>
+                @if (_executionRows.Count >= MaxRecentRows)
+                {
+                    <p class="page-subtitle">
+                        Showing the @MaxRecentRows most recent executions.
+                        <a href="@AllExecutionsHref()">View all in Executions</a>
+                    </p>
+                }
             }
         </div>
     </section>
@@ -116,6 +123,12 @@ else
 @code {
     [Parameter] public string ServiceName { get; set; } = default!;
     [Parameter] public string Name { get; set; } = default!;
+
+    // This section is a live activity window, not the full execution log: it shows the most recent
+    // executions newest-first, capped so a busy job's table stays short and the circuit light. New
+    // executions prepend at the front and the list is trimmed to the cap; the complete, queryable
+    // history lives on the Executions page (linked under the table once the window is full).
+    private const int MaxRecentRows = 50;
 
     private IUKBatchClient? _client;
     private JobDefinitionDto? _definition;
@@ -143,7 +156,7 @@ else
         {
             _client = ClientFactory.GetClient(ServiceName);
 
-            // R4: subscribe FIRST so live updates for new executions are not lost.
+            // Subscribe FIRST so live updates for new executions are not lost.
             _client.ExecutionStateChanged += OnExecutionStateChangedAsync;
             try
             {
@@ -162,8 +175,9 @@ else
                 return;
             }
 
+            // Fetch the cap's worth so the initial window and the live trim stay in lock-step.
             var recent = await _client.QueryExecutionsAsync(
-                new JobQueryRequest { JobName = Name, Limit = 50 },
+                new JobQueryRequest { JobName = Name, Limit = MaxRecentRows },
                 CancellationToken.None);
             _executionRows = recent.Items.Select(ExecutionRowViewModel.FromExecution).ToList();
         }
@@ -205,7 +219,7 @@ else
             var executionId = await _client.TriggerJobAsync(Name, parameters, null, CancellationToken.None);
             await Notifications.SuccessAsync(
                 "Job triggered",
-                $"Execution id: {executionId.Substring(0, Math.Min(8, executionId.Length))}");
+                $"Execution id: {IdDisplay.Shorten(executionId)}");
             Nav.NavigateTo($"/dashboard/{ServiceName}/executions/{executionId}");
         }
         catch (UKBatchClientException ex)
@@ -234,11 +248,17 @@ else
         }
         else
         {
+            // New execution — prepend (newest first) and trim the stored window to the cap. Nothing
+            // else reads this list, so capping the stored list itself bounds the page's memory.
             _executionRows.Insert(0, ExecutionRowViewModel.FromExecution(exec));
-            if (_executionRows.Count > 100) _executionRows = _executionRows.Take(100).ToList();
+            if (_executionRows.Count > MaxRecentRows) _executionRows = _executionRows.Take(MaxRecentRows).ToList();
         }
         await InvokeAsync(StateHasChanged);
     }
+
+    // Deep link to the Executions query page pre-filtered to this job.
+    private string AllExecutionsHref()
+        => $"/dashboard/{ServiceName}/executions?jobName={Uri.EscapeDataString(Name)}";
 
     public async ValueTask DisposeAsync()
     {

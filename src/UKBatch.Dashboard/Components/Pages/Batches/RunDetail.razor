@@ -8,11 +8,18 @@
 @inject NavigationManager Nav
 @inject Microsoft.Extensions.Options.IOptions<DashboardOptions> Options
 
-<PageTitle>Batch run @BatchRunId.Substring(0, Math.Min(8, BatchRunId.Length)) - UKBatch</PageTitle>
+<PageTitle>Batch run @IdDisplay.Shorten(BatchRunId) - UKBatch</PageTitle>
 
 @if (_redirected) return;
 
-<h1 class="page-title">Batch run <span class="mono">@BatchRunId.Substring(0, Math.Min(8, BatchRunId.Length))</span></h1>
+<h1 class="page-title">Batch run <span class="mono">@IdDisplay.Shorten(BatchRunId)</span></h1>
+
+@* Full run id, one click from the operator's clipboard — the page title abbreviates it (neighbouring
+   runs share a prefix), but the Executions "Batch run id" filter is an exact match, so the whole id
+   must be obtainable somewhere. *@
+<div class="batch-run__full-id">
+    <CopyableId Value="@BatchRunId" Label="Run id" />
+</div>
 
 @if (_completion is { } summary)
 {
@@ -81,14 +88,16 @@ else if (_executionRows.Count == 0 && _completion is null)
        @if block above) and the "Waiting…" empty-state are mutually exclusive. A batch that completed
        with zero surviving rows (e.g. cross-service-only, undercounted) shows the banner, not "Waiting". *@
     <EmptyState Title="Waiting for first execution…"
-                Detail="@($"Batch run '{BatchRunId.Substring(0, Math.Min(8, BatchRunId.Length))}' hasn't dispatched any executions yet.")"
+                Detail="@($"Batch run '{IdDisplay.Shorten(BatchRunId)}' hasn't dispatched any executions yet.")"
                 IconName="hourglass_empty" />
 }
 else
 {
     <section class="surface-card">
-        <div class="surface-card__header">
+        <div class="surface-card__header batch-run__executions-header">
             <h2 class="surface-card__title">Executions (@_executionRows.Count)</h2>
+            @* Always available — the table is a capped live window; the full, queryable list lives here. *@
+            <a class="batch-run__view-all" href="@AllExecutionsHref()">View in Executions</a>
         </div>
         <div class="surface-card__body">
             <table class="data-table">
@@ -102,7 +111,7 @@ else
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var row in _executionRows)
+                    @foreach (var row in RenderedRows())
                     {
                         <LiveExecutionRow @key="row.ExecutionId"
                                           ServiceName="@ServiceName"
@@ -111,6 +120,11 @@ else
                     }
                 </tbody>
             </table>
+            @if (_executionRows.Count > MaxRenderedRows)
+            {
+                @* The deep link now lives in the section header (always present) — don't render it twice. *@
+                <p class="page-subtitle">Showing the @MaxRenderedRows most recent executions.</p>
+            }
         </div>
     </section>
 }
@@ -118,6 +132,11 @@ else
 @code {
     [Parameter] public string ServiceName { get; set; } = default!;
     [Parameter] public string BatchRunId { get; set; } = default!;
+
+    // This section is a live activity window, not the full execution log: it renders the most recent
+    // executions newest-first, capped to keep a busy run's table short and the circuit light. The complete,
+    // queryable list lives on the Executions page (linked under the table once the cap is exceeded).
+    private const int MaxRenderedRows = 50;
 
     private IUKBatchClient? _client;
     private List<ExecutionRowViewModel> _executionRows = new();
@@ -169,7 +188,7 @@ else
         {
             _client = ClientFactory.GetClient(ServiceName);
 
-            // R4 — subscribe FIRST before initial fetch.
+            // Subscribe FIRST before the initial fetch so no events are missed in between.
             _client.ExecutionStateChanged += OnExecutionStateChangedAsync;
             _client.BatchCompleted += OnBatchCompletedAsync;
             _client.ApprovalRequested += OnApprovalRequestedAsync;   // approval-gate node colouring
@@ -356,6 +375,22 @@ else
         return Task.CompletedTask;
     }
 
+    // Render-only newest-first window over the whole stored list. The initial REST snapshot arrives
+    // newest-first, but live hub events are appended to the END of _executionRows, so the stored order is
+    // mixed. Normalise here at render time: order by enqueue time descending, with the execution id as the
+    // tiebreak (UUIDv7 hex sorts by creation order within the same millisecond), then cap. _executionRows
+    // itself is never reordered — RebuildStatusMap, gate reconciliation, and the completion roll-up read
+    // the full list.
+    private IEnumerable<ExecutionRowViewModel> RenderedRows()
+        => _executionRows
+            .OrderByDescending(r => r.EnqueuedAtUtc)
+            .ThenByDescending(r => r.ExecutionId, StringComparer.Ordinal)
+            .Take(MaxRenderedRows);
+
+    // Deep link to the Executions query page pre-filtered to this run.
+    private string AllExecutionsHref()
+        => $"/dashboard/{ServiceName}/executions?batchId={Uri.EscapeDataString(BatchRunId)}";
+
     private JobStatus? SelectedStatus()
         => _selectedStepId is not null && _statusByStepId.TryGetValue(_selectedStepId, out var s) ? s : null;
 
@@ -456,6 +491,9 @@ else
 }
 
 <style>
+    .batch-run__full-id { margin: calc(-1 * var(--space-sm)) 0 var(--space-md); }
+    .batch-run__executions-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); flex-wrap: wrap; }
+    .batch-run__view-all { font-size: var(--font-body-sm-size); white-space: nowrap; }
     .batch-run__completion { border-width: 2px; }
     .batch-run__completion--completed { border-color: var(--color-status-completed); background: color-mix(in srgb, var(--color-status-completed) 8%, var(--color-surface-container)); }
     .batch-run__completion--failed    { border-color: var(--color-status-failed); background: color-mix(in srgb, var(--color-status-failed) 8%, var(--color-surface-container)); }

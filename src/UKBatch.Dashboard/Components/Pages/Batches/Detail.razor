@@ -43,7 +43,9 @@ else
             <dl class="definition-list">
                 <dt>Id</dt><dd class="mono">@_definition.Id</dd>
                 <dt>Source</dt><dd>@_definition.Source</dd>
-                <dt>Schedule</dt><dd class="mono">@(_definition.Schedule ?? "—")</dd>
+                @* Batch cron scheduling is not executed by the runtime yet — make that visible wherever
+                   a stored schedule is shown so operators don't wait for a fire that never comes. *@
+                <dt>Schedule</dt><dd class="mono">@(_definition.Schedule is { Length: > 0 } sched ? $"{sched} (not executed yet)" : "—")</dd>
                 <dt>Failure policy</dt><dd>@_definition.FailurePolicy</dd>
                 <dt>Steps</dt><dd>@_definition.Steps.Count</dd>
                 <dt>Created</dt><dd class="mono">@_definition.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC</dd>
@@ -130,11 +132,11 @@ else
                         </tr>
                     </thead>
                     <tbody>
-                        @foreach (var r in _runs)
+                        @foreach (var r in _runs.Skip(_pageIndex * ClientPager.DefaultPageSize).Take(ClientPager.DefaultPageSize))
                         {
                             <tr @key="r.BatchId" class="data-table__row">
                                 <td class="data-table__cell data-table__cell--id">
-                                    <a href="/dashboard/@ServiceName/runs/@r.BatchId">@r.BatchId.Substring(0, Math.Min(8, r.BatchId.Length))</a>
+                                    <a href="/dashboard/@ServiceName/runs/@r.BatchId">@IdDisplay.Shorten(r.BatchId)</a>
                                 </td>
                                 <td class="data-table__cell data-table__cell--status"><JobStatusBadge Status="@r.FinalStatus" /></td>
                                 <td class="data-table__cell">@r.StepCount</td>
@@ -144,6 +146,10 @@ else
                         }
                     </tbody>
                 </table>
+                @if (_runs.Count > ClientPager.DefaultPageSize)
+                {
+                    <ClientPager TotalCount="_runs.Count" PageIndex="_pageIndex" OnPageChanged="OnPageChanged" />
+                }
             }
         </div>
     </section>
@@ -168,7 +174,8 @@ else
 
     private IUKBatchClient? _client;
     private BatchDefinitionDto? _definition;
-    private List<RunSummaryViewModel> _runs = new();   // D5: one entry per RUN (grouped by BatchId)
+    private List<RunSummaryViewModel> _runs = new();   // one entry per RUN (grouped by BatchId)
+    private int _pageIndex;   // zero-based page of the rendered run-history slice
     private bool _isLoading = true;
     private bool _redirected;
     private bool _runInFlight;
@@ -200,7 +207,7 @@ else
                 return;
             }
             // Filter runs by BatchDefinitionId.
-            // D5: group the fetched executions into one summary PER RUN (BatchId). No new client
+            // Group the fetched executions into one summary PER RUN (BatchId). No new client
             // method — reuses the same QueryExecutionsAsync(Limit=50) page (surface-lock).
             var page = await _client.QueryExecutionsAsync(
                 new JobQueryRequest { BatchDefinitionId = BatchId, Limit = 50 },
@@ -251,7 +258,7 @@ else
         try
         {
             var batchRunId = await _client.RunBatchByIdAsync(_definition.Id, null, null, CancellationToken.None);
-            await Notifications.SuccessAsync("Batch triggered", $"Run id: {batchRunId.Substring(0, Math.Min(8, batchRunId.Length))}");
+            await Notifications.SuccessAsync("Batch triggered", $"Run id: {IdDisplay.Shorten(batchRunId)}");
             Nav.NavigateTo($"/dashboard/{ServiceName}/runs/{batchRunId}");
         }
         catch (UKBatchClientException ex)
@@ -282,7 +289,14 @@ else
         return Task.CompletedTask;
     }
 
-    // D5: terse run-duration label. Running runs (null duration) read as an em-dash.
+    // Render-only paging over the grouped run list. Clamp so a stale index lands on the last page.
+    private void OnPageChanged(int pageIndex)
+    {
+        var lastPage = _runs.Count <= 0 ? 0 : (_runs.Count - 1) / ClientPager.DefaultPageSize;
+        _pageIndex = Math.Clamp(pageIndex, 0, lastPage);
+    }
+
+    // Terse run-duration label. Running runs (null duration) read as an em-dash.
     private static string FormatDuration(TimeSpan? d)
     {
         if (d is not { } span) return "—";

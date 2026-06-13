@@ -76,6 +76,36 @@ public sealed class ExecutionsDetailTests : TestContext
     }
 
     [Fact]
+    public void Render_Snapshot_ShowsFullCopyableId()
+    {
+        // The page title abbreviates the id; the snapshot card must carry the FULL id (via CopyableId)
+        // so the operator can copy it into the Executions exact-match filter. The id is a long UUIDv7 to
+        // make abbreviation observable.
+        const string fullId = "0192a9c1-7b3e-7def-bc01-execdetailid1";
+        var svc = PageTestHelpers.Descriptor("svc");
+        var registry = PageTestHelpers.RegistryWith(svc);
+        var client = PageTestHelpers.BuildClient();
+        client.GetExecutionAsync(fullId, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<JobExecution?>(Snapshot(fullId, JobStatus.Running)));
+
+        Services.AddSingleton(registry);
+        Services.AddSingleton(PageTestHelpers.FactoryFor(svc.Name, client));
+        Services.AddSingleton(PageTestHelpers.NewState());
+        Services.AddSingleton(PageTestHelpers.NewNotifications());
+
+        var cut = RenderComponent<Detail>(p => p
+            .Add(d => d.ServiceName, svc.Name)
+            .Add(d => d.Id, fullId));
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.FindComponent<UKBatch.Dashboard.Components.Shared.CopyableId>().Instance.Value
+                .Should().Be(fullId, "the snapshot surfaces the full execution id, not the abbreviation");
+            cut.Find(".copyable-id__value").TextContent.Should().Be(fullId);
+        });
+    }
+
+    [Fact]
     public void Render_NotFound_ShowsEmptyState()
     {
         var svc = PageTestHelpers.Descriptor("svc");

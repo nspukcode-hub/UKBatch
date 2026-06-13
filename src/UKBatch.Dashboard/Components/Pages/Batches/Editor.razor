@@ -176,7 +176,7 @@ else
     private IReadOnlyList<JobCatalogEntry> _jobCatalog = [];
     private IReadOnlyList<UKBatchServiceDescriptor> _services = [];
 
-    // B-3: the canvas ref (deref'd by drop / reorder / remove / selection handlers).
+    // The canvas ref (deref'd by drop / reorder / remove / selection handlers).
     private DrawflowCanvas? _canvas;
 
     // The DagGraphSpec is cached and rebuilt ONLY on a structural change (drop / remove /

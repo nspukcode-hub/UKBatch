@@ -178,7 +178,7 @@ else
             var batchRunId = await _client.RunBatchByIdAsync(batch.Id, null, null, CancellationToken.None);
             await Notifications.SuccessAsync(
                 "Batch triggered",
-                $"Run id: {batchRunId.Substring(0, Math.Min(8, batchRunId.Length))}");
+                $"Run id: {IdDisplay.Shorten(batchRunId)}");
             Nav.NavigateTo($"/dashboard/{ServiceName}/runs/{batchRunId}");
         }
         catch (UKBatchClientException ex)

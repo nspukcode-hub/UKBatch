@@ -7,7 +7,7 @@
 <tr class="data-table__row @(IsRunning(_vm.Status) ? "data-table__row--running" : null)">
     <td class="data-table__cell data-table__cell--id">
         <a href="/dashboard/@ServiceName/executions/@_vm.ExecutionId">
-            @_vm.ExecutionId.Substring(0, Math.Min(8, _vm.ExecutionId.Length))
+            @IdDisplay.Shorten(_vm.ExecutionId)
         </a>
     </td>
     <td class="data-table__cell">@_vm.JobName</td>
@@ -93,7 +93,7 @@
     {
         if (exec.ExecutionId != _vm.ExecutionId) return;
 
-        // B1 monotonic guard.
+        // Monotonic status-rank guard — reject stale events.
         if (JobStatusRank.Rank(exec.Status) < JobStatusRank.Rank(_vm.Status)) return;
         if (exec.Status == _vm.Status && exec.AttemptNumber < _vm.AttemptNumber) return;
 

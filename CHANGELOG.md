@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.6-alpha] - 2026-06-12
+
+### Fixed
+
+- **Pagination metadata is honest: `totalCount` is now the filter-wide total.** `POST /executions/query` and `GET /batches/{batchRunId}/status` returned the page size as `totalCount`, so paginating clients (including the dashboard's own Executions page) computed "no more pages" and could never advance past page one.
+- **Abbreviated ids in the dashboard are distinguishable again.** Lists shortened ids to their FIRST 8 characters — for UUIDv7 ids that is the millisecond-timestamp region, so runs created within the same ~65-second window looked identical. Abbreviations now show the random tail (`…6bf9ccba`) instead.
+- **The batch-run page's execution order no longer depends on how you arrived.** The initial fetch was newest-first while live updates appended at the bottom; the table is now consistently newest-first.
+
+### Changed
+
+- **Long execution tables are bounded.** The job detail page's "Recent executions" and the batch-run page's "Executions" are now capped live windows showing the 50 most recent rows (newest at the top; new arrivals push the oldest out) with a "View all in Executions" link. The batch detail page's run history is paginated at 30 rows per page.
+- **The Executions page accepts deep links** — `?jobName=` and `?batchId=` query parameters pre-fill the corresponding filters, so the "View all" links land on an already-filtered, fully paginated list.
+- **Full ids are copyable.** Abbreviated ids are display-only, so the batch-run page and the execution detail page now surface the full id with a copy-to-clipboard button (the Executions filters are exact-match and need the whole id). The batch-run page also links to its filtered Executions view permanently, not only past the 50-row cap.
+- **Batch schedules are labelled honestly.** A cron expression stored on a batch definition is not executed by the runtime yet (batch cron scheduling is planned); the wizard and the batch detail page now say so instead of silently accepting a schedule that never fires. Job-level cron schedules (`[Job(Schedule = ...)]` / builder registration) are unaffected and run as before.
+
 ## [0.1.5-alpha] - 2026-06-12
 
 ### Fixed
@@ -101,7 +116,8 @@ First public preview of the UKBatch package family.
 - **Single-node orphan reaper.** The orphaned-execution reaper assumes a single orchestrator node.
 - **Adapters not yet available.** Kafka, Azure Service Bus, and Redis adapters are not part of this release.
 
-[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.5-alpha...HEAD
+[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.6-alpha...HEAD
+[0.1.6-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.6-alpha
 [0.1.5-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.5-alpha
 [0.1.4-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.4-alpha
 [0.1.3-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.3-alpha

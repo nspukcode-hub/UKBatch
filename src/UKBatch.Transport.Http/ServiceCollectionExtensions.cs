@@ -89,7 +89,7 @@ public static class ServiceCollectionExtensions
             services.Remove(orphan);
         }
 
-        // A3: last-registered-wins. Replace any prior ITransport factory.
+        // Last-registered-wins. Replace any prior ITransport factory.
         services.Replace(ServiceDescriptor.Singleton<ITransport>(
             sp => sp.GetRequiredService<HttpTransport>()));
 
