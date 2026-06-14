@@ -90,12 +90,12 @@ internal sealed class HmacSigningHandler : DelegatingHandler
         var signature = _signer.Sign(canonical);
 
         // Replace any prior headers (idempotent on first attempt; rotates on Polly retry).
-        request.Headers.Remove("X-UKBatch-Signature");
-        request.Headers.Remove("X-UKBatch-Timestamp");
-        request.Headers.Remove("X-UKBatch-Nonce");
-        request.Headers.TryAddWithoutValidation("X-UKBatch-Signature", signature);
-        request.Headers.TryAddWithoutValidation("X-UKBatch-Timestamp", timestamp.ToString(CultureInfo.InvariantCulture));
-        request.Headers.TryAddWithoutValidation("X-UKBatch-Nonce", nonce);
+        request.Headers.Remove(HmacHeaderNames.Signature);
+        request.Headers.Remove(HmacHeaderNames.Timestamp);
+        request.Headers.Remove(HmacHeaderNames.Nonce);
+        request.Headers.TryAddWithoutValidation(HmacHeaderNames.Signature, signature);
+        request.Headers.TryAddWithoutValidation(HmacHeaderNames.Timestamp, timestamp.ToString(CultureInfo.InvariantCulture));
+        request.Headers.TryAddWithoutValidation(HmacHeaderNames.Nonce, nonce);
 
         return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }

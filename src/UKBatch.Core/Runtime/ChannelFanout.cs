@@ -78,7 +78,8 @@ internal static class ChannelFanout
         var consumers = new Task[workerCount];
         for (var i = 0; i < workerCount; i++)
         {
-            consumers[i] = Task.Run(() => ConsumerLoopAsync(channel.Reader, body, errorPolicy, progress, cachedRetryPipeline, logger, policyCts), CancellationToken.None);
+            var workerIndex = i; // capture per-iteration
+            consumers[i] = Task.Run(() => ConsumerLoopAsync(workerIndex, channel.Reader, body, errorPolicy, progress, cachedRetryPipeline, logger, policyCts), CancellationToken.None);
         }
 
         try
@@ -110,6 +111,7 @@ internal static class ChannelFanout
     }
 
     private static async Task ConsumerLoopAsync<TItem>(
+        int workerIndex,
         ChannelReader<TItem> reader,
         Func<TItem, CancellationToken, Task> body,
         ItemErrorPolicy errorPolicy,
@@ -118,6 +120,11 @@ internal static class ChannelFanout
         ILogger logger,
         CancellationTokenSource policyCts)
     {
+        // Establish WorkerIndex for THIS worker's async flow; it flows via AsyncLocal to every
+        // body(...) invocation (ProcessAsync / the ParallelForEach body) on this consumer task, and
+        // is restored when the scope disposes. Each Task.Run starts a fresh ExecutionContext, so the
+        // N consumers do not observe each other's index.
+        using var workerScope = JobContext.EnterWorkerScope(workerIndex);
         try
         {
             await foreach (var item in reader.ReadAllAsync(policyCts.Token).ConfigureAwait(false))

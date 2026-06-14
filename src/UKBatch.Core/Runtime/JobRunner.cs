@@ -161,6 +161,11 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             ?? await _batchDefinitionStore.GetAsync(batchDefinitionId, cancellationToken).ConfigureAwait(false)
             ?? throw new BatchDefinitionNotFoundException($"BatchDefinition {batchDefinitionId} not found.") { BatchDefinitionId = batchDefinitionId };
 
+        // Synchronous pre-flight: surface validation / unregistered-job errors to the caller (HTTP 400)
+        // instead of accepting the trigger and producing zero executions. Real RUNTIME job failures
+        // (a job that throws at execution) stay async by design.
+        ValidateBatchForTrigger(def);
+
         var batchId = IdGenerator.NewBatchId();
         var executor = new BatchExecutor(
             this,
@@ -175,12 +180,25 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
         var hostStopping = _hostStopping;
         _ = Task.Run(async () =>
         {
+            // Capture the runtime's terminal verdict so the hub fan-out can override the row-derived
+            // aggregate. A failing approval gate (rejected / dismissed / timed-out-Fail) rethrows out
+            // of RunAsync but leaves NO JobExecution row, so without this the row aggregate would
+            // report the run Completed (green) even though the batch ended in failure.
+            JobStatus? runtimeTerminal = null;
             try
             {
                 await executor.RunAsync(def, batchId, initialParameters ?? JobParameters.Empty, triggeredBy, hostStopping).ConfigureAwait(false);
             }
+            catch (OperationCanceledException ex)
+            {
+                // Host stop / batch cancellation — a clean teardown, not a failure. Must precede the
+                // general Exception catch (subtype) and logs at Warning, not Error.
+                runtimeTerminal = JobStatus.Cancelled;
+                _logger.LogWarning(ex, "Batch {BatchId} (definition {DefId}) cancelled.", batchId, batchDefinitionId);
+            }
             catch (Exception ex)
             {
+                runtimeTerminal = JobStatus.Failed;
                 _logger.LogError(ex, "Batch {BatchId} (definition {DefId}) failed.", batchId, batchDefinitionId);
             }
             finally
@@ -188,17 +206,81 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
                 // Signal the hub fan-out that the batch run has finished. The payload carries
                 // (BatchRunId, BatchDefinitionId, BatchName) so the hub fan-out can populate
                 // BatchCompletionSummary.BatchDefinitionId without an IBatchCatalogService roundtrip.
+                // RuntimeTerminalStatus carries the closure's verdict (null on clean completion).
                 // The hub queries the store ONCE per signal to compute the aggregate shard counts.
                 _batchCompletionSignal.Signal(new BatchCompletionSignalPayload
                 {
                     BatchRunId = batchId,
                     BatchDefinitionId = def.Id,
                     BatchName = def.Name,
+                    RuntimeTerminalStatus = runtimeTerminal,
                 });
             }
         }, CancellationToken.None);
 
         return batchId;
+    }
+
+    /// <summary>
+    /// Synchronous pre-flight run by <see cref="TriggerBatchAsync"/> before the fire-and-forget run:
+    /// structural validation plus a local job-registration check, throwing
+    /// <see cref="BatchTriggerValidationException"/> so a trigger endpoint can return 400 instead of
+    /// accepting a trigger that would produce zero executions. Cross-service steps are skipped here
+    /// (the target job lives on a remote worker, not in this process's registry).
+    /// </summary>
+    private void ValidateBatchForTrigger(BatchDefinition def)
+    {
+        ArgumentNullException.ThrowIfNull(def);
+        var errors = new List<BatchTriggerValidationError>();
+
+        var structural = Validation.BatchDefinitionValidator.Validate(def);
+        foreach (var e in structural.Errors)
+        {
+            errors.Add(new BatchTriggerValidationError(e.PropertyPath, e.Message));
+        }
+
+        // Local job-name registration check; cross-service steps are remote jobs and are not in
+        // this process's registry, so they are deliberately not checked here.
+        foreach (var step in EnumerateJobSteps(def))
+        {
+            if (step.Job is { JobName: { Length: > 0 } name }
+                && string.IsNullOrWhiteSpace(step.Job.TargetService)
+                && _jobRegistry.TryGet(name) is null)
+            {
+                errors.Add(new BatchTriggerValidationError(
+                    $"step '{step.StepId}'", $"job '{name}' is not registered"));
+            }
+        }
+
+        if (errors.Count > 0)
+        {
+            throw new BatchTriggerValidationException(
+                $"Batch definition '{def.Id}' cannot be triggered: {errors.Count} error(s).", errors);
+        }
+    }
+
+    /// <summary>
+    /// Walks every Job-bearing step of a definition: the main <see cref="BatchDefinition.Steps"/>,
+    /// the children of each <see cref="BatchStepType.ParallelGroup"/>, and the
+    /// <see cref="BatchDefinition.OnFailureSteps"/> compensation chain.
+    /// </summary>
+    private static IEnumerable<BatchStep> EnumerateJobSteps(BatchDefinition def)
+    {
+        foreach (var step in def.Steps)
+        {
+            yield return step;
+            if (step.ParallelGroup is { Steps: { } children })
+            {
+                foreach (var child in children)
+                {
+                    yield return child;
+                }
+            }
+        }
+        foreach (var step in def.OnFailureSteps)
+        {
+            yield return step;
+        }
     }
 
     /// <inheritdoc/>
@@ -282,7 +364,9 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             // production when an EF/Redis adapter author forgets the InsertAsync overload. The
             // diagnostic value (adapter author discovers the gap at adapter test time) is preserved
             // by the first-call emission.
-            var adapterTypeName = _jobStore.GetType().Name;
+            // Key on FullName (namespace-qualified) so two adapters sharing a simple type name in
+            // different namespaces do not suppress each other's one-shot warning.
+            var adapterTypeName = _jobStore.GetType().FullName ?? _jobStore.GetType().Name;
             bool shouldWarn;
             lock (_warnLock)
             {

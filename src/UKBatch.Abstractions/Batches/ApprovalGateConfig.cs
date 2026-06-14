@@ -28,6 +28,7 @@ public sealed record class ApprovalGateConfig
     /// <summary>Optional wall-clock timeout. <c>null</c> means wait indefinitely.</summary>
     public TimeSpan? TimeoutAfter { get; init; }
 
-    /// <summary>Behaviour when <see cref="TimeoutAfter"/> elapses without action.</summary>
-    public required ApprovalTimeoutAction OnTimeout { get; init; }
+    /// <summary>Behaviour when <see cref="TimeoutAfter"/> elapses without action. Defaults to
+    /// <see cref="ApprovalTimeoutAction.Fail"/> (fail the batch on timeout) when not specified.</summary>
+    public ApprovalTimeoutAction OnTimeout { get; init; } = ApprovalTimeoutAction.Fail;
 }

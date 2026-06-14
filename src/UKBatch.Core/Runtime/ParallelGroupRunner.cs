@@ -48,6 +48,8 @@ internal static class ParallelGroupRunner
         var group = groupStep.ParallelGroup
             ?? throw new InvalidOperationException($"Step {groupStep.StepId} is ParallelGroup but has no payload.");
 
+        var crossServiceInvoker = new CrossServiceStepInvoker(transport, runner, thisServiceName, timeProvider);
+
         using var groupCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var children = group.Steps.OrderBy(s => s.Order).ToList();
 
@@ -59,9 +61,11 @@ internal static class ParallelGroupRunner
                     throw new InvalidOperationException($"ParallelGroup child step {child.StepId} is not a Job step (nested groups are forbidden in v0.1).");
                 }
 
-                if (child.Job.TargetService is null)
+                if (string.IsNullOrWhiteSpace(child.Job.TargetService))
                 {
                     // === LOCAL CHILD PATH (preserve byte-for-byte) ===
+                    // A null, empty, or whitespace TargetService means "run here", consistent with the
+                    // sequential executor and the trigger-time pre-flight.
                     var childExecId = IdGenerator.NewExecutionId();
                     var childWait = awaiter.WaitForTerminalAsync(childExecId, groupCts.Token);
                     try
@@ -89,88 +93,12 @@ internal static class ParallelGroupRunner
                 }
                 else
                 {
-                    // === CROSS-SERVICE CHILD PATH (mirrors BatchExecutor.RunCrossServiceStepAsync) ===
-                    if (string.IsNullOrWhiteSpace(thisServiceName))
-                    {
-                        throw new InvalidOperationException(
-                            $"ParallelGroup child step {child.StepId} (cross-service to '{child.Job.TargetService}') " +
-                            "requires the host's service identity. See UKBatchOptions.ThisServiceName / UKBATCH_SERVICE_NAME.");
-                    }
-                    var msg = new JobMessage
-                    {
-                        MessageId = IdGenerator.NewMessageId(),
-                        CorrelationId = null,
-                        JobName = child.Job.JobName,
-                        SourceService = thisServiceName,
-                        TargetService = child.Job.TargetService,
-                        BatchId = batchId,
-                        BatchStepId = child.StepId,
-                        Parameters = MergeParameters(initial, child.Job.Parameters).Values,
-                        Headers = new Dictionary<string, string>(StringComparer.Ordinal),
-                        EnqueuedAtUtc = timeProvider.GetUtcNow(),
-                        AttemptNumber = 1,
-                    };
-                    var timeout = child.Job.TimeoutSeconds is int t && t > 0
-                        ? TimeSpan.FromSeconds(t)
-                        : TimeSpan.FromMinutes(5);
-
-                    // === Cross-service execution tracking (mirror of BatchExecutor) ===
-                    // Mint a server-side SHADOW row in Running so the dashboard reflects remote-worker work.
-                    var childNow = timeProvider.GetUtcNow();
-                    var childExecId = IdGenerator.NewExecutionId();
-                    var childRunning = new JobExecution
-                    {
-                        ExecutionId = childExecId,
-                        JobName = child.Job.JobName,
-                        BatchId = batchId,
-                        BatchStepId = child.StepId,
-                        BatchDefinitionId = def.Id,
-                        Status = JobStatus.Running,
-                        Parameters = msg.Parameters,
-                        EnqueuedAtUtc = childNow,
-                        StartedAtUtc = childNow,
-                        CompletedAtUtc = null,
-                        AttemptNumber = 1,
-                        MaxRetries = 0,
-                        LastError = null,
-                        Processed = 0,
-                        Failed = 0,
-                        Total = null,
-                        TriggeredBy = triggeredBy,
-                        WorkerName = child.Job.TargetService,
-                    };
-                    await runner.RecordCrossServiceStartAsync(childRunning, groupCts.Token).ConfigureAwait(false);
-
-                    JobResult result;
-                    try
-                    {
-                        result = await transport.RequestReplyAsync(
-                            child.Job.TargetService!, msg, timeout, groupCts.Token).ConfigureAwait(false);
-                    }
-                    catch (TimeoutException tex)
-                    {
-                        await runner.RecordCrossServiceEndAsync(
-                            childExecId, FailedResult(childExecId, $"timed out after {timeout}: {tex.Message}", childNow), CancellationToken.None).ConfigureAwait(false);
-                        return JobStatus.Failed;   // Parallel join treats this as a child failure.
-                    }
-                    catch (OperationCanceledException) when (groupCts.IsCancellationRequested)
-                    {
-                        // Running -> Cancelled is ILLEGAL — write Failed (CT-decoupled) so the row lands
-                        // terminal as siblings cancel, THEN rethrow (group-level cancellation must bubble up).
-                        await runner.RecordCrossServiceEndAsync(
-                            childExecId, FailedResult(childExecId, "cross-service step cancelled (host shutdown / batch cancel)", childNow), CancellationToken.None).ConfigureAwait(false);
-                        throw;   // Group-level cancellation; bubble up.
-                    }
-                    catch (Exception ex)
-                    {
-                        await runner.RecordCrossServiceEndAsync(
-                            childExecId, FailedResult(childExecId, ex.Message, childNow), CancellationToken.None).ConfigureAwait(false);
-                        return JobStatus.Failed;
-                    }
-
-                    // Persist the worker's terminal status (the join policy decides what failures mean).
-                    await runner.RecordCrossServiceEndAsync(childExecId, result, CancellationToken.None).ConfigureAwait(false);
-                    return result.Status;
+                    // === CROSS-SERVICE CHILD PATH ===
+                    // Parallel semantics: a timeout/exception ends the shadow row Failed and returns Failed
+                    // so the join policy decides; cancellation rethrows; the terminal status is returned raw
+                    // (a Cancelled child stays observable to the join).
+                    return await crossServiceInvoker.InvokeAsync(
+                        def, batchId, child, initial, triggeredBy, throwOnFailure: false, groupCts.Token).ConfigureAwait(false);
                 }
             }, groupCts.Token))
             .ToArray();
@@ -260,12 +188,4 @@ internal static class ParallelGroupRunner
         }
         return new JobParameters(merged);
     }
-
-    /// <summary>
-    /// Builds a terminal <see cref="JobResult"/> in <see cref="JobStatus.Failed"/> for the
-    /// cross-service child shadow-row end-update (transport throw / timeout / cancel arms). Mirrors the
-    /// <c>BatchExecutor.FailedResult</c> helper (a small duplication).
-    /// </summary>
-    private static JobResult FailedResult(string execId, string error, DateTimeOffset completedAt)
-        => new() { ExecutionId = execId, Status = JobStatus.Failed, ErrorMessage = error, CompletedAtUtc = completedAt };
 }

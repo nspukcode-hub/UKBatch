@@ -1,5 +1,6 @@
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using Polly;
 using UKBatch.Abstractions.Jobs;
 using UKBatch.Registry;
 
@@ -103,9 +104,11 @@ internal static class AttributeJobDiscovery
                     schedule: attr.Schedule,
                     maxRetries: attr.MaxRetries ?? options.DefaultMaxRetries,
                     timeoutSeconds: attr.TimeoutSeconds ?? options.DefaultTimeoutSeconds,
-                    partitionWorkerCount: isPartitioned ? options.DefaultPartitionWorkerCount : 0,
-                    itemErrorPolicy: ItemErrorPolicy.FailFast,
-                    defaultParameters: null,
+                    partitionWorkerCount: isPartitioned
+                        ? (attr.PartitionWorkerCount > 0 ? attr.PartitionWorkerCount : options.DefaultPartitionWorkerCount)
+                        : 0,
+                    itemErrorPolicy: isPartitioned ? attr.ItemErrorPolicy : ItemErrorPolicy.FailFast,
+                    defaultParameters: null,   // no attribute parity for default parameters (a dictionary is not a legal attribute argument)
                     tags: attr.Tags);
 
                 // Fail-fast on an invalid cron in [Job(Schedule = "...")] — a programmer error, surfaced at
@@ -124,12 +127,15 @@ internal static class AttributeJobDiscovery
                     }
                 }
 
-                // No item-retry pipeline on this path: [Job] cannot express ItemErrorPolicy, so
-                // attribute-discovered jobs are always FailFast (the hardcoded value above) and a
-                // pipeline is only ever built for RetryThenContinue. A partitioned job that wants
-                // per-item retries must be registered through the fluent builder
-                // (WithItemErrorPolicy), which mirrors this Build + pipeline pairing.
-                registry.Register(def, type, itemRetryPipeline: null);
+                // Attribute-discovered partitioned jobs honour ItemErrorPolicy. The per-item retry
+                // pipeline is built only for RetryThenContinue with a positive retry budget, exactly
+                // as the fluent builder does — every other policy (and every non-partitioned job)
+                // registers with no pipeline.
+                ResiliencePipeline? itemPipeline =
+                    def.IsPartitioned && def.ItemErrorPolicy == ItemErrorPolicy.RetryThenContinue && def.MaxRetries >= 1
+                        ? JobDefinitionFactory.BuildItemRetryPipeline(def)
+                        : null;
+                registry.Register(def, type, itemRetryPipeline: itemPipeline);
 
                 services.AddScoped(type);
             }

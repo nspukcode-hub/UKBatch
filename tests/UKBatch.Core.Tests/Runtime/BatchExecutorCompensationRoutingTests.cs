@@ -10,13 +10,22 @@ using Xunit;
 namespace UKBatch.Core.Tests.Runtime;
 
 /// <summary>
-/// A step that fails with ANY exception (not only a step-terminated signal) — e.g. an unregistered
-/// job name surfacing from dispatch — must follow the same <see cref="BatchFailurePolicy"/> routing,
-/// including compensation. Batch cancellation is ordered ahead of the failure arms, so a cancelled
-/// batch NEVER runs <c>OnFailureSteps</c>.
+/// A step whose job throws at runtime terminates as <see cref="JobStatus.Failed"/> and must follow
+/// the <see cref="BatchFailurePolicy"/> routing — StopOnFailure stops, Compensate runs
+/// <c>OnFailureSteps</c>, ContinueOnFailure proceeds, and a failing parallel child compensates the
+/// group. Batch cancellation is ordered ahead of the failure arms, so a cancelled batch NEVER runs
+/// <c>OnFailureSteps</c>.
 /// </summary>
 public class BatchExecutorCompensationRoutingTests
 {
+    /// <summary>A registered job that always throws at execution, forcing a Failed terminal status
+    /// so the per-step failure routing engages.</summary>
+    public sealed class FailingStepJob : IJob
+    {
+        public Task ExecuteAsync(JobContext context, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("intentional step failure");
+    }
+
     /// <summary>Signals (once) when its compensation step runs.</summary>
     public sealed class CompensationProbeJob : IJob
     {
@@ -62,8 +71,6 @@ public class BatchExecutorCompensationRoutingTests
         }
     }
 
-    private const string UnregisteredJobName = "definitely.not.registered.job";
-
     private static IBatchCompletionEvents ResolveSignal(IServiceProvider sp)
     {
         var coreAssembly = typeof(IJobRunner).Assembly;
@@ -93,14 +100,15 @@ public class BatchExecutorCompensationRoutingTests
     }
 
     [Fact]
-    public async Task SequentialStep_UnregisteredJob_CompensatePolicy_RunsOnFailureSteps()
+    public async Task SequentialStep_FailingJob_CompensatePolicy_RunsOnFailureSteps()
     {
         CompensationProbeJob.ResetSignal();
         var host = await TestHostBuilder.StartAsync(b =>
         {
+            b.AddJob<FailingStepJob>();
             b.AddJob<CompensationProbeJob>();
             b.AddBatch("compensate.sequential", x => x
-                .RunJob(UnregisteredJobName)
+                .RunJob<FailingStepJob>()
                 .FailurePolicy(BatchFailurePolicy.Compensate)
                 .OnFailure(f => f.RunJob<CompensationProbeJob>()));
         }).ConfigureAwait(false);
@@ -114,7 +122,7 @@ public class BatchExecutorCompensationRoutingTests
 
             await CompensationProbeJob.Ran.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
             CompensationProbeJob.Ran.Task.IsCompletedSuccessfully.Should().BeTrue(
-                "an unregistered job step under Compensate must still route through OnFailureSteps.");
+                "a failing job step under Compensate must route through OnFailureSteps.");
         }
         finally
         {
@@ -123,16 +131,17 @@ public class BatchExecutorCompensationRoutingTests
     }
 
     [Fact]
-    public async Task ParallelChild_UnregisteredJob_CompensatePolicy_RunsOnFailureSteps()
+    public async Task ParallelChild_FailingJob_CompensatePolicy_RunsOnFailureSteps()
     {
         CompensationProbeJob.ResetSignal();
         var host = await TestHostBuilder.StartAsync(b =>
         {
+            b.AddJob<FailingStepJob>();
             b.AddJob<CompensationProbeJob>();
             b.AddJob<NoopJob>();
             b.AddBatch("compensate.parallel", x => x
                 .ThenInParallel(g => g
-                    .RunJob(UnregisteredJobName)
+                    .RunJob<FailingStepJob>()
                     .RunJob<NoopJob>())
                 .FailurePolicy(BatchFailurePolicy.Compensate)
                 .OnFailure(f => f.RunJob<CompensationProbeJob>()));
@@ -147,7 +156,7 @@ public class BatchExecutorCompensationRoutingTests
 
             await CompensationProbeJob.Ran.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
             CompensationProbeJob.Ran.Task.IsCompletedSuccessfully.Should().BeTrue(
-                "an unregistered parallel child under Compensate must still route through OnFailureSteps.");
+                "a failing parallel child under Compensate must route through OnFailureSteps.");
         }
         finally
         {
@@ -156,14 +165,15 @@ public class BatchExecutorCompensationRoutingTests
     }
 
     [Fact]
-    public async Task SequentialStep_UnregisteredJob_ContinueOnFailure_ProceedsToNextStep()
+    public async Task SequentialStep_FailingJob_ContinueOnFailure_ProceedsToNextStep()
     {
         NextStepProbeJob.ResetSignal();
         var host = await TestHostBuilder.StartAsync(b =>
         {
+            b.AddJob<FailingStepJob>();
             b.AddJob<NextStepProbeJob>();
             b.AddBatch("continue.sequential", x => x
-                .RunJob(UnregisteredJobName)
+                .RunJob<FailingStepJob>()
                 .ThenRunJob<NextStepProbeJob>()
                 .FailurePolicy(BatchFailurePolicy.ContinueOnFailure));
         }).ConfigureAwait(false);
@@ -177,7 +187,7 @@ public class BatchExecutorCompensationRoutingTests
 
             await NextStepProbeJob.Ran.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
             NextStepProbeJob.Ran.Task.IsCompletedSuccessfully.Should().BeTrue(
-                "ContinueOnFailure must proceed to the next step after an unregistered-job failure.");
+                "ContinueOnFailure must proceed to the next step after a job failure.");
         }
         finally
         {
@@ -186,14 +196,15 @@ public class BatchExecutorCompensationRoutingTests
     }
 
     [Fact]
-    public async Task SequentialStep_UnregisteredJob_StopOnFailure_DoesNotRunCompensation()
+    public async Task SequentialStep_FailingJob_StopOnFailure_DoesNotRunCompensation()
     {
         CompensationProbeJob.ResetSignal();
         var host = await TestHostBuilder.StartAsync(b =>
         {
+            b.AddJob<FailingStepJob>();
             b.AddJob<CompensationProbeJob>();
             b.AddBatch("stop.sequential", x => x
-                .RunJob(UnregisteredJobName)
+                .RunJob<FailingStepJob>()
                 .FailurePolicy(BatchFailurePolicy.StopOnFailure)
                 .OnFailure(f => f.RunJob<CompensationProbeJob>()));
         }).ConfigureAwait(false);

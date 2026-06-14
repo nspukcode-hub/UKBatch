@@ -27,7 +27,7 @@
         <div class="surface-card__header">
             <h2 class="surface-card__title">
                 <JobStatusBadge Status="@summary.FinalStatus" />
-                <span>@summary.BatchName completed</span>
+                <span>@summary.BatchName @CompletionVerb(summary.FinalStatus)</span>
             </h2>
         </div>
         <div class="surface-card__body">
@@ -54,7 +54,7 @@
                     <DagStatusCanvas Steps="@_definition.Steps"
                                      OnFailureSteps="@_definition.OnFailureSteps"
                                      StatusByStepId="@_statusByStepId"
-                                     PendingStepIds="@_awaitingGates"
+                                     PendingStepIds="@_pendingByStepId.Keys"
                                      SelectedStepId="@_selectedStepId"
                                      OnNodeSelected="OnNodeSelectedAsync"
                                      OnApproveClicked="HandleApproveFromNodeAsync" />
@@ -152,15 +152,14 @@ else
     private IReadOnlyDictionary<string, JobStatus> _statusByStepId =
         new Dictionary<string, JobStatus>(StringComparer.Ordinal);
     // Approval-gate live status: gates are NOT jobs (no JobExecution row), so their state comes from the
-    // approvals feed, not _executionRows. A gate is AwaitingApproval while a PendingApproval exists for it
-    // (BatchId+BatchStepId), then resolves to Completed (approved/auto-approved) or Failed (rejected /
-    // batch failed). Merged into _statusByStepId by RebuildStatusMap so the DAG node colours like any other.
-    private HashSet<string> _awaitingGates = new(StringComparer.Ordinal);   // currently-pending gate StepIds
-    private readonly HashSet<string> _resolvedGates = new(StringComparer.Ordinal); // gates given a terminal status (one-shot)
+    // gate feed, not _executionRows. Each gate carries its OWN recorded outcome (pending → AwaitingApproval;
+    // approved/auto-approved → Completed; any other terminal outcome → Failed), so the colour is read
+    // directly from the gate rather than inferred from the batch roll-up. Merged into _statusByStepId by
+    // RebuildStatusMap so the DAG node colours like any other.
     private readonly Dictionary<string, JobStatus> _gateStatus = new(StringComparer.Ordinal);
-    // Pending approval DTOs for THIS run, keyed by BatchStepId — so the node inspector can decide the gate
-    // in-place. Rebuilt alongside _awaitingGates in RefreshGatesAsync; the reconciler
-    // contract (StepId set in/out) is unchanged.
+    // Actionable pending approvals for THIS run, keyed by BatchStepId — so the node inspector can decide the
+    // gate in-place (needs Config + ApprovalId, which the gate-colouring feed does NOT carry). Rebuilt in
+    // RefreshGatesAsync from the pending approvals list; its keys also drive the in-node Approve button.
     private Dictionary<string, PendingApprovalDto> _pendingByStepId = new(StringComparer.Ordinal);
     private string? _selectedStepId;
     private BatchStep? _selectedStep;
@@ -254,10 +253,10 @@ else
         {
             _executionRows.Add(ExecutionRowViewModel.FromExecution(exec));
         }
-        // While a gate is pending, a successor's execution event is our cue that the gate was approved
-        // (there is no "approval resolved" hub event). RefreshGatesAsync re-rebuilds the map; otherwise
-        // just rebuild from rows. Skip the extra approvals round-trip once no gate is awaiting.
-        if (_awaitingGates.Count > 0)
+        // While a gate is pending, a successor's execution event is our cue that the gate may have been
+        // decided (there is no "approval resolved" hub event). RefreshGatesAsync re-reads the gate feed and
+        // rebuilds the map; otherwise just rebuild from rows. Skip the extra round-trip once no gate is pending.
+        if (_pendingByStepId.Count > 0)
             await RefreshGatesAsync();
         else
             RebuildStatusMap();
@@ -271,34 +270,38 @@ else
         await _refresh!.RequestAsync();
     }
 
-    // Reconciles approval-gate node status from the approvals feed (gates have no JobExecution row).
-    // A gate with a live PendingApproval (this batch) → AwaitingApproval. A gate that WAS pending and is
-    // now gone → terminal once: Failed if the batch ended Failed/Cancelled, else Completed (approved /
-    // auto-approved). _resolvedGates makes the terminal write one-shot so a later step's failure can't
-    // re-colour an already-approved gate.
+    // Reconciles approval-gate node status from the gate feed (gates have no JobExecution row). Two reads
+    // serve two purposes: ListBatchGatesAsync gives every gate's OWN recorded outcome (drives node COLOUR —
+    // pending → AwaitingApproval, approved/auto-approved → Completed, any other terminal outcome → Failed);
+    // ListApprovalsAsync gives the ACTIONABLE pending set (carries Config + ApprovalId, which the colouring
+    // feed omits) so the inspector can approve/reject in place. Both reads are cheap; do NOT merge.
     private async Task RefreshGatesAsync()
     {
         if (_client is null) return;
-        IReadOnlyList<PendingApprovalDto> list;
-        try { list = await _client.ListApprovalsAsync(null, CancellationToken.None); }
-        catch (Exception) { return; }   // approvals endpoint hiccup — keep last known gate state
 
-        // One pass over this run's pending approvals: the StepId set drives the reconciler (unchanged
-        // contract); the StepId→DTO map lets the inspector decide a gate in place. Last writer wins on
-        // the rare duplicate step id (two gates with the same StepId is a malformed definition).
-        var pending = new HashSet<string>(StringComparer.Ordinal);
-        var byStep = new Dictionary<string, PendingApprovalDto>(StringComparer.Ordinal);
-        foreach (var a in list ?? [])
+        // Colouring feed — each gate carries its own outcome, so the overlay needs no batch-level inference.
+        IReadOnlyList<ApprovalGateViewDto>? gates;
+        try { gates = await _client.ListBatchGatesAsync(BatchRunId, CancellationToken.None); }
+        catch (Exception) { gates = null; }   // gate endpoint hiccup — keep last known gate colours
+        if (gates is { Count: > 0 })
+            ApprovalGateReconciler.Apply(gates, _gateStatus);
+
+        // Actionable feed — pending approvals for THIS run, keyed by step id, so the inspector can decide a
+        // gate (and the in-node Approve button can appear). Last writer wins on the rare duplicate step id
+        // (two gates on one step is a malformed definition). An endpoint hiccup keeps the last known set.
+        try
         {
-            if (a.BatchId != BatchRunId) continue;
-            pending.Add(a.BatchStepId);
-            byStep[a.BatchStepId] = a;
+            var list = await _client.ListApprovalsAsync(null, CancellationToken.None);
+            var byStep = new Dictionary<string, PendingApprovalDto>(StringComparer.Ordinal);
+            foreach (var a in list ?? [])
+            {
+                if (a.BatchId != BatchRunId) continue;
+                byStep[a.BatchStepId] = a;
+            }
+            _pendingByStepId = byStep;
         }
+        catch (Exception) { /* keep last known actionable set */ }
 
-        var batchFailed = _completion is { FinalStatus: JobStatus.Failed or JobStatus.Cancelled };
-        ApprovalGateReconciler.Apply(pending, _awaitingGates, batchFailed, _resolvedGates, _gateStatus);
-        _awaitingGates = pending;
-        _pendingByStepId = byStep;
         RebuildStatusMap();
     }
 
@@ -471,6 +474,15 @@ else
         JobStatus.Failed => "batch-run__completion--failed",
         JobStatus.Cancelled => "batch-run__completion--cancelled",
         _ => string.Empty,
+    };
+
+    // Status-aware verb for the completion banner so a gate-failed run reads "X failed", not "X completed".
+    // The shard counts below stay JOB-level (a gate is not a job); the verb + badge convey the run outcome.
+    private static string CompletionVerb(JobStatus status) => status switch
+    {
+        JobStatus.Failed => "failed",
+        JobStatus.Cancelled => "cancelled",
+        _ => "completed",
     };
 
     public async ValueTask DisposeAsync()

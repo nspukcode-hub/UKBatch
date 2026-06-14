@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Polly;
 using UKBatch.Abstractions.Jobs;
 using UKBatch.Discovery;
@@ -20,7 +21,6 @@ public sealed class JobBuilder
 {
     private readonly IServiceCollection _services;
     private readonly Type _implementationType;
-    private readonly Type? _partitionItemType;
     private readonly bool _isPartitioned;
     private readonly Registry.JobDefinitionRegistry _registry;
 
@@ -36,7 +36,6 @@ public sealed class JobBuilder
     internal JobBuilder(
         IServiceCollection services,
         Type implementationType,
-        Type? partitionItemType,
         bool isPartitioned,
         Registry.JobDefinitionRegistry registry)
     {
@@ -45,7 +44,6 @@ public sealed class JobBuilder
         ArgumentNullException.ThrowIfNull(registry);
         _services = services;
         _implementationType = implementationType;
-        _partitionItemType = partitionItemType;
         _isPartitioned = isPartitioned;
         _registry = registry;
         _itemErrorPolicy = ItemErrorPolicy.FailFast;
@@ -58,7 +56,14 @@ public sealed class JobBuilder
             _schedule = attr.Schedule;
             _maxRetries = attr.MaxRetries;
             _timeoutSeconds = attr.TimeoutSeconds;
-            _tags = attr.Tags;
+            _tags = NormalizeTags(attr.Tags);
+            if (attr.PartitionWorkerCount > 0)
+            {
+                // Only seed a positive attribute value, so WithParallelism and the runtime default
+                // still apply when the attribute is silent.
+                _partitionWorkerCount = attr.PartitionWorkerCount;
+            }
+            _itemErrorPolicy = attr.ItemErrorPolicy; // a later WithItemErrorPolicy still overrides this
         }
     }
 
@@ -131,7 +136,7 @@ public sealed class JobBuilder
     public JobBuilder WithTags(params string[] tags)
     {
         ArgumentNullException.ThrowIfNull(tags);
-        _tags = tags;
+        _tags = NormalizeTags(tags);
         return this;
     }
 
@@ -199,7 +204,28 @@ public sealed class JobBuilder
 
         // Scoped DI registration (the implementation type itself; JobWorker resolves
         // via GetRequiredService(implType) directly — no IJob multi-binding ambiguity).
-        _services.AddScoped(_implementationType);
-        _ = _partitionItemType;
+        // TryAdd so registering the same type under more than one job name does not leave a
+        // duplicate descriptor behind.
+        _services.TryAddScoped(_implementationType);
+    }
+
+    // Validates + defensively copies routing tags (from either the fluent WithTags or the [Job]
+    // attribute). Rejects null/empty/whitespace elements — a routing tag must be meaningful — and
+    // snapshots the array so a later external mutation of the caller's array cannot alter the
+    // registration state.
+    private static string[]? NormalizeTags(string[]? tags)
+    {
+        if (tags is null)
+        {
+            return null;
+        }
+        foreach (var tag in tags)
+        {
+            if (string.IsNullOrWhiteSpace(tag))
+            {
+                throw new ArgumentException("A job tag must not be null, empty, or whitespace.", nameof(tags));
+            }
+        }
+        return tags.ToArray();
     }
 }

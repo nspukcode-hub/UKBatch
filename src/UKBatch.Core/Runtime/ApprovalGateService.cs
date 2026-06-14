@@ -368,6 +368,31 @@ internal sealed class ApprovalGateService : IApprovalGateService, IApprovalGateC
         return ordered;
     }
 
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Reads the durable store's by-batch records (pending AND decided) and maps each to a focused
+    /// <see cref="ApprovalGateView"/>. Unlike <see cref="ListPendingAsync"/> this does NOT merge the
+    /// live in-memory dict and does NOT role-filter: a status renderer needs every gate's decided
+    /// outcome regardless of role, and the store is the single source of truth for decided gates
+    /// (a live pending gate is also persisted as a Pending record at create time, so the store view
+    /// is complete). Empty for an unknown run.
+    /// </remarks>
+    public async Task<IReadOnlyList<ApprovalGateView>> ListForBatchAsync(string batchId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+        var records = await _approvalStore.ListByBatchAsync(batchId, cancellationToken).ConfigureAwait(false);
+        return records
+            .Select(static r => new ApprovalGateView
+            {
+                ApprovalId = r.ApprovalId,
+                BatchId = r.BatchId,
+                BatchStepId = r.BatchStepId,
+                Status = r.Status,
+                Outcome = r.Outcome,
+            })
+            .ToList();
+    }
+
     private static bool RoleAllows(ApprovalGateConfig config, string? userRole) =>
         userRole is null
         || config.AllowedRoles.Contains(userRole, StringComparer.Ordinal)

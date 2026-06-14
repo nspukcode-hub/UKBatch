@@ -44,4 +44,7 @@ public static class ProblemDetailsConventions
 
     /// <summary><c>ukbatch:batch-definition-duplicate-name</c> — 409.</summary>
     public const string BatchDefinitionDuplicateName = TypePrefix + "batch-definition-duplicate-name";
+
+    /// <summary><c>ukbatch:batch-trigger-validation</c> — 400.</summary>
+    public const string BatchTriggerValidation = TypePrefix + "batch-trigger-validation";
 }

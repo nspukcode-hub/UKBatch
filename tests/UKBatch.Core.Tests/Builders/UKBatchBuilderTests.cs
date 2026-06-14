@@ -64,6 +64,44 @@ public class UKBatchBuilderTests
     }
 
     [Fact]
+    public void WithTags_NullElement_Throws()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IHostApplicationLifetime>(new TestHostLifetime());
+
+        var act = () => services.AddUKBatch(b => b.AddJob<SucceedingJob>().WithTags("ok", null!));
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void WithTags_WhitespaceElement_Throws()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IHostApplicationLifetime>(new TestHostLifetime());
+
+        var act = () => services.AddUKBatch(b => b.AddJob<SucceedingJob>().WithTags("ok", "   "));
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void WithTags_ValidTags_StoredOnDefinition()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IHostApplicationLifetime>(new TestHostLifetime());
+
+        services.AddUKBatch(b => b.AddJob<SucceedingJob>().Named("tagged.job").WithTags("alpha", "beta"));
+
+        using var sp = services.BuildServiceProvider();
+        var registry = sp.GetRequiredService<JobDefinitionRegistry>();
+        registry.TryGet("tagged.job")!.Tags.Should().BeEquivalentTo(new[] { "alpha", "beta" });
+    }
+
+    [Fact]
     public void AddJob_DuplicateName_ThrowsOnRegistration()
     {
         var services = new ServiceCollection();

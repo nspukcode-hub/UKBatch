@@ -28,6 +28,14 @@ public interface IApprovalGateStore
     Task<IReadOnlyList<PersistedApprovalGate>> ListPendingAsync(CancellationToken cancellationToken);
 
     /// <summary>
+    /// Returns all gate records (pending AND decided) for one batch RUN id, in a stable order
+    /// (<see cref="PersistedApprovalGate.PendingSinceUtc"/> then
+    /// <see cref="PersistedApprovalGate.ApprovalId"/>). Returns an empty list when the run has no
+    /// gates. Consumed by the dashboard to colour gate nodes from their own decided outcome.
+    /// </summary>
+    Task<IReadOnlyList<PersistedApprovalGate>> ListByBatchAsync(string batchId, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Records a terminal decision (approved/rejected/timed-out/cancelled) on a previously-pending gate.
     /// Throws <see cref="InvalidOperationException"/> if the gate is absent, and
     /// <see cref="ApprovalAlreadyDecidedException"/> if the gate is already

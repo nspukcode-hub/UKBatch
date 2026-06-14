@@ -17,10 +17,10 @@ namespace UKBatch.Dashboard.Clients;
 /// from events on dispose.
 /// </summary>
 /// <remarks>
-/// <para><b>Surface organization (35 reflection members):</b></para>
+/// <para><b>Surface organization (36 reflection members):</b></para>
 /// <list type="bullet">
 ///   <item><b>Identity + lifecycle</b> (5 members — 2 props + 1 event + 2 methods): <c>Service</c>, <c>State</c>, <c>StateChanged</c>, <c>ConnectAsync</c>, <c>DisconnectAsync</c>.</item>
-///   <item><b>REST</b> (18 methods): job catalog/detail/trigger (3), batch catalog/by-id/by-name/run/run-status (5) + create/update/delete (3) = 8, execution detail/query/cancel (3), approval list/approve/reject (3), worker snapshot (1).</item>
+///   <item><b>REST</b> (19 methods): job catalog/detail/trigger (3), batch catalog/by-id/by-name/run/run-status (5) + create/update/delete (3) = 8, execution detail/query/cancel (3), approval list/approve/reject/by-batch-gates (4), worker snapshot (1).</item>
 ///   <item><b>Hub events</b> (4 events): <see cref="ExecutionStateChanged"/>, <see cref="ProgressUpdated"/>, <see cref="ApprovalRequested"/>, <see cref="BatchCompleted"/>.</item>
 ///   <item><b>Hub subscriptions</b> (8 methods): Subscribe/Unsubscribe × {Execution, Batch, Job, All}.</item>
 /// </list>
@@ -130,7 +130,7 @@ public interface IUKBatchClient : IAsyncDisposable
     /// <summary>POST <c>/executions/{id}/cancel</c>. Idempotent. Throws on 404.</summary>
     Task CancelExecutionAsync(string executionId, CancellationToken ct);
 
-    // ── REST — Approvals (3) ───────────────────────────────────────────────────────────
+    // ── REST — Approvals (4) ───────────────────────────────────────────────────────────
 
     /// <summary>GET <c>/approvals</c> — flat list (unwraps the artificial PageEnvelope).</summary>
     Task<IReadOnlyList<PendingApprovalDto>> ListApprovalsAsync(string? role, CancellationToken ct);
@@ -140,6 +140,14 @@ public interface IUKBatchClient : IAsyncDisposable
 
     /// <summary>POST <c>/approvals/{id}/reject</c>. Reason required.</summary>
     Task RejectAsync(string approvalId, string reason, CancellationToken ct);
+
+    /// <summary>
+    /// GET <c>/approvals/by-batch/{batchId}</c> — every gate (pending AND decided) for one batch run,
+    /// each carrying its own recorded outcome. Used to colour a gate DAG node from the gate's own
+    /// decision (a gate has no <c>JobExecution</c> row, so its outcome is invisible to row roll-ups).
+    /// Empty list for an unknown run.
+    /// </summary>
+    Task<IReadOnlyList<ApprovalGateViewDto>> ListBatchGatesAsync(string batchId, CancellationToken ct);
 
     // ── REST — Workers (1) ─────────────────────────────────────────────────────────────
 

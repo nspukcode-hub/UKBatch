@@ -55,4 +55,54 @@ public sealed class JobContext
 
     /// <summary>Identity that triggered this execution (user, <c>"scheduler"</c>, <c>"api"</c>, or worker name); <c>null</c> if unknown.</summary>
     public string? TriggeredBy { get; init; }
+
+    // AsyncLocal owns the per-worker index. Encapsulated: there is no public mutable property
+    // because a settable property would race across the N concurrent partition workers that share
+    // this single JobContext instance. The default value 0 covers plain (non-partitioned) jobs and
+    // any read taken outside a worker scope.
+    private static readonly AsyncLocal<int> _workerIndex = new();
+
+    /// <summary>
+    /// 0-based index of the partition worker executing the current call, for an
+    /// <see cref="IPartitionedJob{TItem}"/> or an inline <c>ParallelForEachAsync</c> body.
+    /// Stable for the lifetime of a worker; distinct concurrent workers observe distinct values
+    /// in <c>[0, workerCount)</c>. A plain <see cref="IJob"/> (no fan-out) always reads <c>0</c>.
+    /// <para>Use it to shard side state (e.g. a per-worker buffer, a connection from a sized pool).
+    /// Do NOT use it as a stable identity across runs — it is a per-run worker slot, not a worker id.</para>
+    /// </summary>
+    // Intentionally an instance member: jobs read it ergonomically as ctx.WorkerIndex alongside the
+    // other per-execution context. The backing AsyncLocal is static by necessity, but the API must
+    // stay on the instance, so the "could be static" suggestion does not apply.
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Public ergonomic context accessor; must remain an instance member.")]
+    public int WorkerIndex => _workerIndex.Value;
+
+    /// <summary>
+    /// Establishes the <see cref="WorkerIndex"/> for the current async flow and everything it
+    /// awaits, until the returned scope is disposed. Intended for the runtime's fan-out only;
+    /// the value flows via <see cref="AsyncLocal{T}"/> to every job body invoked on the worker.
+    /// </summary>
+    /// <param name="workerIndex">0-based worker slot; must be &gt;= 0.</param>
+    public static IDisposable EnterWorkerScope(int workerIndex)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(workerIndex);
+        var previous = _workerIndex.Value;
+        _workerIndex.Value = workerIndex;
+        return new WorkerScope(previous);
+    }
+
+    private sealed class WorkerScope(int previous) : IDisposable
+    {
+        private readonly int _previous = previous;
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            _disposed = true;
+            _workerIndex.Value = _previous;
+        }
+    }
 }

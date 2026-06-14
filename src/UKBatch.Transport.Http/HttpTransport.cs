@@ -229,7 +229,7 @@ public sealed class HttpTransport : ITransport
             queryParams: null,
             bodyBytes);
         request.Headers.TryAddWithoutValidation(
-            "X-UKBatch-Timeout-Ms",
+            HmacHeaderNames.TimeoutMs,
             ((long)timeout.TotalMilliseconds).ToString(CultureInfo.InvariantCulture));
 
         var client = GetClient();

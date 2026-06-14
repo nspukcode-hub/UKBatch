@@ -176,4 +176,5 @@ public sealed class RestUKBatchClientRestTests : IClassFixture<SampleRestApiFact
         var ex = await act.Should().ThrowAsync<UKBatchClientException>();
         ex.Which.StatusCode.Should().BeOneOf(HttpStatusCode.NotFound, HttpStatusCode.Forbidden);
     }
+
 }
