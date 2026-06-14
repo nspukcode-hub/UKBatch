@@ -8,7 +8,7 @@ namespace UKBatch.Dashboard.Tests.Diagnostics;
 /// <summary>
 /// Dashboard package invariants:
 /// <list type="bullet">
-/// <item><see cref="IUKBatchClient"/> surface lock (2 props + 5 events + 28 methods = 35 reflection members).</item>
+/// <item><see cref="IUKBatchClient"/> surface lock (2 props + 5 events + 29 methods = 36 reflection members).</item>
 /// <item>Friend-access discipline — the Dashboard consumes a single allowed Core internal type (lock test mirrors the Api side).</item>
 /// </list>
 /// </summary>
@@ -38,14 +38,14 @@ public sealed class DashboardPackageInvariants
     }
 
     [Fact]
-    public void IUKBatchClient_HasExactly_28_PublicMethods()
+    public void IUKBatchClient_HasExactly_29_PublicMethods()
     {
         // Lifecycle: ConnectAsync, DisconnectAsync (2)
         // REST jobs: ListJobsAsync, GetJobAsync, TriggerJobAsync (3)
         // REST batches: ListBatchesAsync, GetBatchByIdAsync, GetBatchByNameAsync, RunBatchByIdAsync,
         // GetBatchRunStatusAsync (5) + CreateBatchAsync, UpdateBatchAsync, DeleteBatchAsync (3) = 8
         // REST executions: GetExecutionAsync, QueryExecutionsAsync, CancelExecutionAsync (3)
-        // REST approvals: ListApprovalsAsync, ApproveAsync, RejectAsync (3)
+        // REST approvals: ListApprovalsAsync, ApproveAsync, RejectAsync, ListBatchGatesAsync (4)
         // REST workers: GetWorkersAsync (1)
         // Hub subs: 8 (Subscribe/Unsubscribe × {Execution, Batch, Job, All})
         var t = typeof(IUKBatchClient);
@@ -54,17 +54,19 @@ public sealed class DashboardPackageInvariants
             .Where(m => !m.IsSpecialName)
             .Where(m => m.DeclaringType == typeof(IUKBatchClient))
             .ToArray();
-        methods.Should().HaveCount(28,
-            "IUKBatchClient surface lock: 2 lifecycle + 18 REST (incl. CreateBatchAsync, UpdateBatchAsync, DeleteBatchAsync, GetWorkersAsync) + 8 hub subs = 28 methods. " +
+        methods.Should().HaveCount(29,
+            "IUKBatchClient surface lock: 2 lifecycle + 19 REST (incl. CreateBatchAsync, UpdateBatchAsync, DeleteBatchAsync, ListBatchGatesAsync, GetWorkersAsync) + 8 hub subs = 29 methods. " +
             $"Actual: {string.Join(", ", methods.Select(m => m.Name))}");
         methods.Select(m => m.Name).Should().Contain("GetWorkersAsync",
             "the dashboard Workers panel relies on the GetWorkersAsync REST surface.");
+        methods.Select(m => m.Name).Should().Contain("ListBatchGatesAsync",
+            "the run-detail gate colouring reads every gate's own outcome via ListBatchGatesAsync.");
     }
 
     [Fact]
-    public void IUKBatchClient_TotalSurface_Is_35_Members()
+    public void IUKBatchClient_TotalSurface_Is_36_Members()
     {
-        // Combined: 2 properties + 5 events + 28 methods = 35 reflection members.
+        // Combined: 2 properties + 5 events + 29 methods = 36 reflection members.
         var t = typeof(IUKBatchClient);
         var propCount = t.GetProperties(BindingFlags.Instance | BindingFlags.Public).Length;
         var eventCount = t.GetEvents(BindingFlags.Instance | BindingFlags.Public).Length;
@@ -72,8 +74,8 @@ public sealed class DashboardPackageInvariants
             .Where(m => !m.IsSpecialName)
             .Where(m => m.DeclaringType == typeof(IUKBatchClient))
             .Count();
-        (propCount + eventCount + methodCount).Should().Be(35,
-            "IUKBatchClient surface: 2 props + 5 events + 28 methods = 35 members.");
+        (propCount + eventCount + methodCount).Should().Be(36,
+            "IUKBatchClient surface: 2 props + 5 events + 29 methods = 36 members.");
     }
 
     [Fact]

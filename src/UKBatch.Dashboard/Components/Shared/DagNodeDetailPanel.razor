@@ -4,19 +4,19 @@
 
 <aside class="dag-node-detail surface-card--elevated">
     <div class="dag-node-detail__header">
-        <h2 class="dag-node-detail__title">
-            <span class="material-symbols-outlined">@HeaderIcon()</span>
-            @HeaderTitle()
-        </h2>
-        <div style="display:flex; align-items:center; gap:var(--space-xs);">
+        <div class="dag-node-detail__header-text">
+            <h2 class="dag-node-detail__title">
+                <span class="material-symbols-outlined">@HeaderIcon()</span>
+                @HeaderTitle()
+            </h2>
             @if (Status is { } st)
             {
                 <JobStatusBadge Status="st" />
             }
-            <button class="btn--icon" aria-label="Close" @onclick="@(() => OnClose.InvokeAsync())">
-                <span class="material-symbols-outlined">close</span>
-            </button>
         </div>
+        <button class="btn--icon dag-node-detail__close" aria-label="Close" @onclick="@(() => OnClose.InvokeAsync())">
+            <span class="material-symbols-outlined">close</span>
+        </button>
     </div>
     <div class="dag-node-detail__body">
         @switch (Step.StepType)

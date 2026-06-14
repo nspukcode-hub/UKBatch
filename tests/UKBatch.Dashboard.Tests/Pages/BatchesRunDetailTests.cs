@@ -4,6 +4,7 @@ using FluentAssertions;
 using NSubstitute;
 using UKBatch.Abstractions.Batches;
 using UKBatch.Abstractions.Models;
+using UKBatch.Abstractions.Storage;
 using UKBatch.Api.Approvals;
 using UKBatch.Api.Batches;
 using UKBatch.Api.Common;
@@ -243,6 +244,57 @@ public sealed class BatchesRunDetailTests : TestContext
         });
     }
 
+    [Theory]
+    [InlineData(JobStatus.Failed, "failed")]
+    [InlineData(JobStatus.Cancelled, "cancelled")]
+    public void Render_CompletionFailedOrCancelled_BannerVerbMatchesFinalStatus(JobStatus finalStatus, string verb)
+    {
+        // The banner verb must follow FinalStatus: a gate-failed run reads "X failed", not "X completed"
+        // (the operator screenshot showed the FAILED badge but contradictory "… completed" text).
+        var svc = PageTestHelpers.Descriptor("svc");
+        var registry = PageTestHelpers.RegistryWith(svc);
+        var client = PageTestHelpers.BuildClient();
+        client.GetBatchRunStatusAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new PageEnvelope<JobExecution>
+            {
+                Items = Array.Empty<JobExecution>(),
+                TotalCount = 0,
+                Offset = 0,
+                Limit = 50,
+            });
+
+        Services.AddSingleton(registry);
+        Services.AddSingleton(PageTestHelpers.FactoryFor(svc.Name, client));
+        Services.AddSingleton(PageTestHelpers.NewState());
+        Services.AddSingleton(PageTestHelpers.NewOptions());
+
+        var cut = RenderComponent<RunDetail>(p => p
+            .Add(d => d.ServiceName, svc.Name)
+            .Add(d => d.BatchRunId, "br-bad"));
+
+        var summary = new BatchCompletionSummary
+        {
+            BatchId = "br-bad",
+            BatchDefinitionId = "def-1",
+            BatchName = "approval-parallel-demo",
+            FinalStatus = finalStatus,
+            TotalJobs = 2,
+            SucceededJobs = 0,
+            FailedJobs = 0,        // a failed gate is not a job, so the shard counts stay zero here
+            CancelledJobs = 0,
+            CompletedAtUtc = DateTimeOffset.UtcNow,
+        };
+        cut.InvokeAsync(() => client.BatchCompleted += Raise.Event<Func<BatchCompletionSummary, Task>>(summary));
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain($"approval-parallel-demo {verb}",
+                "the banner verb is status-aware (Failed → failed, Cancelled → cancelled)");
+            cut.Markup.Should().NotContain("approval-parallel-demo completed",
+                "a non-Completed run must not read 'completed'");
+        });
+    }
+
     // ── inline approve/reject from the live DAG node inspector ──────────────
     //
     // The Drawflow node DOM is JS-built and not present under bunit, so a node CLICK can't be
@@ -310,6 +362,20 @@ public sealed class BatchesRunDetailTests : TestContext
             });
         client.GetBatchByIdAsync(defId, Arg.Any<CancellationToken>()).Returns(GateDefinition(defId));
         client.ListApprovalsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(approvals);
+        // The colouring feed mirrors the actionable feed for a live run: each pending approval is also a
+        // PENDING gate (so the node colours AwaitingApproval). The server returns both from the same gate;
+        // here we derive the gate views from the same fixture so the two feeds agree.
+        var gateViews = (IReadOnlyList<ApprovalGateViewDto>)approvals
+            .Select(a => new ApprovalGateViewDto
+            {
+                ApprovalId = a.ApprovalId,
+                BatchId = a.BatchId,
+                BatchStepId = a.BatchStepId,
+                Status = ApprovalRecordStatus.Pending,
+                Outcome = null,
+            })
+            .ToList();
+        client.ListBatchGatesAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(gateViews);
 
         Services.AddSingleton(registry);
         Services.AddSingleton(PageTestHelpers.FactoryFor(svc.Name, client));
@@ -419,15 +485,15 @@ public sealed class BatchesRunDetailTests : TestContext
     public async Task PendingGate_FeedsAwaitingGatesToCanvasAsPendingStepIds()
     {
         // The canvas reveals the in-node Approve button only when the gate's StepId is in PendingStepIds.
-        // RunDetail must feed that from _awaitingGates (the reconciler's pending set), NOT from the status
-        // map. Assert the parameter actually reaches the child carrying THIS gate's StepId.
+        // RunDetail must feed that from its actionable pending-approval map, NOT from the status map.
+        // Assert the parameter actually reaches the child carrying THIS gate's StepId.
         var (cut, _) = RenderGatedRun("br-gate", "appr-1", new[] { PendingFor("appr-1", "br-gate") });
 
         cut.WaitForAssertion(() =>
         {
             var canvas = cut.FindComponent<DagStatusCanvas>();
             canvas.Instance.PendingStepIds.Should().Contain(GateStepId,
-                "RunDetail feeds _awaitingGates to the canvas so the in-node Approve button can appear on the pending gate");
+                "RunDetail feeds its pending-approval step ids to the canvas so the in-node Approve button can appear on the pending gate");
         });
     }
 

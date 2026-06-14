@@ -38,6 +38,18 @@ internal static class ApprovalsEndpoints
             .WithUKBatchName(operationIdPrefix, "ListApprovals")
             .WithSummary("Lists currently pending approval gates; optional role filter narrows to those the caller can act on.");
 
+        approvals.MapGet("/by-batch/{batchId}", async (
+                string batchId,
+                IApprovalGateService svc,
+                CancellationToken ct) =>
+            {
+                ArgumentException.ThrowIfNullOrEmpty(batchId);
+                var gates = await svc.ListForBatchAsync(batchId, ct).ConfigureAwait(false);
+                return Results.Ok(gates.Select(ApprovalGateViewDto.FromModel).ToList());
+            })
+            .WithUKBatchName(operationIdPrefix, "ListBatchGates")
+            .WithSummary("Lists every approval gate (pending and decided) for one batch run, with its decided outcome, for status colouring. Unfiltered read.");
+
         approvals.MapPost("/{id}/approve", async (
                 string id,
                 ApprovalNoteRequest? body,

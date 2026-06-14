@@ -119,6 +119,68 @@ public sealed class WorkersPageTests : TestContext
     }
 
     [Fact]
+    public void Render_NineJobs_Collapsed_ShowsEightChipsPlusMoreToggle()
+    {
+        // 9 jobs > MaxVisibleJobs (8) ⇒ collapsed: first 8 chips + a "+1 more" toggle at the end;
+        // the 9th chip is hidden until the toggle is clicked, and there is no "Show less" yet.
+        var jobs = Enumerable.Range(1, 9).Select(i => $"Job{i}").ToList();
+        var client = PageTestHelpers.BuildClient();
+        client.GetWorkersAsync(Arg.Any<CancellationToken>()).Returns(new List<WorkerInfo>
+        {
+            new() { Name = "busy", Jobs = jobs, Tags = [], Status = WorkerStatus.Online, LastSeenUtc = DateTimeOffset.UtcNow, Online = true },
+        });
+        Register("svc", client);
+
+        var cut = RenderComponent<Workers>(p => p.Add(c => c.ServiceName, "svc"));
+
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Job1"));
+        cut.Markup.Should().Contain("+1 more", "the collapsed row shows the overflow toggle at the end");
+        cut.Markup.Should().NotContain("Show less", "the row is collapsed, so the toggle reads '+N more'");
+        cut.Markup.Should().Contain("Job8", "the first 8 chips render");
+        cut.Markup.Should().NotContain("Job9", "the overflow chip is hidden while collapsed");
+    }
+
+    [Fact]
+    public void Click_MoreToggle_ExpandsAllChipsAndFlipsToShowLess()
+    {
+        var jobs = Enumerable.Range(1, 9).Select(i => $"Job{i}").ToList();
+        var client = PageTestHelpers.BuildClient();
+        client.GetWorkersAsync(Arg.Any<CancellationToken>()).Returns(new List<WorkerInfo>
+        {
+            new() { Name = "busy", Jobs = jobs, Tags = [], Status = WorkerStatus.Online, LastSeenUtc = DateTimeOffset.UtcNow, Online = true },
+        });
+        Register("svc", client);
+
+        var cut = RenderComponent<Workers>(p => p.Add(c => c.ServiceName, "svc"));
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("+1 more"));
+
+        cut.Find("button.worker-chip--more").Click();
+
+        cut.Markup.Should().Contain("Job9", "the overflow chip is revealed once expanded");
+        cut.Markup.Should().Contain("Show less", "the toggle label flips when expanded");
+        cut.Markup.Should().NotContain("+1 more", "the '+N more' label is replaced by 'Show less'");
+    }
+
+    [Fact]
+    public void Render_EightJobs_NoOverflowToggle()
+    {
+        // Exactly MaxVisibleJobs ⇒ all chips render with no toggle at all.
+        var jobs = Enumerable.Range(1, 8).Select(i => $"Job{i}").ToList();
+        var client = PageTestHelpers.BuildClient();
+        client.GetWorkersAsync(Arg.Any<CancellationToken>()).Returns(new List<WorkerInfo>
+        {
+            new() { Name = "exact", Jobs = jobs, Tags = [], Status = WorkerStatus.Online, LastSeenUtc = DateTimeOffset.UtcNow, Online = true },
+        });
+        Register("svc", client);
+
+        var cut = RenderComponent<Workers>(p => p.Add(c => c.ServiceName, "svc"));
+
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Job8"));
+        cut.Markup.Should().NotContain("worker-chip--more", "8 jobs fit, so no overflow toggle renders");
+        cut.Markup.Should().NotContain("Show less");
+    }
+
+    [Fact]
     public void Render_UnknownService_RedirectsToDashboard()
     {
         // An unregistered service name → the page redirects to /dashboard rather than rendering a table.

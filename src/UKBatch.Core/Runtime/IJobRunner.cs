@@ -18,6 +18,9 @@ public interface IJobRunner
         CancellationToken cancellationToken);
 
     /// <summary>Triggers a batch by definition id; returns the batch id (one per run).</summary>
+    /// <remarks>Validates the definition synchronously and throws
+    /// <see cref="BatchTriggerValidationException"/> (structural errors or an unregistered job)
+    /// before the fire-and-forget run begins — a non-HTTP caller must be prepared for the throw.</remarks>
     Task<string> TriggerBatchAsync(
         string batchDefinitionId,
         JobParameters? initialParameters,

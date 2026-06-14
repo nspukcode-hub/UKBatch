@@ -188,8 +188,13 @@ internal sealed class JobStatusHubFanout : IHostedService, IAsyncDisposable
         var succeeded = executions.Count(e => e.Status == JobStatus.Completed);
         var failed = executions.Count(e => e.Status == JobStatus.Failed);
         var cancelled = executions.Count(e => e.Status == JobStatus.Cancelled);
-        var aggregate = cancelled > 0 ? JobStatus.Cancelled
-                      : failed > 0 ? JobStatus.Failed : JobStatus.Completed;
+        // The row aggregate is honest for the shard counts but blind to a gate failure (a rejected /
+        // dismissed / timed-out-Fail approval gate ends the batch yet leaves NO JobExecution row).
+        // The runtime carries its terminal verdict on the payload; when present it OVERRIDES the
+        // roll-up so the run reflects the failure. Shard counts below stay row-derived.
+        var rowAggregate = cancelled > 0 ? JobStatus.Cancelled
+                         : failed > 0 ? JobStatus.Failed : JobStatus.Completed;
+        var aggregate = payload.RuntimeTerminalStatus ?? rowAggregate;
 
         var lastTerminal = executions.Count > 0
             ? executions.Max(e => e.CompletedAtUtc ?? DateTimeOffset.UtcNow)

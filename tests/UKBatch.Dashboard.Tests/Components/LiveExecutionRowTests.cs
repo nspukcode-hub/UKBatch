@@ -113,6 +113,7 @@ public sealed class LiveExecutionRowTests : TestContext
         public Task<IReadOnlyList<UKBatch.Api.Approvals.PendingApprovalDto>> ListApprovalsAsync(string? role, CancellationToken ct) => throw new NotImplementedException();
         public Task ApproveAsync(string approvalId, string? note, CancellationToken ct) => throw new NotImplementedException();
         public Task RejectAsync(string approvalId, string reason, CancellationToken ct) => throw new NotImplementedException();
+        public Task<IReadOnlyList<UKBatch.Api.Approvals.ApprovalGateViewDto>> ListBatchGatesAsync(string batchId, CancellationToken ct) => throw new NotImplementedException();
         public Task<IReadOnlyList<UKBatch.Abstractions.Workers.WorkerInfo>> GetWorkersAsync(CancellationToken ct) => throw new NotImplementedException();
         public Task SubscribeToBatchAsync(string batchRunId, CancellationToken ct) => Task.CompletedTask;
         public Task UnsubscribeFromBatchAsync(string batchRunId, CancellationToken ct) => Task.CompletedTask;

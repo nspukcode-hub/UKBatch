@@ -39,4 +39,19 @@ public sealed class JobAttribute : Attribute
     /// Example: <c>["region:eu", "tier:critical"]</c>. <c>null</c> means no routing constraints.
     /// </summary>
     public string[]? Tags { get; init; }
+
+    /// <summary>
+    /// Partitioned-job only: number of concurrent partition workers. <c>0</c> (default) means
+    /// "use the runtime default" (<c>UKBatchOptions.DefaultPartitionWorkerCount</c>). Ignored for
+    /// non-partitioned jobs. Equivalent to the fluent <c>WithParallelism(...)</c>.
+    /// </summary>
+    public int PartitionWorkerCount { get; init; }
+
+    /// <summary>
+    /// Partitioned-job only: per-item failure policy. Default <see cref="ItemErrorPolicy.FailFast"/>.
+    /// Ignored for non-partitioned jobs. Equivalent to the fluent <c>WithItemErrorPolicy(...)</c>.
+    /// <para>Note: <c>RetryThenContinue</c> set via attribute uses the job's <see cref="MaxRetries"/>
+    /// for the per-item retry budget, mirroring the fluent path.</para>
+    /// </summary>
+    public ItemErrorPolicy ItemErrorPolicy { get; init; } = ItemErrorPolicy.FailFast;
 }

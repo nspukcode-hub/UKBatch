@@ -61,6 +61,19 @@ internal sealed class EfApprovalGateStore : IApprovalGateStore
     }
 
     /// <inheritdoc/>
+    public async Task<IReadOnlyList<PersistedApprovalGate>> ListByBatchAsync(string batchId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+        await using var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var rows = await db.ApprovalGates
+            .AsNoTracking()
+            .Where(e => e.BatchId == batchId)   // pending AND decided for this run
+            .OrderBy(e => e.PendingSinceUtc).ThenBy(e => e.ApprovalId)   // stable
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        return rows.Select(ApprovalGateMapper.ToModel).ToList();
+    }
+
+    /// <inheritdoc/>
     public async Task RecordOutcomeAsync(
         string approvalId,
         ApprovalRecordOutcome outcome,

@@ -304,11 +304,10 @@ public abstract class JobStoreParityTestBase : IAsyncLifetime
         var act = async () => await Store.UpdateStatusAsync("e1", JobStatus.Completed, null, CancellationToken.None);
 
         // Parity is at the CONTRACT level: both stores throw InvalidOperationException and both name the
-        // rejected transition. The exact adjective differs BY DESIGN and is NOT a cross-store contract
-        // InMemory routes through Core's internal InvalidJobTransitionException ("Invalid..."); the EF
-        // adapter calls the Abstractions-public JobStatusTransitions.Validate ("Illegal...") because it
-        // must not depend on the Core-internal subtype. Asserting the wording here would be
-        // over-specification — we assert the frozen type + that the offending transition is identified.
+        // rejected transition. InMemory routes through Core's InvalidJobTransitionException and the EF
+        // adapter calls the Abstractions-public JobStatusTransitions.Validate; both now phrase the
+        // message as "Illegal job status transition", but the wording is not part of the cross-store
+        // contract — we assert the frozen type + that the offending transition is identified.
         var ex = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
         ex.Message.Should().Contain("Pending").And.Contain("Completed");
     }

@@ -153,6 +153,29 @@ public sealed class EfApprovalGateStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task RecordOutcomeAsync_Dismissed_PersistsAsTerminal_ReadsBackNoMigration()
+    {
+        // A record carrying the reserved/legacy Dismissed outcome persists as a terminal decision
+        // (enum-as-string, so the value round-trips with no schema change) and never appears in the
+        // pending feed.
+        await _store.SaveAsync(TestData.Gate("g1"), CancellationToken.None);
+        await _store.RecordOutcomeAsync("g1", ApprovalRecordOutcome.Dismissed, "ops@x", T0.AddMinutes(2), "undecidable", CancellationToken.None);
+
+        var fetched = await _store.GetAsync("g1", CancellationToken.None);
+        fetched!.Status.Should().Be(ApprovalRecordStatus.Decided);
+        fetched.Outcome.Should().Be(ApprovalRecordOutcome.Dismissed);
+        fetched.DecidedBy.Should().Be("ops@x");
+        fetched.Note.Should().Be("undecidable");
+        (await _store.ListPendingAsync(CancellationToken.None)).Should().BeEmpty();
+
+        await using var db = await _harness.NewContextAsync();
+        var rawOutcome = await db.Database
+            .SqlQueryRaw<string>("SELECT Outcome AS Value FROM ApprovalGates WHERE ApprovalId = 'g1'")
+            .SingleAsync();
+        rawOutcome.Should().Be("Dismissed", "the new outcome persists as its NAME — no migration needed");
+    }
+
+    [Fact]
     public async Task OutcomeEnum_RoundTripsAsName_NotInteger()
     {
         // parity: nullable Outcome enum serializes as a NAME (the new Cancelled/Interrupted values
@@ -165,5 +188,42 @@ public sealed class EfApprovalGateStoreTests : IAsyncLifetime
             .SqlQueryRaw<string>("SELECT Outcome AS Value FROM ApprovalGates WHERE ApprovalId = 'g1'")
             .SingleAsync();
         rawOutcome.Should().Be("AutoApproved", "the Outcome enum persists as its NAME, not an integer");
+    }
+
+    // ListByBatchAsync — the by-run query a status renderer uses to colour every gate node from its OWN
+    // decided outcome. Assertions are mirrored textually in InMemoryApprovalGateStoreTests so both
+    // adapters enforce the same contract (the drop-in proof) — no migration is needed (BatchId is mapped).
+
+    [Fact]
+    public async Task ListByBatchAsync_ReturnsPendingAndDecided_ForTheRun_InStableOrder()
+    {
+        await _store.SaveAsync(TestData.Gate("g-pending", batchId: "run-1", pendingSinceUtc: T0.AddMinutes(2)), CancellationToken.None);
+        await _store.SaveAsync(
+            TestData.Gate("g-decided", batchId: "run-1", pendingSinceUtc: T0.AddMinutes(1), status: ApprovalRecordStatus.Decided, outcome: ApprovalRecordOutcome.Dismissed),
+            CancellationToken.None);
+
+        var gates = await _store.ListByBatchAsync("run-1", CancellationToken.None);
+
+        gates.Select(g => g.ApprovalId).Should().Equal(new[] { "g-decided", "g-pending" },
+            "pending AND decided are returned, ordered by PendingSinceUtc then ApprovalId");
+        gates.Single(g => g.ApprovalId == "g-decided").Outcome.Should().Be(ApprovalRecordOutcome.Dismissed);
+        gates.Single(g => g.ApprovalId == "g-pending").Status.Should().Be(ApprovalRecordStatus.Pending);
+    }
+
+    [Fact]
+    public async Task ListByBatchAsync_UnknownBatch_ReturnsEmpty()
+    {
+        await _store.SaveAsync(TestData.Gate("g1", batchId: "run-1"), CancellationToken.None);
+        (await _store.ListByBatchAsync("run-does-not-exist", CancellationToken.None)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ListByBatchAsync_IsRunScoped_DoesNotReturnAnotherRunsGates()
+    {
+        await _store.SaveAsync(TestData.Gate("g-a", batchId: "run-A"), CancellationToken.None);
+        await _store.SaveAsync(TestData.Gate("g-b", batchId: "run-B"), CancellationToken.None);
+
+        var gates = await _store.ListByBatchAsync("run-A", CancellationToken.None);
+        gates.Select(g => g.ApprovalId).Should().Equal(new[] { "g-a" }, "the query is scoped to one run");
     }
 }

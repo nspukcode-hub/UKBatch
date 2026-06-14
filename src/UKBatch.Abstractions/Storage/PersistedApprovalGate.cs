@@ -92,4 +92,12 @@ public enum ApprovalRecordOutcome
     /// <c>OrphanedExecutionReaper</c>'s gate sweep, NOT by a human or the resolution path.
     /// </summary>
     Interrupted = 5,
+
+    /// <summary>
+    /// Reserved/legacy value. Nothing produces it anymore: the operator dismiss action was removed
+    /// (redundant with <see cref="Rejected"/> — both terminate the run at the gate). Kept as a
+    /// persisted enum value so existing stored records that carry it still read back; a status
+    /// renderer treats it as a terminal failure, the same as <see cref="Rejected"/>.
+    /// </summary>
+    Dismissed = 6,
 }

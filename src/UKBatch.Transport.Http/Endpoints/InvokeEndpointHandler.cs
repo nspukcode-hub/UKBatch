@@ -10,6 +10,7 @@ using UKBatch.Abstractions.Runtime;
 using UKBatch.Abstractions.Storage;
 using UKBatch.Abstractions.Transport;
 using UKBatch.Runtime;
+using UKBatch.Transport.Http.Auth;
 
 namespace UKBatch.Transport.Http.Endpoints;
 
@@ -84,7 +85,7 @@ internal static class InvokeEndpointHandler
 
         // Compute the wall-clock timeout — sender's X-UKBatch-Timeout-Ms header or options.DefaultRequestTimeout.
         TimeSpan budget = options.Value.DefaultRequestTimeout;
-        if (context.Request.Headers.TryGetValue("X-UKBatch-Timeout-Ms", out var hdrValues)
+        if (context.Request.Headers.TryGetValue(HmacHeaderNames.TimeoutMs, out var hdrValues)
             && long.TryParse(hdrValues.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var ms)
             && ms > 0)
         {

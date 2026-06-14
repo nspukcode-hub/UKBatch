@@ -95,7 +95,10 @@ public class InMemoryJobStoreTests
         Func<Task> act = async () =>
             await store.UpdateStatusAsync(execution.ExecutionId, JobStatus.Completed, null, default).ConfigureAwait(false);
 
-        await act.Should().ThrowAsync<InvalidJobTransitionException>().ConfigureAwait(false);
+        // The message says "Illegal job status transition" — aligned with the Abstractions-public
+        // JobStatusTransitions.Validate path so a drop-in adapter sees consistent wording.
+        await act.Should().ThrowAsync<InvalidJobTransitionException>()
+            .WithMessage("*Illegal*").ConfigureAwait(false);
     }
 
     [Fact]

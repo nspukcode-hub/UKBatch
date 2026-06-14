@@ -97,7 +97,7 @@ public sealed class UKBatchBuilder
     public JobBuilder AddJob<TJob>()
         where TJob : class, IJob
     {
-        var builder = new JobBuilder(Services, typeof(TJob), partitionItemType: null, isPartitioned: false, registry: _jobRegistry);
+        var builder = new JobBuilder(Services, typeof(TJob), isPartitioned: false, registry: _jobRegistry);
         _jobBuilders.Add(builder);
         return builder;
     }
@@ -111,7 +111,7 @@ public sealed class UKBatchBuilder
     public JobBuilder AddPartitionedJob<TJob, TItem>()
         where TJob : class, IPartitionedJob<TItem>
     {
-        var builder = new JobBuilder(Services, typeof(TJob), partitionItemType: typeof(TItem), isPartitioned: true, registry: _jobRegistry);
+        var builder = new JobBuilder(Services, typeof(TJob), isPartitioned: true, registry: _jobRegistry);
         _jobBuilders.Add(builder);
         return builder;
     }

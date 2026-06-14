@@ -55,9 +55,9 @@ internal sealed class HmacAuthorizationFilter : IEndpointFilter
         var http = context.HttpContext;
         var headers = http.Request.Headers;
 
-        if (!headers.TryGetValue("X-UKBatch-Signature", out var sigBundle)
-            || !headers.TryGetValue("X-UKBatch-Timestamp", out var tsBundle)
-            || !headers.TryGetValue("X-UKBatch-Nonce", out var nonceBundle))
+        if (!headers.TryGetValue(HmacHeaderNames.Signature, out var sigBundle)
+            || !headers.TryGetValue(HmacHeaderNames.Timestamp, out var tsBundle)
+            || !headers.TryGetValue(HmacHeaderNames.Nonce, out var nonceBundle))
         {
             _logger.LogDebug("HMAC auth rejected: missing signed header.");
             return AuthFailed(http);

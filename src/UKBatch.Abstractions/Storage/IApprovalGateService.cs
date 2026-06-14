@@ -16,6 +16,15 @@ public interface IApprovalGateService
     Task<IReadOnlyList<PendingApproval>> ListPendingAsync(string? userRole, CancellationToken cancellationToken);
 
     /// <summary>
+    /// Lists every approval gate — PENDING and already-DECIDED — for one batch run, as focused
+    /// <see cref="ApprovalGateView"/> read models. Returns an empty list for an unknown run.
+    /// Unlike <see cref="ListPendingAsync"/> this is unfiltered (no role gate): it feeds a status
+    /// renderer that colours a gate node from its own decided outcome, which is not authorization
+    /// sensitive. The decided outcome is immutable in the store, so the read is idempotent.
+    /// </summary>
+    Task<IReadOnlyList<ApprovalGateView>> ListForBatchAsync(string batchId, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Approves the gate. Throws <see cref="InvalidOperationException"/> if the gate is not pending
     /// or the caller lacks authorization.
     /// </summary>

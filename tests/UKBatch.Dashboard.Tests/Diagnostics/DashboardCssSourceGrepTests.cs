@@ -76,8 +76,8 @@ public sealed class DashboardCssSourceGrepTests
     public void InNodeApprove_HiddenByDefault_ShownOnlyWhenPending()
     {
         // the in-node Approve button is always in the (Approval) node DOM, but it must be
-        // HIDDEN until the node carries data-pending="true" (set by the JS setPending push from
-        // _awaitingGates). bunit can't apply a stylesheet, so the visibility gating is a source-grep lock.
+        // HIDDEN until the node carries data-pending="true" (set by the JS setPending push from the
+        // pending-approval step ids). bunit can't apply a stylesheet, so the visibility gating is a source-grep lock.
         var css = ReadDashboardFile("wwwroot", "css", "dashboard.css");
 
         // Default-hidden base rule.

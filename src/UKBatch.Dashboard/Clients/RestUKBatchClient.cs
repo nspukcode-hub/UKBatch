@@ -344,6 +344,16 @@ internal sealed class RestUKBatchClient : IUKBatchClient
         await ThrowIfErrorAsync(res, ct).ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyList<ApprovalGateViewDto>> ListBatchGatesAsync(string batchId, CancellationToken ct)
+    {
+        // Pure REST — NO EnsureConnected (the gate-colouring read polls independently of the hub,
+        // mirroring ListApprovalsAsync / GetWorkersAsync). Returns the flat by-batch gate list directly
+        // (this endpoint is NOT PageEnvelope-wrapped). Enums cross the wire as strings (JsonStringEnumConverter).
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+        using var res = await _http.GetAsync($"approvals/by-batch/{Uri.EscapeDataString(batchId)}", ct).ConfigureAwait(false);
+        return await DeserializeOrThrowAsync<List<ApprovalGateViewDto>>(res, ct).ConfigureAwait(false);
+    }
+
     // ── REST — Workers (1) ─────────────────────────────────────────────────────────────
 
     public async Task<IReadOnlyList<WorkerInfo>> GetWorkersAsync(CancellationToken ct)

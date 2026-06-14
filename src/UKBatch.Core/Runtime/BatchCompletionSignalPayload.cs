@@ -24,4 +24,15 @@ internal sealed record class BatchCompletionSignalPayload
 
     /// <summary>Display name of the definition at trigger time (resolved from <c>BatchDefinition.Name</c>).</summary>
     public required string BatchName { get; init; }
+
+    /// <summary>
+    /// The runtime's terminal verdict for the run, captured by the executor closure:
+    /// <see cref="UKBatch.Abstractions.Models.JobStatus.Failed"/> when RunAsync threw,
+    /// <see cref="UKBatch.Abstractions.Models.JobStatus.Cancelled"/> on host-stop cancellation, or
+    /// <c>null</c> on a clean completion. When non-null this OVERRIDES the row-derived aggregate in the
+    /// hub fan-out so a failure with no <c>JobExecution</c> row — an approval gate that was
+    /// rejected / dismissed / timed-out-Fail — still surfaces the run as failed. <c>null</c> means
+    /// "trust the rows".
+    /// </summary>
+    public UKBatch.Abstractions.Models.JobStatus? RuntimeTerminalStatus { get; init; }
 }

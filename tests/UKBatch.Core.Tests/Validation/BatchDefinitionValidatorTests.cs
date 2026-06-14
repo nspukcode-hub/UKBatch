@@ -337,6 +337,28 @@ public class BatchDefinitionValidatorTests
     }
 
     [Fact]
+    public void ApprovalGateConfig_OnTimeoutOmitted_DefaultsToFail_AndValidates()
+    {
+        // OnTimeout is no longer required: a config that omits it compiles and defaults to Fail,
+        // which is a legitimate indefinite wait with no timeout (so the definition is valid).
+        var config = new ApprovalGateConfig
+        {
+            Title = "Confirm",
+            AllowedRoles = new[] { "ops" },
+        };
+        config.OnTimeout.Should().Be(ApprovalTimeoutAction.Fail);
+
+        var def = MinimalValid() with
+        {
+            Steps = new[]
+            {
+                new BatchStep { StepId = "g", Order = 0, StepType = BatchStepType.ApprovalGate, Approval = config },
+            },
+        };
+        BatchDefinitionValidator.Validate(def).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
     public void Validate_OnFailureStepBlankJobName_Fails()
     {
         // Compensation steps run via the same dispatch as the main sequence, so a blank JobName must

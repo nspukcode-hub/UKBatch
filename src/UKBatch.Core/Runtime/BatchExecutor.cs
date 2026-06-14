@@ -28,6 +28,7 @@ internal sealed class BatchExecutor
     private readonly ITransport _transport;
     private readonly string? _thisServiceName;
     private readonly TimeProvider _timeProvider;
+    private readonly CrossServiceStepInvoker _crossServiceInvoker;
     private readonly ILogger<BatchExecutor> _logger;
 
     /// <summary>Constructs the executor.</summary>
@@ -62,6 +63,7 @@ internal sealed class BatchExecutor
         _transport = transport;
         _thisServiceName = thisServiceName;
         _timeProvider = timeProvider;
+        _crossServiceInvoker = new CrossServiceStepInvoker(transport, runner, thisServiceName, timeProvider);
         _logger = logger;
     }
 
@@ -205,9 +207,11 @@ internal sealed class BatchExecutor
                     throw new InvalidOperationException($"Step {step.StepId} is Job but has no payload.");
                 }
 
-                if (step.Job.TargetService is null)
+                if (string.IsNullOrWhiteSpace(step.Job.TargetService))
                 {
                     // === LOCAL PATH (preserve byte-for-byte) ===
+                    // A null, empty, or whitespace TargetService means "run here" — guarding against
+                    // whitespace as well as null keeps this consistent with the trigger-time pre-flight.
                     var execId = IdGenerator.NewExecutionId();
                     var waitTask = _awaiter.WaitForTerminalAsync(execId, cancellationToken);
                     try
@@ -239,7 +243,10 @@ internal sealed class BatchExecutor
                 else
                 {
                     // === CROSS-SERVICE PATH ===
-                    await RunCrossServiceStepAsync(def, batchId, step, initial, triggeredBy, cancellationToken).ConfigureAwait(false);
+                    // Sequential semantics: a Failed/Cancelled terminal status, a transport timeout, or a
+                    // transport exception throw BatchStepFailureException so the per-step failure routing applies.
+                    await _crossServiceInvoker.InvokeAsync(
+                        def, batchId, step, initial, triggeredBy, throwOnFailure: true, cancellationToken).ConfigureAwait(false);
                 }
                 break;
             }
@@ -267,124 +274,6 @@ internal sealed class BatchExecutor
                 break;
         }
     }
-
-    /// <summary>
-    /// Cross-service dispatch — extracted from <see cref="RunStepAsync"/> for readability.
-    /// </summary>
-    private async Task RunCrossServiceStepAsync(
-        BatchDefinition def,
-        string batchId,
-        BatchStep step,
-        JobParameters initial,
-        string? triggeredBy,
-        CancellationToken cancellationToken)
-    {
-        // Fail-fast: SourceService is `required string`; without resolved identity the receiver
-        // would JsonException at deserialize. Throw here with an operator-actionable message.
-        if (string.IsNullOrWhiteSpace(_thisServiceName))
-        {
-            throw new InvalidOperationException(
-                $"Step {step.StepId} (cross-service to '{step.Job!.TargetService}') requires the host's " +
-                "service identity to be set. Configure UKBatchOptions.ThisServiceName " +
-                "(appsettings 'UKBatch:ThisServiceName' or builder.Configure(o => o.ThisServiceName = ...)) " +
-                "OR set the UKBATCH_SERVICE_NAME environment variable.");
-        }
-
-        var msg = new JobMessage
-        {
-            MessageId = IdGenerator.NewMessageId(),
-            CorrelationId = null,
-            JobName = step.Job!.JobName,
-            SourceService = _thisServiceName,
-            TargetService = step.Job.TargetService,
-            BatchId = batchId,
-            BatchStepId = step.StepId,
-            Parameters = ParallelGroupRunner.MergeParameters(initial, step.Job.Parameters).Values,
-            Headers = new Dictionary<string, string>(StringComparer.Ordinal),
-            EnqueuedAtUtc = _timeProvider.GetUtcNow(),
-            AttemptNumber = 1,
-        };
-        var timeout = step.Job.TimeoutSeconds is int t && t > 0
-            ? TimeSpan.FromSeconds(t)
-            : TimeSpan.FromMinutes(5);
-
-        // === Cross-service execution tracking (insert before, update after) ===
-        // Mint a server-side SHADOW row in Running so the dashboard (run-detail, completion counts,
-        // DAG node coloring, run history) reflects work that actually runs on a remote worker.
-        var now = _timeProvider.GetUtcNow();
-        var execId = IdGenerator.NewExecutionId();
-        var running = new JobExecution
-        {
-            ExecutionId = execId,
-            JobName = step.Job.JobName,
-            BatchId = batchId,
-            BatchStepId = step.StepId,
-            BatchDefinitionId = def.Id,
-            Status = JobStatus.Running,
-            Parameters = msg.Parameters,
-            EnqueuedAtUtc = now,
-            StartedAtUtc = now,
-            CompletedAtUtc = null,
-            AttemptNumber = 1,
-            MaxRetries = 0,   // shadow of a single remote dispatch; the orchestrator owns no cross-service retry.
-            LastError = null,
-            Processed = 0,
-            Failed = 0,
-            Total = null,
-            TriggeredBy = triggeredBy,
-            WorkerName = step.Job.TargetService,
-        };
-        await _runner.RecordCrossServiceStartAsync(running, cancellationToken).ConfigureAwait(false);
-
-        JobResult result;
-        try
-        {
-            result = await _transport
-                .RequestReplyAsync(step.Job.TargetService!, msg, timeout, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (TimeoutException tex)
-        {
-            await _runner.RecordCrossServiceEndAsync(
-                execId, FailedResult(execId, $"timed out after {timeout}: {tex.Message}", now), cancellationToken).ConfigureAwait(false);
-            throw new BatchStepFailureException(
-                $"Step {step.StepId} (cross-service '{step.Job.TargetService}') timed out after {timeout}: {tex.Message}");
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // Running -> Cancelled is ILLEGAL (only Cancelling -> Cancelled exists). Write Failed,
-            // CT-decoupled (CancellationToken.None) so the terminal row lands as the batch CT trips, THEN
-            // rethrow the OCE (cancellation must still propagate to the batch loop).
-            await _runner.RecordCrossServiceEndAsync(
-                execId, FailedResult(execId, "cross-service step cancelled (host shutdown / batch cancel)", now), CancellationToken.None).ConfigureAwait(false);
-            throw;
-        }
-        catch (Exception ex)
-        {
-            await _runner.RecordCrossServiceEndAsync(
-                execId, FailedResult(execId, ex.Message, now), cancellationToken).ConfigureAwait(false);
-            throw new BatchStepFailureException(
-                $"Step {step.StepId} (cross-service '{step.Job.TargetService}') failed: {ex.Message}");
-        }
-
-        // Persist the worker's terminal status (Completed/Failed/Cancelled) BEFORE any throw — the row
-        // MUST end Failed, not stuck Running (the BatchStepFailureException case below).
-        await _runner.RecordCrossServiceEndAsync(execId, result, cancellationToken).ConfigureAwait(false);
-
-        if (result.Status is JobStatus.Failed or JobStatus.Cancelled)
-        {
-            throw new BatchStepFailureException(
-                $"Step {step.StepId} (cross-service '{step.Job.TargetService}') terminated as {result.Status}: {result.ErrorMessage}");
-        }
-    }
-
-    /// <summary>
-    /// Builds a terminal <see cref="JobResult"/> in <see cref="JobStatus.Failed"/> for
-    /// the cross-service shadow-row end-update. Used for transport throw / timeout / cancel arms — the
-    /// row MUST reach a terminal state and never orphan in <see cref="JobStatus.Running"/>.
-    /// </summary>
-    private static JobResult FailedResult(string execId, string error, DateTimeOffset completedAt)
-        => new() { ExecutionId = execId, Status = JobStatus.Failed, ErrorMessage = error, CompletedAtUtc = completedAt };
 
     private async Task RunCompensationAsync(
         BatchDefinition def,

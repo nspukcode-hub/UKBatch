@@ -846,7 +846,9 @@ code, .mono { font-family: var(--font-mono); }
     display: flex; flex-direction: column;
     max-height: 600px; overflow: hidden;
 }
-.dag-node-detail__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); padding: var(--space-md); border-bottom: 1px solid var(--color-border-subtle); }
+.dag-node-detail__header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-sm); padding: var(--space-md); border-bottom: 1px solid var(--color-border-subtle); }
+.dag-node-detail__header-text { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-xs); min-width: 0; }
+.dag-node-detail__close { flex-shrink: 0; }
 .dag-node-detail__title { display: flex; align-items: center; gap: var(--space-xs); font-size: var(--font-headline-sm-size); margin: 0; }
 .dag-node-detail__body { padding: var(--space-md); overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-md); }
 .dag-node-detail__section h3 { font-size: var(--font-label-md-size); text-transform: uppercase; letter-spacing: var(--font-label-md-tracking); color: var(--color-text-tertiary); margin: 0 0 var(--space-xs); }
@@ -1106,8 +1108,8 @@ code, .mono { font-family: var(--font-mono); }
 /* ── in-node Approve ────────────────────────────────────────────────────────────────────────────────
    A compact one-click approve ON a pending approval-gate node. Rendered in the JS node template for
    Approval nodes ONLY, but HIDDEN until the node carries data-pending="true" (the JS bridge sets that
-   from RunDetail's _awaitingGates via setPending — NOT from data-status, since AwaitingApproval maps to
-   the "running" amber pulse). The success path makes the gate go green → it drops out of _awaitingGates →
+   from RunDetail's pending-approval set via setPending — NOT from data-status, since AwaitingApproval maps
+   to the "running" amber pulse). The success path makes the gate go green → it leaves the pending set →
    data-pending clears → the button hides again. Compact: icon + short label, doesn't grow the card. */
 .dag-st-approve { display: none; }
 .dag-st-node[data-pending="true"] .dag-st-approve {
@@ -1233,3 +1235,160 @@ code, .mono { font-family: var(--font-mono); }
 .copyable-id__copy--copied .material-symbols-outlined {
     color: var(--color-status-completed);
 }
+
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
+   Shared component styles — global so they apply regardless of any per-component scope attribute.
+   The host links only this stylesheet; the per-component scoped bundle is never served, so every
+   visual rule a component needs must live here (same dashboard-wide visual taxonomy as the DAG,
+   worker-badge, and pager classes above).
+   ════════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/* Status pill (JobStatusBadge) */
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xxs);
+    padding: var(--space-xxs) var(--space-xs);
+    border-radius: var(--radius-full);
+    font-family: var(--font-sans);
+    font-size: var(--font-label-md-size);
+    font-weight: var(--font-label-md-weight);
+    letter-spacing: var(--font-label-md-tracking);
+    line-height: var(--font-label-md-line);
+    text-transform: uppercase;
+}
+.status-badge__icon { font-size: 14px; line-height: 1; }
+.status-badge__label { line-height: 1; }
+.status-badge--pending   { background: color-mix(in srgb, var(--color-status-pending)   18%, transparent); color: var(--color-status-pending); }
+.status-badge--running   { background: color-mix(in srgb, var(--color-status-running)   18%, transparent); color: var(--color-status-running); }
+.status-badge--completed { background: color-mix(in srgb, var(--color-status-completed) 18%, transparent); color: var(--color-status-completed); }
+.status-badge--failed    { background: color-mix(in srgb, var(--color-status-failed)    18%, transparent); color: var(--color-status-failed); }
+.status-badge--cancelled { background: color-mix(in srgb, var(--color-status-cancelled) 18%, transparent); color: var(--color-status-cancelled); }
+.status-badge--approval  { background: color-mix(in srgb, var(--color-status-approval)  18%, transparent); color: var(--color-status-approval); }
+
+/* Multi-segment progress bar (ProgressBar) */
+.progress-bar { display: flex; flex-direction: column; gap: var(--space-xxs); }
+.progress-bar__track {
+    display: flex;
+    height: 8px;
+    background: var(--color-surface-container-low);
+    border-radius: var(--radius-full);
+    overflow: hidden;
+    border: 1px solid var(--color-border-subtle);
+}
+.progress-bar__segment {
+    height: 100%;
+    transition: width var(--motion-medium) var(--easing-out);
+}
+.progress-bar__segment--succeeded { background: var(--color-status-completed); }
+.progress-bar__segment--failed    { background: var(--color-status-failed); }
+.progress-bar__segment--running   { background: var(--color-status-running); }
+.progress-bar__segment--remaining { background: var(--color-surface-container-high); }
+.progress-bar__label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-size: var(--font-mono-sm-size);
+    color: var(--color-text-secondary);
+}
+.progress-bar__failed { color: var(--color-status-failed); }
+.progress-bar__total { color: var(--color-text-tertiary); }
+
+/* 8px health indicator dot (ServiceHealthDot) */
+.service-health-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-circle);
+    flex-shrink: 0;
+}
+.service-health-dot--connected     { background: var(--color-health-connected); }
+.service-health-dot--reconnecting  { background: var(--color-health-reconnecting); }
+.service-health-dot--partial       { background: var(--color-health-partial); }
+.service-health-dot--disconnected  { background: var(--color-health-disconnected); }
+/* Base pulse animation (the reduced-motion override that disables it is defined earlier). */
+.pulse-animation {
+    animation: pulse var(--motion-pulse) ease-in-out infinite;
+}
+
+/* Batch step list (BatchStepListView) */
+.batch-step-list__items { list-style: none; padding: 0; margin: 0; }
+.batch-step-list__item { padding: var(--space-xxs) 0; }
+.batch-step-list__row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: var(--space-xs);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface-container-low);
+}
+.batch-step-list__icon { color: var(--color-primary); font-size: 18px; }
+.batch-step-list__type {
+    font-size: var(--font-label-md-size);
+    font-weight: var(--font-label-md-weight);
+    letter-spacing: var(--font-label-md-tracking);
+    text-transform: uppercase;
+    color: var(--color-text-secondary);
+}
+.batch-step-list__detail { color: var(--color-text-primary); }
+.batch-step-list__children { margin-top: var(--space-xxs); display: flex; flex-direction: column; gap: var(--space-xxs); }
+
+/* Workers panel header + chips (the online/offline .worker-badge pill is defined earlier). */
+.workers-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    margin-bottom: var(--space-xs);
+}
+.workers-header .page-title {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    margin: 0;
+}
+.workers-header__icon { color: var(--color-text-secondary); }
+.workers-caption {
+    color: var(--color-text-secondary);
+    font-size: var(--font-body-sm-size);
+    margin: 0 0 var(--space-md) 0;
+    max-width: 720px;
+}
+.workers-muted { color: var(--color-text-tertiary); }
+.worker-chip-row {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: var(--space-xxs);
+}
+.worker-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-xxs) var(--space-xs);
+    border-radius: var(--radius-full);
+    background: var(--color-surface-container-high);
+    border: 1px solid var(--color-border-subtle);
+    color: var(--color-text-secondary);
+    font-size: var(--font-body-sm-size);
+    font-family: var(--font-mono);
+}
+.worker-chip--tag { font-family: var(--font-sans); }
+
+/* Overflow toggle for the Jobs column — a muted clickable chip that flips "+N more" ⇄ "Show less"
+   and always sits AFTER the visible chips. A click is low-frequency, so the per-row handler is fine. */
+.worker-chip--more {
+    cursor: pointer;
+    color: var(--color-text-tertiary);
+    user-select: none;
+    font-family: var(--font-sans); /* the toggle label is prose, not a job name */
+}
+.worker-chip--more:hover { color: var(--color-text-secondary); }
+
+/* Layout breadcrumb (MainLayout); the content container itself is styled by .dashboard-content above. */
+.dashboard-header__breadcrumb-service {
+    color: var(--color-text-tertiary);
+    font-weight: 500;
+}
+
+/* Live execution row accents (LiveExecutionRow); the running row background is defined earlier. */
+.data-table__cell--muted { color: var(--color-text-tertiary); font-style: italic; }
+.data-table__row--running td:first-child { border-left: 3px solid var(--color-status-running); }

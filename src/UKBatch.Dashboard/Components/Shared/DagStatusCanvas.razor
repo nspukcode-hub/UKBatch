@@ -84,10 +84,11 @@ else
     [Parameter] public EventCallback<BatchStep> OnApproveClicked { get; set; }
 
     /// <summary>
-    /// StepIds of approval gates currently awaiting a decision (== RunDetail's <c>_awaitingGates</c>).
-    /// Pushed to JS as a <c>data-pending</c> flag so a gate's in-node Approve button appears <b>only</b>
-    /// while it is decidable. Derived from the approvals feed — NOT inferred from <see cref="StatusByStepId"/>
-    /// (AwaitingApproval is visually mapped to the "running" amber pulse, which is too indirect).
+    /// StepIds of approval gates currently awaiting a decision (RunDetail feeds this from its actionable
+    /// pending-approval map). Pushed to JS as a <c>data-pending</c> flag so a gate's in-node Approve button
+    /// appears <b>only</b> while it is decidable. Derived from the pending-approvals feed — NOT inferred from
+    /// <see cref="StatusByStepId"/> (AwaitingApproval is visually mapped to the "running" amber pulse, which
+    /// is too indirect).
     /// </summary>
     [Parameter] public IReadOnlyCollection<string> PendingStepIds { get; set; } = [];
 

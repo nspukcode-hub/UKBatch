@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0-alpha] - 2026-06-13
+
+First slice of the v0.2 line — stability and developer-experience groundwork ahead of durable resume. All changes are in the free, MIT-licensed packages.
+
+### Added
+
+- **`JobContext.WorkerIndex`** — partitioned jobs and inline `ParallelForEachAsync` bodies can read the 0-based worker slot (`[0, workerCount)`) to shard per-worker side state (for example, a connection from a sized pool). A plain `IJob` with no fan-out always reads `0`.
+- **`[Job]` attribute parity with the fluent builder** — `PartitionWorkerCount` and `ItemErrorPolicy` are now settable on the attribute. Previously they were fluent-only, so attribute-discovered partitioned jobs were forced to the default worker count and `FailFast`.
+
+### Changed
+
+- **Triggering a batch that references an unregistered local job is now rejected at trigger time** with HTTP 400 (`ukbatch:batch-trigger-validation`), listing the offending step(s), instead of being accepted (202) and silently producing zero executions. Genuine runtime job failures (a registered job that throws) are unaffected and still route through the failure/compensation policy.
+- **`ApprovalGateConfig.OnTimeout` is now optional and defaults to `Fail`.** Omitting it from a request body no longer produces a bare 400.
+- **Request-body binding failures now return RFC 7807 `application/problem+json`** (empty or malformed body) instead of a bare 400.
+- **The Workers page caps each worker's advertised jobs** at eight chips with a "+N more" expander, so a worker exposing many jobs no longer stretches its table row.
+- **Job routing tags are validated** — `JobBuilder.WithTags(...)` and `[Job(Tags = ...)]` now reject null, empty, or whitespace tag values instead of storing them as-is.
+
+### Fixed
+
+- **A run that ends at an approval gate — rejected or timed out to Fail — is now shown as Failed** (both the run status and the gate node), instead of appearing Completed. Approval gates have no execution row, so a gate-induced failure was previously invisible to the run's rolled-up status, which was computed only from job rows. The dashboard now colours each gate node from its own recorded outcome. (Known limitation: a batch's "Recent runs" history list still derives each row's status from job rows, so it can still show a gate-failed run as Completed; the run detail page is correct, and the list is resolved by the durable run store in a later release.)
+- **Several dashboard components rendered unstyled** (status badges, progress bars, the service-health dot, worker chips, the batch-step list, running-row highlighting) because their rules lived in scoped stylesheets the host never linked. The rules are now in the global stylesheet, so these elements display as intended.
+- **The DAG node inspector's close button stays visible** when a node carries a long status badge (e.g. `AwaitingApproval`) — the badge no longer pushes the close button out of the panel.
+- **A batch step whose `TargetService` is empty or whitespace now runs locally** (in-process), consistent with the wizard's normalization of blank target services — previously a stray blank value could be dispatched as a (failing) cross-service call.
+
 ## [0.1.6-alpha] - 2026-06-12
 
 ### Fixed

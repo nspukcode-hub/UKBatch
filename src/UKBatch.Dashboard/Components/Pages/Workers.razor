@@ -88,13 +88,33 @@ else
                         {
                             <span class="workers-muted">—</span>
                         }
-                        else
+                        else if (w.Jobs.Count <= MaxVisibleJobs)
                         {
                             <span class="worker-chip-row">
                                 @foreach (var job in w.Jobs)
                                 {
                                     <span class="worker-chip" @key="job">@job</span>
                                 }
+                            </span>
+                        }
+                        else
+                        {
+                            @* Collapsed: first MaxVisibleJobs chips + a "+N more" toggle at the END.
+                               Expanded: all chips + a "Show less" toggle at the END. The toggle is a
+                               per-row click (a click is low-frequency — the circuit-flood concern is
+                               hover/scroll/mousemove, not click). Each worker expands independently via
+                               _expandedWorkers keyed by name. *@
+                            var expanded = _expandedWorkers.Contains(w.Name);
+                            <span class="worker-chip-row">
+                                @foreach (var job in (expanded ? w.Jobs : w.Jobs.Take(MaxVisibleJobs)))
+                                {
+                                    <span class="worker-chip" @key="job">@job</span>
+                                }
+                                <button type="button" class="worker-chip worker-chip--more"
+                                        @onclick="() => ToggleExpanded(w.Name)"
+                                        aria-expanded="@(expanded ? "true" : "false")">
+                                    @(expanded ? "Show less" : $"+{w.Jobs.Count - MaxVisibleJobs} more")
+                                </button>
                             </span>
                         }
                     </td>
@@ -128,6 +148,14 @@ else
     // ~10s poll. Workers are low-frequency; this is intentionally NOT a SignalR push in v0.1.
     // v0.2 may add a WorkerChanged hub event on online/offline boundary crossings.
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
+
+    // Cap the visible job chips so a worker advertising many jobs does not balloon the table row.
+    // Beyond this count the remainder collapses behind a "+N more" toggle.
+    private const int MaxVisibleJobs = 8;
+
+    // Per-worker expanded state for the Jobs "+N more" / "Show less" toggle, keyed by worker name so
+    // each row expands independently. Survives a poll re-render (the same name stays expanded).
+    private readonly HashSet<string> _expandedWorkers = new(StringComparer.Ordinal);
 
     private IReadOnlyList<WorkerRowVm>? _workers;
     private IUKBatchClient? _client;
@@ -187,6 +215,14 @@ else
         // RefreshAsync is invoked from an EventCallback (already on the dispatcher) — StateHasChanged
         // is implicit, but LoadAsync awaits I/O so re-render explicitly for the post-await state.
         StateHasChanged();
+    }
+
+    // Toggle the Jobs overflow for one worker row. A click is low-frequency, so the per-row handler is
+    // fine here (the circuit-flood concern is hover/scroll/mousemove). EventCallback re-renders for us.
+    private void ToggleExpanded(string workerName)
+    {
+        if (!_expandedWorkers.Add(workerName))
+            _expandedWorkers.Remove(workerName);
     }
 
     private async Task LoadAsync(CancellationToken ct)

@@ -47,6 +47,11 @@ public static class ServiceCollectionExtensions
                 "AddUKBatchApi requires AddUKBatchAspNetCore (or AddUKBatch + AddUKBatchAspNetCore) to be registered first.");
         }
 
+        // RFC 7807 ProblemDetails for failed responses (binding/validation 400s, unhandled 500s).
+        // Idempotent: AddProblemDetails registers IProblemDetailsService via TryAdd, so a host that
+        // also calls it is unaffected.
+        services.AddProblemDetails();
+
         services.AddSignalR();
 
         // JSON enum-as-string for REST + hub serialization (OpenAPI consistency).

@@ -49,6 +49,19 @@ public sealed class InMemoryApprovalGateStore : IApprovalGateStore
     }
 
     /// <inheritdoc/>
+    public Task<IReadOnlyList<PersistedApprovalGate>> ListByBatchAsync(string batchId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+        // Pending AND decided for this run; stable order (mirrors the EF store's ordering).
+        var gates = _gates.Values
+            .Where(g => string.Equals(g.BatchId, batchId, StringComparison.Ordinal))
+            .OrderBy(g => g.PendingSinceUtc)
+            .ThenBy(g => g.ApprovalId, StringComparer.Ordinal)
+            .ToList();
+        return Task.FromResult<IReadOnlyList<PersistedApprovalGate>>(gates);
+    }
+
+    /// <inheritdoc/>
     public Task RecordOutcomeAsync(
         string approvalId,
         ApprovalRecordOutcome outcome,

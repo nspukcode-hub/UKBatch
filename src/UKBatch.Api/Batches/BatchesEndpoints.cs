@@ -376,6 +376,20 @@ internal static class BatchesEndpoints
                 $"/batches/{batchRunId}/status",
                 new BatchRunResponse { BatchId = batchRunId });
         }
+        catch (BatchTriggerValidationException ex)
+        {
+            // The definition failed structural validation or referenced an unregistered job.
+            // Surface the specific errors as 400 instead of accepting a trigger that produces no executions.
+            return Results.Problem(
+                type: ProblemDetailsConventions.BatchTriggerValidation,
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Batch cannot be triggered",
+                detail: ex.Message,
+                extensions: new Dictionary<string, object?>
+                {
+                    ["errors"] = ex.Errors.Select(e => new { e.Path, e.Message }).ToArray(),
+                });
+        }
         catch (BatchDefinitionNotFoundException ex)
         {
             // Race window — definition deleted between catalog.GetByIdAsync and TriggerBatchAsync.

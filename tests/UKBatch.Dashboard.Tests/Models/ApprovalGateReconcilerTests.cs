@@ -1,106 +1,136 @@
 using FluentAssertions;
 using UKBatch.Abstractions.Models;
+using UKBatch.Abstractions.Storage;
+using UKBatch.Api.Approvals;
 using UKBatch.Dashboard.Models.DagStatus;
 using Xunit;
 
 namespace UKBatch.Dashboard.Tests.Models;
 
 /// <summary>
-/// Pure-C# unit tests for <see cref="ApprovalGateReconciler"/> — the approval-GATE node status derivation
-/// Gates have no JobExecution row; status comes from the PendingApproval set.
+/// Pure-C# unit tests for <see cref="ApprovalGateReconciler"/> — the approval-GATE node status derivation.
+/// Gates have no JobExecution row; each gate carries its OWN recorded outcome, so the node colour is read
+/// directly from the gate (pending → waiting, approved/auto-approved → completed, any other terminal
+/// outcome → failed) rather than inferred from the batch's job-row aggregate.
 /// </summary>
 public sealed class ApprovalGateReconcilerTests
 {
-    private static HashSet<string> Set(params string[] ids) => new(ids, StringComparer.Ordinal);
+    private static ApprovalGateViewDto Pending(string stepId, string approvalId = "appr", string batchId = "br") => new()
+    {
+        ApprovalId = approvalId,
+        BatchId = batchId,
+        BatchStepId = stepId,
+        Status = ApprovalRecordStatus.Pending,
+        Outcome = null,
+    };
+
+    private static ApprovalGateViewDto Decided(string stepId, ApprovalRecordOutcome outcome,
+        string approvalId = "appr", string batchId = "br") => new()
+    {
+        ApprovalId = approvalId,
+        BatchId = batchId,
+        BatchStepId = stepId,
+        Status = ApprovalRecordStatus.Decided,
+        Outcome = outcome,
+    };
 
     [Fact]
-    public void NewlyPending_MarksAwaitingApproval()
+    public void Pending_MarksAwaitingApproval()
     {
-        var resolved = Set();
         var status = new Dictionary<string, JobStatus>(StringComparer.Ordinal);
 
-        ApprovalGateReconciler.Apply(Set("gate"), previousAwaiting: Set(), batchFailed: false, resolved, status);
+        ApprovalGateReconciler.Apply([Pending("gate")], status);
 
-        status["gate"].Should().Be(JobStatus.AwaitingApproval, "a live pending approval means the gate is waiting");
-        resolved.Should().BeEmpty("a still-pending gate has not resolved");
+        status["gate"].Should().Be(JobStatus.AwaitingApproval, "a pending gate is waiting");
     }
 
     [Fact]
-    public void Resolved_NotFailed_MarksCompleted()
+    public void DecidedApproved_MarksCompleted()
     {
-        var resolved = Set();
         var status = new Dictionary<string, JobStatus> { ["gate"] = JobStatus.AwaitingApproval };
 
-        // Gate was awaiting, now absent from pending, batch not failed ⇒ approved/auto-approved.
-        ApprovalGateReconciler.Apply(Set(), previousAwaiting: Set("gate"), batchFailed: false, resolved, status);
+        ApprovalGateReconciler.Apply([Decided("gate", ApprovalRecordOutcome.Approved)], status);
 
         status["gate"].Should().Be(JobStatus.Completed);
-        resolved.Should().Contain("gate");
     }
 
     [Fact]
-    public void Resolved_BatchFailed_MarksFailed()
+    public void DecidedAutoApproved_MarksCompleted()
     {
-        var resolved = Set();
+        var status = new Dictionary<string, JobStatus>(StringComparer.Ordinal);
+
+        ApprovalGateReconciler.Apply([Decided("gate", ApprovalRecordOutcome.AutoApproved)], status);
+
+        status["gate"].Should().Be(JobStatus.Completed, "an auto-approved gate is a green completion");
+    }
+
+    [Theory]
+    [InlineData(ApprovalRecordOutcome.Rejected)]
+    [InlineData(ApprovalRecordOutcome.Dismissed)]
+    [InlineData(ApprovalRecordOutcome.TimedOutFail)]
+    [InlineData(ApprovalRecordOutcome.Cancelled)]
+    [InlineData(ApprovalRecordOutcome.Interrupted)]
+    public void DecidedNonApproval_MarksFailed(ApprovalRecordOutcome outcome)
+    {
         var status = new Dictionary<string, JobStatus> { ["gate"] = JobStatus.AwaitingApproval };
 
-        ApprovalGateReconciler.Apply(Set(), previousAwaiting: Set("gate"), batchFailed: true, resolved, status);
+        ApprovalGateReconciler.Apply([Decided("gate", outcome)], status);
 
-        status["gate"].Should().Be(JobStatus.Failed, "a rejected gate / failed batch colours the gate Failed");
-        resolved.Should().Contain("gate");
+        status["gate"].Should().Be(JobStatus.Failed, "any non-approval terminal outcome colours the gate Failed");
     }
 
     [Fact]
-    public void TerminalIsOneShot_ReappearingPending_DoesNotDragBackToWaiting()
+    public void EarlierApprovedGate_StaysGreen_WhenLaterGateFails()
     {
-        var resolved = Set("gate");                                            // already resolved
-        var status = new Dictionary<string, JobStatus> { ["gate"] = JobStatus.Completed };
+        // Over-reddening guard, now intrinsic: each gate carries its own outcome, so an earlier approved
+        // gate is unaffected by a later gate's failure (no batch-level inference smears it red).
+        var status = new Dictionary<string, JobStatus>(StringComparer.Ordinal);
 
-        // A stale/duplicate pending entry must NOT re-colour an approved gate.
-        ApprovalGateReconciler.Apply(Set("gate"), previousAwaiting: Set(), batchFailed: false, resolved, status);
+        ApprovalGateReconciler.Apply(
+            [Decided("g1", ApprovalRecordOutcome.Approved), Decided("g2", ApprovalRecordOutcome.Dismissed)],
+            status);
 
-        status["gate"].Should().Be(JobStatus.Completed, "resolved gates never revert to waiting");
+        status["g1"].Should().Be(JobStatus.Completed, "an approved gate is not retro-failed by a later gate");
+        status["g2"].Should().Be(JobStatus.Failed);
     }
 
     [Fact]
-    public void TerminalIsOneShot_LaterBatchFailure_DoesNotReColourApprovedGate()
+    public void MultipleGates_PendingAndDecided_EachColoursFromOwnOutcome()
     {
-        var resolved = Set("gate");                                            // approved earlier
-        var status = new Dictionary<string, JobStatus> { ["gate"] = JobStatus.Completed };
-
-        // Batch later fails on a DOWNSTREAM step — the already-approved gate must stay Completed.
-        ApprovalGateReconciler.Apply(Set(), previousAwaiting: Set("gate"), batchFailed: true, resolved, status);
-
-        status["gate"].Should().Be(JobStatus.Completed, "an approved gate is not retro-failed by a later step");
-    }
-
-    [Fact]
-    public void MultipleGates_MixedStates_EachResolvesIndependently()
-    {
-        var resolved = Set();
         var status = new Dictionary<string, JobStatus>
         {
             ["g1"] = JobStatus.AwaitingApproval,
             ["g2"] = JobStatus.AwaitingApproval,
         };
 
-        // g1 resolves (approved), g2 stays pending.
-        ApprovalGateReconciler.Apply(Set("g2"), previousAwaiting: Set("g1", "g2"), batchFailed: false, resolved, status);
+        // g1 decided (approved), g2 still pending.
+        ApprovalGateReconciler.Apply([Decided("g1", ApprovalRecordOutcome.Approved), Pending("g2")], status);
 
         status["g1"].Should().Be(JobStatus.Completed);
         status["g2"].Should().Be(JobStatus.AwaitingApproval);
-        resolved.Should().Contain("g1").And.NotContain("g2");
+    }
+
+    [Fact]
+    public void ReApply_IsIdempotent()
+    {
+        // Decisions are immutable in the store, so re-reading the same feed must not change anything.
+        var status = new Dictionary<string, JobStatus>(StringComparer.Ordinal);
+        var gates = new[] { Decided("g1", ApprovalRecordOutcome.Approved), Decided("g2", ApprovalRecordOutcome.Rejected) };
+
+        ApprovalGateReconciler.Apply(gates, status);
+        var first = new Dictionary<string, JobStatus>(status, StringComparer.Ordinal);
+        ApprovalGateReconciler.Apply(gates, status);
+
+        status.Should().Equal(first, "re-applying the same immutable gate set is a no-op");
     }
 
     [Fact]
     public void NoGates_NoMutation()
     {
-        var resolved = Set();
         var status = new Dictionary<string, JobStatus>(StringComparer.Ordinal);
 
-        ApprovalGateReconciler.Apply(Set(), previousAwaiting: Set(), batchFailed: false, resolved, status);
+        ApprovalGateReconciler.Apply([], status);
 
         status.Should().BeEmpty();
-        resolved.Should().BeEmpty();
     }
 }

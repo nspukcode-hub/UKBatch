@@ -18,7 +18,7 @@ internal sealed class InvalidJobTransitionException : InvalidOperationException
 
     /// <summary>Constructs an exception describing an invalid transition.</summary>
     public InvalidJobTransitionException(JobStatus from, JobStatus to)
-        : base($"Invalid job status transition: {from} -> {to}.")
+        : base($"Illegal job status transition: {from} -> {to}.")
     {
         From = from;
         To = to;
