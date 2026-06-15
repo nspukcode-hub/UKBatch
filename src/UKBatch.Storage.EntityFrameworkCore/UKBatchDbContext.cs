@@ -5,9 +5,9 @@ using UKBatch.Storage.EntityFrameworkCore.Entities;
 namespace UKBatch.Storage.EntityFrameworkCore;
 
 /// <summary>
-/// EF Core context for the UKBatch persistent stores. Three tables: <c>JobExecutions</c>,
-/// <c>BatchDefinitions</c>, <c>ApprovalGates</c>. <c>BatchStep</c>s are JSON-embedded inside
-/// <c>BatchDefinitions</c> (no separate table) — recursion-safe for nested parallel groups and
+/// EF Core context for the UKBatch persistent stores. Four tables: <c>JobExecutions</c>,
+/// <c>BatchDefinitions</c>, <c>ApprovalGates</c>, <c>BatchRuns</c>. <c>BatchStep</c>s are JSON-embedded
+/// inside <c>BatchDefinitions</c> (no separate table) — recursion-safe for nested parallel groups and
 /// forward-compatible via <c>BatchStep.Metadata</c> round-tripped verbatim.
 /// </summary>
 /// <remarks>
@@ -54,6 +54,8 @@ public class UKBatchDbContext : DbContext
 
     internal DbSet<ApprovalGateEntity> ApprovalGates => Set<ApprovalGateEntity>();
 
+    internal DbSet<BatchRunEntity> BatchRuns => Set<BatchRunEntity>();
+
     /// <inheritdoc/>
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -67,5 +69,7 @@ public class UKBatchDbContext : DbContext
         modelBuilder.ApplyConfiguration(new JobExecutionConfiguration(jsonType, isSqlite));
         modelBuilder.ApplyConfiguration(new BatchDefinitionConfiguration(jsonType, isSqlite));
         modelBuilder.ApplyConfiguration(new ApprovalGateConfiguration(jsonType, isSqlite));
+        // BatchRuns has no JSON column, so its configuration takes only the provider flag.
+        modelBuilder.ApplyConfiguration(new BatchRunConfiguration(isSqlite));
     }
 }

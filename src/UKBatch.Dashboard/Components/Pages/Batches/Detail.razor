@@ -206,34 +206,14 @@ else
                 _isLoading = false;
                 return;
             }
-            // Filter runs by BatchDefinitionId.
-            // Group the fetched executions into one summary PER RUN (BatchId). No new client
-            // method — reuses the same QueryExecutionsAsync(Limit=50) page (surface-lock).
-            var page = await _client.QueryExecutionsAsync(
-                new JobQueryRequest { BatchDefinitionId = BatchId, Limit = 50 },
-                CancellationToken.None);
-
-            // A run PAUSED at an approval gate has all its JOB executions Completed (gates have no
-            // execution row), so it would falsely roll up to "Completed". Cross-reference the live
-            // approvals feed: any run id with a pending approval is reported AwaitingApproval instead.
-            HashSet<string> runsAwaitingApproval;
-            try
-            {
-                var approvals = await _client.ListApprovalsAsync(null, CancellationToken.None);
-                runsAwaitingApproval = (approvals ?? [])
-                    .Select(a => a.BatchId)
-                    .ToHashSet(StringComparer.Ordinal);
-            }
-            catch (Exception)
-            {
-                runsAwaitingApproval = new HashSet<string>(StringComparer.Ordinal);   // feed hiccup → fall back to job-only rollup
-            }
-
-            _runs = page.Items
-                .Where(e => !string.IsNullOrEmpty(e.BatchId))
-                .GroupBy(e => e.BatchId!, StringComparer.Ordinal)
-                .Select(g => RunSummaryViewModel.FromExecutions(
-                    g.Key, g.ToList(), hasPendingApproval: runsAwaitingApproval.Contains(g.Key)))
+            // Read this definition's runs straight from the run-store — one row per run, each carrying its
+            // own authoritative terminal status. The run row already encodes a gate-failed run as Failed and
+            // a running run as null→Running, so there is no execution roll-up to second-guess and no approvals
+            // cross-reference to patch the gate-paused case. A single page of the most recent 50 runs; the
+            // Executions → Runs view offers server-side paging for definitions with deeper history.
+            var runsPage = await _client.QueryRunsAsync(BatchId, includeRunning: true, 0, 50, CancellationToken.None);
+            _runs = runsPage.Items
+                .Select(RunSummaryViewModel.FromBatchRun)
                 .OrderByDescending(r => r.StartedAtUtc)
                 .ToList();
         }

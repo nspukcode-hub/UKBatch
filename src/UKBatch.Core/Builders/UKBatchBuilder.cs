@@ -77,6 +77,9 @@ public sealed class UKBatchBuilder
         Services.AddSingleton<IJobExecutionWriter>(sp => sp.GetRequiredService<InMemoryJobStore>());
         Services.AddSingleton<IBatchDefinitionStore, InMemoryBatchDefinitionStore>();
         Services.AddSingleton<IApprovalGateStore, InMemoryApprovalGateStore>();
+        // Plain AddSingleton (not TryAdd) so the EF adapter's RemoveAll<IBatchRunStore>() reliably
+        // replaces this default, mirroring the IApprovalGateStore pattern.
+        Services.AddSingleton<IBatchRunStore, InMemoryBatchRunStore>();
         return this;
     }
 
@@ -217,6 +220,10 @@ public sealed class UKBatchBuilder
         Services.TryAddSingleton<CronExpressionCache>();
         Services.TryAddSingleton<JobDispatcher>();
         Services.TryAddSingleton<JobScheduler>();
+        // Whole-batch cron scheduler, sibling of JobScheduler. Exposed through IBatchScheduleNotifier so
+        // the create/update/delete endpoints can re-arm the schedule on a definition change.
+        Services.TryAddSingleton<BatchScheduler>();
+        Services.TryAddSingleton<IBatchScheduleNotifier>(sp => sp.GetRequiredService<BatchScheduler>());
         Services.TryAddSingleton<DebouncedProgressFlusher>();
         Services.TryAddSingleton<JobExecutionAwaiter>();
         Services.TryAddSingleton<IJobExecutionAwaiter>(sp => sp.GetRequiredService<JobExecutionAwaiter>());
@@ -238,6 +245,10 @@ public sealed class UKBatchBuilder
         // signal to build the aggregate summary. Replaces the per-watch-event tracker pattern.
         Services.TryAddSingleton<BatchCompletionSignal>();
         Services.TryAddSingleton<IBatchCompletionEvents>(sp => sp.GetRequiredService<BatchCompletionSignal>());
+        // Per-run cancellation registry: JobRunner registers each run's linked CTS so an administrative
+        // cancel (via the public IBatchRunCanceller) can trip exactly that run.
+        Services.TryAddSingleton<BatchRunRegistry>();
+        Services.TryAddSingleton<IBatchRunCanceller>(sp => sp.GetRequiredService<BatchRunRegistry>());
         Services.TryAddSingleton<JobRunner>();
         Services.TryAddSingleton<IJobRunner>(sp => sp.GetRequiredService<JobRunner>());
         Services.TryAddSingleton<IJobRunnerInternal>(sp => sp.GetRequiredService<JobRunner>());

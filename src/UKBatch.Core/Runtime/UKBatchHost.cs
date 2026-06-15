@@ -16,6 +16,7 @@ internal sealed class UKBatchHost : IHostedService, IAsyncDisposable
     private readonly IOptions<UKBatchOptions> _options;
     private readonly JobDispatcher _dispatcher;
     private readonly JobScheduler _scheduler;
+    private readonly BatchScheduler _batchScheduler;
     private readonly DebouncedProgressFlusher _progressFlusher;
     private readonly JobExecutionAwaiter _awaiter;
     private readonly IHostApplicationLifetime _hostLifetime;
@@ -31,6 +32,7 @@ internal sealed class UKBatchHost : IHostedService, IAsyncDisposable
         IOptions<UKBatchOptions> options,
         JobDispatcher dispatcher,
         JobScheduler scheduler,
+        BatchScheduler batchScheduler,
         DebouncedProgressFlusher progressFlusher,
         JobExecutionAwaiter awaiter,
         IHostApplicationLifetime hostLifetime,
@@ -40,6 +42,7 @@ internal sealed class UKBatchHost : IHostedService, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(dispatcher);
         ArgumentNullException.ThrowIfNull(scheduler);
+        ArgumentNullException.ThrowIfNull(batchScheduler);
         ArgumentNullException.ThrowIfNull(progressFlusher);
         ArgumentNullException.ThrowIfNull(awaiter);
         ArgumentNullException.ThrowIfNull(hostLifetime);
@@ -48,6 +51,7 @@ internal sealed class UKBatchHost : IHostedService, IAsyncDisposable
         _options = options;
         _dispatcher = dispatcher;
         _scheduler = scheduler;
+        _batchScheduler = batchScheduler;
         _progressFlusher = progressFlusher;
         _awaiter = awaiter;
         _hostLifetime = hostLifetime;
@@ -75,6 +79,7 @@ internal sealed class UKBatchHost : IHostedService, IAsyncDisposable
         await _progressFlusher.StartAsync(_stoppingCts.Token).ConfigureAwait(false);
         await _awaiter.StartAsync(_stoppingCts.Token).ConfigureAwait(false);
         await _scheduler.StartAsync(_stoppingCts.Token).ConfigureAwait(false);
+        await _batchScheduler.StartAsync(_stoppingCts.Token).ConfigureAwait(false);
 
         var workerCount = _options.Value.MaxDegreeOfParallelism;
         _workerTasks = new Task[workerCount];
@@ -107,6 +112,17 @@ internal sealed class UKBatchHost : IHostedService, IAsyncDisposable
             // their cancel + drain, the dispatcher its completion, and the flusher/awaiter their
             // stops. Loud, then continue.
             _logger.LogError(ex, "Scheduler stop failed; continuing host shutdown.");
+        }
+
+        try
+        {
+            await _batchScheduler.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Independent of the job scheduler above: one faulted scheduler must not stop the other
+            // from draining, nor abort the worker/dispatcher teardown that follows. Loud, then continue.
+            _logger.LogError(ex, "Batch scheduler stop failed; continuing host shutdown.");
         }
 
         _stoppingCts?.Cancel();

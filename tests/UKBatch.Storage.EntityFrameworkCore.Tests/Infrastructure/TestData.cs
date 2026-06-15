@@ -53,6 +53,34 @@ internal static class TestData
         Tags = Array.Empty<string>(),
     };
 
+    public static BatchRun BatchRun(
+        string batchId,
+        string batchDefinitionId = "def-1",
+        string batchName = "pipeline",
+        JobStatus? status = null,
+        string? triggeredBy = "tester",
+        DateTimeOffset? startedAtUtc = null,
+        DateTimeOffset? completedAtUtc = null,
+        int stepCount = 1,
+        int total = 0,
+        int succeeded = 0,
+        int failed = 0,
+        int cancelled = 0) => new()
+        {
+            BatchId = batchId,
+            BatchDefinitionId = batchDefinitionId,
+            BatchName = batchName,
+            Status = status,
+            TriggeredBy = triggeredBy,
+            StartedAtUtc = startedAtUtc ?? new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            CompletedAtUtc = completedAtUtc,
+            StepCount = stepCount,
+            Total = total,
+            Succeeded = succeeded,
+            Failed = failed,
+            Cancelled = cancelled,
+        };
+
     public static BatchDefinition BatchDef(
         string id,
         string name,

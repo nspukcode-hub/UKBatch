@@ -15,9 +15,10 @@ using Xunit;
 namespace UKBatch.Dashboard.Tests.Pages;
 
 /// <summary>
-/// — <c>Batches/Detail</c> "Recent runs" is now per-RUN (grouped by BatchId),
-/// replacing the old per-execution table (no dual tables). Verifies the grouping, the rollup
-/// status, the one-row-per-run cardinality, and the run-link target.
+/// — <c>Batches/Detail</c> "Recent runs" reads the run-store (one row per RUN), each row carrying its own
+/// authoritative terminal status. Replaces the earlier per-execution roll-up. Verifies the one-row-per-run
+/// cardinality, the authoritative status (a gate-failed run reads Failed without an approvals cross-ref),
+/// the newest-first order, the running-run em-dash, and the run-link target.
 /// </summary>
 public sealed class BatchesDetailTests : TestContext
 {
@@ -32,21 +33,21 @@ public sealed class BatchesDetailTests : TestContext
 
     private const string DefId = "def-nightly";
 
-    private static JobExecution Exec(string id, string batchId, JobStatus status,
-        DateTimeOffset enqueued, DateTimeOffset? completed = null) => new()
+    private static BatchRun Run(string batchId, JobStatus? status, DateTimeOffset started,
+        DateTimeOffset? completed = null, int stepCount = 3,
+        int total = 0, int succeeded = 0, int failed = 0, int cancelled = 0) => new()
     {
-        ExecutionId = id,
-        JobName = "step-job",
         BatchId = batchId,
         BatchDefinitionId = DefId,
+        BatchName = "NightlyClose",
         Status = status,
-        Parameters = new Dictionary<string, object?>(),
-        EnqueuedAtUtc = enqueued,
+        StartedAtUtc = started,
         CompletedAtUtc = completed,
-        AttemptNumber = 1,
-        MaxRetries = 0,
-        Processed = 0,
-        Failed = 0,
+        StepCount = stepCount,
+        Total = total,
+        Succeeded = succeeded,
+        Failed = failed,
+        Cancelled = cancelled,
     };
 
     private static BatchDefinitionDto Definition() => new()
@@ -63,16 +64,16 @@ public sealed class BatchesDetailTests : TestContext
         Version = 1,
     };
 
-    private (Bunit.TestDoubles.FakeNavigationManager nav, IUKBatchClient client) Register(IReadOnlyList<JobExecution> executions)
+    private (Bunit.TestDoubles.FakeNavigationManager nav, IUKBatchClient client) Register(IReadOnlyList<BatchRun> runs)
     {
         var svc = PageTestHelpers.Descriptor("svc");
         var client = PageTestHelpers.BuildClient();
         client.GetBatchByIdAsync(DefId, Arg.Any<CancellationToken>()).Returns(Definition());
-        client.QueryExecutionsAsync(Arg.Any<JobQueryRequest>(), Arg.Any<CancellationToken>())
-            .Returns(new PageEnvelope<JobExecution>
+        client.QueryRunsAsync(DefId, Arg.Any<bool>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new PageEnvelope<BatchRun>
             {
-                Items = executions,
-                TotalCount = executions.Count,
+                Items = runs,
+                TotalCount = runs.Count,
                 Offset = 0,
                 Limit = 50,
             });
@@ -86,20 +87,16 @@ public sealed class BatchesDetailTests : TestContext
     }
 
     [Fact]
-    public void RecentRuns_GroupsByBatchId_OneRowPerRun_WithRollupStatus()
+    public void RecentRuns_OneRowPerRun_WithAuthoritativeStatus()
     {
         var now = DateTimeOffset.UtcNow;
-        // run-A: 3 executions, all Completed → Completed. Earlier start.
-        // run-B: 2 executions, one Failed → Failed. Later start.
-        var executions = new[]
+        // run-A completed; run-B FAILED at a gate (no execution row would reveal this — the run record does).
+        var runs = new[]
         {
-            Exec("a1", "run-aaaaaaaa", JobStatus.Completed, now.AddMinutes(-10), now.AddMinutes(-9)),
-            Exec("a2", "run-aaaaaaaa", JobStatus.Completed, now.AddMinutes(-10), now.AddMinutes(-8)),
-            Exec("a3", "run-aaaaaaaa", JobStatus.Completed, now.AddMinutes(-9), now.AddMinutes(-8)),
-            Exec("b1", "run-bbbbbbbb", JobStatus.Completed, now.AddMinutes(-5), now.AddMinutes(-4)),
-            Exec("b2", "run-bbbbbbbb", JobStatus.Failed, now.AddMinutes(-5), now.AddMinutes(-3)),
+            Run("run-aaaaaaaa", JobStatus.Completed, now.AddMinutes(-10), now.AddMinutes(-8), total: 3, succeeded: 3),
+            Run("run-bbbbbbbb", JobStatus.Failed, now.AddMinutes(-5), now.AddMinutes(-3), total: 1, succeeded: 1),
         };
-        Register(executions);
+        Register(runs);
 
         var cut = RenderComponent<Detail>(p => p
             .Add(d => d.ServiceName, "svc")
@@ -107,13 +104,13 @@ public sealed class BatchesDetailTests : TestContext
 
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("Recent runs"));
 
-        // One <tr> per RUN (2), not per execution (5).
+        // One <tr> per RUN.
         var runRows = cut.FindAll("table.data-table tbody tr");
-        runRows.Should().HaveCount(2, "D5: one row per RUN (run-A, run-B), not one per execution");
+        runRows.Should().HaveCount(2, "one row per RUN from the run-store");
 
-        // Rollup status: run-B (with a Failed child) reads FAILED; run-A reads COMPLETED.
-        cut.Markup.Should().Contain("FAILED", "run-B has a Failed child → rolled-up FAILED");
-        cut.Markup.Should().Contain("COMPLETED", "run-A is fully Completed → rolled-up COMPLETED");
+        // Authoritative status straight off the run record: a gate-failed run reads FAILED.
+        cut.Markup.Should().Contain("FAILED", "run-B's recorded terminal status is Failed (gate-failed)");
+        cut.Markup.Should().Contain("COMPLETED", "run-A's recorded terminal status is Completed");
 
         // The run link points at the run-detail route with the (8-char-truncated) batch id label.
         cut.Markup.Should().Contain("/dashboard/svc/runs/run-aaaaaaaa");
@@ -124,12 +121,12 @@ public sealed class BatchesDetailTests : TestContext
     public void RecentRuns_OrdersByStartedDescending_NewestFirst()
     {
         var now = DateTimeOffset.UtcNow;
-        var executions = new[]
+        var runs = new[]
         {
-            Exec("old1", "run-old00000", JobStatus.Completed, now.AddHours(-3), now.AddHours(-3)),
-            Exec("new1", "run-new00000", JobStatus.Completed, now.AddMinutes(-1), now.AddMinutes(-1)),
+            Run("run-old00000", JobStatus.Completed, now.AddHours(-3), now.AddHours(-3)),
+            Run("run-new00000", JobStatus.Completed, now.AddMinutes(-1), now.AddMinutes(-1)),
         };
-        Register(executions);
+        Register(runs);
 
         var cut = RenderComponent<Detail>(p => p
             .Add(d => d.ServiceName, "svc")
@@ -146,9 +143,9 @@ public sealed class BatchesDetailTests : TestContext
     }
 
     [Fact]
-    public void RecentRuns_NoExecutions_ShowsEmptyState()
+    public void RecentRuns_NoRuns_ShowsEmptyState()
     {
-        Register(Array.Empty<JobExecution>());
+        Register(Array.Empty<BatchRun>());
 
         var cut = RenderComponent<Detail>(p => p
             .Add(d => d.ServiceName, "svc")
@@ -159,23 +156,22 @@ public sealed class BatchesDetailTests : TestContext
     }
 
     [Fact]
-    public void RecentRuns_RunningRun_RollsUpToRunning_NoDuration()
+    public void RecentRuns_RunningRun_ReadsRunning_NoDuration()
     {
         var now = DateTimeOffset.UtcNow;
-        // One execution still Running (no CompletedAtUtc) → run reads Running, Duration em-dash.
-        var executions = new[]
+        // A run still in progress (Status null, no CompletedAtUtc) → reads RUNNING, Duration em-dash.
+        var runs = new[]
         {
-            Exec("r1", "run-live0000", JobStatus.Completed, now.AddMinutes(-2), now.AddMinutes(-1)),
-            Exec("r2", "run-live0000", JobStatus.Running, now.AddMinutes(-2), completed: null),
+            Run("run-live0000", status: null, now.AddMinutes(-2), completed: null),
         };
-        Register(executions);
+        Register(runs);
 
         var cut = RenderComponent<Detail>(p => p
             .Add(d => d.ServiceName, "svc")
             .Add(d => d.BatchId, DefId));
 
         cut.WaitForAssertion(() => cut.FindAll("table.data-table tbody tr").Should().HaveCount(1));
-        cut.Markup.Should().Contain("RUNNING", "a run with a non-terminal child rolls up to RUNNING");
+        cut.Markup.Should().Contain("RUNNING", "a run with a null (in-progress) status reads RUNNING");
         // Duration column shows the em-dash for an unfinished run.
         cut.Markup.Should().Contain("—");
     }
@@ -185,7 +181,7 @@ public sealed class BatchesDetailTests : TestContext
     [Fact]
     public void Topology_TreeMode_RendersDagStatusCanvas_NotOldSvgDagView()
     {
-        Register(Array.Empty<JobExecution>());
+        Register(Array.Empty<BatchRun>());
 
         var cut = RenderComponent<Detail>(p => p
             .Add(d => d.ServiceName, "svc")
@@ -203,7 +199,7 @@ public sealed class BatchesDetailTests : TestContext
     [Fact]
     public void Topology_ToggleToList_RendersBatchStepListView_AndBack()
     {
-        Register(Array.Empty<JobExecution>());
+        Register(Array.Empty<BatchRun>());
 
         var cut = RenderComponent<Detail>(p => p
             .Add(d => d.ServiceName, "svc")

@@ -172,6 +172,8 @@ public sealed class ExecutionsDetailTests : TestContext
         public Task<UKBatch.Api.Batches.BatchDefinitionDto> CreateBatchAsync(UKBatch.Api.Batches.CreateBatchRequest request, CancellationToken ct) => throw new NotImplementedException();
         public Task<UKBatch.Api.Batches.BatchDefinitionDto> UpdateBatchAsync(string definitionId, UKBatch.Api.Batches.UpdateBatchRequest request, CancellationToken ct) => throw new NotImplementedException();
         public Task DeleteBatchAsync(string definitionId, CancellationToken ct) => throw new NotImplementedException();
+        public Task<UKBatch.Api.Common.PageEnvelope<BatchRun>> QueryRunsAsync(string? batchDefinitionId, bool includeRunning, int offset, int limit, CancellationToken ct) => throw new NotImplementedException();
+        public Task CancelRunAsync(string batchRunId, CancellationToken ct) => Task.CompletedTask;
         public Task<JobExecution?> GetExecutionAsync(string executionId, CancellationToken ct) => Task.FromResult(InitialSnapshot);
         public Task<UKBatch.Api.Common.PageEnvelope<JobExecution>> QueryExecutionsAsync(UKBatch.Api.Executions.JobQueryRequest query, CancellationToken ct) => throw new NotImplementedException();
         public Task CancelExecutionAsync(string executionId, CancellationToken ct) => Task.CompletedTask;

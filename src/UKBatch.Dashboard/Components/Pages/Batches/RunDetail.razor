@@ -16,10 +16,38 @@
 
 @* Full run id, one click from the operator's clipboard — the page title abbreviates it (neighbouring
    runs share a prefix), but the Executions "Batch run id" filter is an exact match, so the whole id
-   must be obtainable somewhere. *@
+   must be obtainable somewhere. The Cancel run CTA sits beside it while the run is still in flight. *@
 <div class="batch-run__full-id">
     <CopyableId Value="@BatchRunId" Label="Run id" />
+    @* Administrative cancel — only while the run hasn't completed (no BatchCompleted yet). Unblocks a run
+       parked on an approval gate nobody can decide; the live feed flips the page to Cancelled. *@
+    @if (_completion is null && !_isLoading)
+    {
+        <button class="btn btn--danger btn--sm" @onclick="@(() => _confirmCancelOpen = true)" disabled="@_cancelInFlight">
+            <span class="material-symbols-outlined">cancel</span>
+            @(_cancelInFlight ? "Cancelling…" : "Cancel run")
+        </button>
+    }
 </div>
+
+@if (_cancelError is { } cancelErr)
+{
+    <ErrorBanner Message="@cancelErr" />
+}
+
+<ConfirmDialog IsVisible="@_confirmCancelOpen"
+               Title="Cancel run?"
+               ConfirmLabel="Cancel run"
+               CancelLabel="Keep running"
+               IsDestructive="true"
+               OnConfirm="ConfirmCancelAsync"
+               OnCancel="@(() => { _confirmCancelOpen = false; return Task.CompletedTask; })">
+    <Body>
+        <p>This requests cancellation of run <span class="mono">@IdDisplay.Shorten(BatchRunId)</span>.
+           A run parked on an approval gate ends as <span class="mono">Cancelled</span>; a job already
+           dispatched runs to its own completion. This cannot be undone.</p>
+    </Body>
+</ConfirmDialog>
 
 @if (_completion is { } summary)
 {
@@ -168,6 +196,11 @@ else
     // ── inline approval decision state ──
     private bool _decisionBusy;                  // true while an approve/reject REST call is in flight
     private string? _decisionError;              // surfaced in the panel; cleared on selection change / close
+
+    // ── administrative run-cancel state ──
+    private bool _confirmCancelOpen;             // the "Cancel run?" confirm dialog
+    private bool _cancelInFlight;                // true while the cancel REST call is in flight
+    private string? _cancelError;                // surfaced in a banner if the cancel request itself fails
 
     protected override async Task OnInitializedAsync()
     {
@@ -468,6 +501,36 @@ else
             ? "Not authorized to decide this gate (role mismatch)."
             : $"Could not {verb} the gate: {ex.Message}";
 
+    // Administrative run cancel. The request is idempotent server-side; we do NOT optimistically paint
+    // Cancelled — the authoritative terminal status arrives over the BatchCompleted hub feed (the run
+    // continues asynchronously, and a job already dispatched may finish anyway). On request failure surface a
+    // banner; the button stays available for a retry while the run is still in flight.
+    private async Task ConfirmCancelAsync()
+    {
+        _confirmCancelOpen = false;
+        if (_client is null || _cancelInFlight) return;
+        _cancelInFlight = true;
+        _cancelError = null;
+        await _refresh!.RequestAsync();
+        try
+        {
+            await _client.CancelRunAsync(BatchRunId, CancellationToken.None);
+        }
+        catch (UKBatchClientException ex)
+        {
+            _cancelError = $"Could not cancel the run: {ex.Message}";
+        }
+        catch (Exception)
+        {
+            _cancelError = "Could not cancel the run. Please retry.";
+        }
+        finally
+        {
+            _cancelInFlight = false;
+            await _refresh!.RequestAsync();
+        }
+    }
+
     private static string CompletionBgClass(JobStatus status) => status switch
     {
         JobStatus.Completed => "batch-run__completion--completed",
@@ -503,7 +566,7 @@ else
 }
 
 <style>
-    .batch-run__full-id { margin: calc(-1 * var(--space-sm)) 0 var(--space-md); }
+    .batch-run__full-id { display: flex; align-items: center; gap: var(--space-md); flex-wrap: wrap; margin: calc(-1 * var(--space-sm)) 0 var(--space-md); }
     .batch-run__executions-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); flex-wrap: wrap; }
     .batch-run__view-all { font-size: var(--font-body-sm-size); white-space: nowrap; }
     .batch-run__completion { border-width: 2px; }
