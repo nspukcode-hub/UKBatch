@@ -83,6 +83,7 @@ public static class ServiceCollectionExtensions
         services.RemoveAll<IJobExecutionWriter>();
         services.RemoveAll<IBatchDefinitionStore>();
         services.RemoveAll<IApprovalGateStore>();
+        services.RemoveAll<IBatchRunStore>();
 
         // 3) Re-register the EF stores as singletons (same lifetime as the InMemory ones they replace).
         services.AddSingleton<EfJobStore>();
@@ -92,6 +93,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IJobExecutionWriter>(sp => sp.GetRequiredService<EfJobStore>());
         services.AddSingleton<IBatchDefinitionStore, EfBatchDefinitionStore>();
         services.AddSingleton<IApprovalGateStore, EfApprovalGateStore>();
+        services.AddSingleton<IBatchRunStore, EfBatchRunStore>();
 
         // 4) Hosted services. Migrator (when opted-in) BEFORE the reaper (it creates the tables the
         //    reaper queries). The schema-guard warn-log is always present.

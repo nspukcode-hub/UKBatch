@@ -451,7 +451,9 @@ public sealed class BatchesRunDetailTests : TestContext
         cut.WaitForAssertion(() => cut.Find("input.form-field__input").Should().NotBeNull());
 
         cut.Find("input.form-field__input").Input("compliance hold");
-        await cut.Find("button.btn--danger").ClickAsync(new());
+        // Scope to the node inspector — the page header now also carries a destructive button
+        // ("Cancel run") while the run is in flight, so a bare button.btn--danger is no longer unique.
+        await cut.Find(".dag-node-detail button.btn--danger").ClickAsync(new());
 
         cut.WaitForAssertion(() =>
             client.Received().RejectAsync("appr-9", "compliance hold", Arg.Any<CancellationToken>()));

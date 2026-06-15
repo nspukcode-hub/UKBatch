@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.1-alpha] - 2026-06-15
+
+Run-store foundation and the visible features it unlocks: persistent run history, batch scheduling, and cancelling a stuck run.
+
+### Added
+
+- **Persistent batch run history.** Each batch run is recorded as a first-class `BatchRun` (one per trigger), so run history survives restarts with the EF storage adapter. A new additive migration (`AddBatchRuns`) creates the `BatchRuns` table; existing tables are unchanged. The dashboard Executions page gains an **"Executions | Runs" view toggle** — the "Runs" tab paginates one row per run (authoritative status, step count, and per-status job counts), replacing the previous client-side grouping of execution rows.
+- **Batch cron scheduling.** `BatchDefinition.Schedule` now actually runs the batch on its cron expression. Previously a batch schedule was stored but never executed (only job schedules fired). A scheduled batch created or edited from the dashboard or API begins firing immediately, without a restart.
+- **Cancel a running batch.** `POST /batches/{batchRunId}/cancel` and a dashboard "Cancel run" button end an in-flight run — including one parked at an approval gate that nobody can decide. Cancellation is an administrative action whose authorization is independent of the gate's allowed roles, so it can release a gate no current operator holds the role for; the run ends as Cancelled.
+
+### Fixed
+
+- **A batch's "Recent runs" history list now shows a gate-failed run as Failed.** The run store records the authoritative terminal status from the runtime, so a run that ended at a rejected or timed-out-Fail approval gate is shown as Failed in the run history and the Runs view — not Completed. This resolves the run-history limitation noted in 0.2.0-alpha (the run detail page was already correct).
+
+### Known limitations
+
+- The batch scheduler is in-memory: schedules that come due while the host is down are skipped, not replayed — the same behaviour as the existing job scheduler. A durable scheduler is a later release.
+- A run interrupted by a host crash stays in the in-progress ("Running") state in run history; its executions are reaped to Failed, but the run record itself is not reaped until a later release.
+- Cancelling a run tears down its orchestration and releases a parked approval gate; a local job already dispatched to a worker runs to its own completion unless it observes its own cancellation token. Full per-job cancellation propagation is a later release.
+
 ## [0.2.0-alpha] - 2026-06-13
 
 First slice of the v0.2 line — stability and developer-experience groundwork ahead of durable resume. All changes are in the free, MIT-licensed packages.

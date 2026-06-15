@@ -50,6 +50,8 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
     private readonly IOptions<UKBatchOptions> _options;
     private readonly ITransport _transport;
     private readonly BatchCompletionSignal _batchCompletionSignal;
+    private readonly IBatchRunStore _batchRunStore;
+    private readonly BatchRunRegistry _batchRunRegistry;
     private readonly ILogger<JobRunner> _logger;
     private readonly CancellationToken _hostStopping;
 
@@ -66,6 +68,8 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
         IHostApplicationLifetime hostLifetime,
         BatchCompletionSignal batchCompletionSignal,
         ITransport transport,
+        IBatchRunStore batchRunStore,
+        BatchRunRegistry batchRunRegistry,
         ILogger<JobRunner> logger)
     {
         ArgumentNullException.ThrowIfNull(jobRegistry);
@@ -79,6 +83,8 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
         ArgumentNullException.ThrowIfNull(hostLifetime);
         ArgumentNullException.ThrowIfNull(batchCompletionSignal);
         ArgumentNullException.ThrowIfNull(transport);
+        ArgumentNullException.ThrowIfNull(batchRunStore);
+        ArgumentNullException.ThrowIfNull(batchRunRegistry);
         ArgumentNullException.ThrowIfNull(logger);
         _jobRegistry = jobRegistry;
         _batchLookup = batchLookup;
@@ -90,6 +96,8 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
         _options = options;
         _transport = transport;
         _batchCompletionSignal = batchCompletionSignal;
+        _batchRunStore = batchRunStore;
+        _batchRunRegistry = batchRunRegistry;
         _hostStopping = hostLifetime.ApplicationStopping;
         _logger = logger;
     }
@@ -167,6 +175,29 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
         ValidateBatchForTrigger(def);
 
         var batchId = IdGenerator.NewBatchId();
+
+        // Persist the run record on the trigger thread, BEFORE the fire-and-forget run starts, so a
+        // store failure surfaces on the caller's path (consistent with the synchronous pre-flight). The
+        // run is created in-progress (Status null, counters 0); StepCount is the definition's step count.
+        var stepCount = CountDefinitionSteps(def);
+        await _batchRunStore.CreateAsync(
+            new BatchRun
+            {
+                BatchId = batchId,
+                BatchDefinitionId = def.Id,
+                BatchName = def.Name,
+                Status = null,
+                TriggeredBy = triggeredBy,
+                StartedAtUtc = _clock.GetUtcNow(),
+                CompletedAtUtc = null,
+                StepCount = stepCount,
+                Total = 0,
+                Succeeded = 0,
+                Failed = 0,
+                Cancelled = 0,
+            },
+            cancellationToken).ConfigureAwait(false);
+
         var executor = new BatchExecutor(
             this,
             _serviceProvider.GetRequiredService<IApprovalGateCoordinator>(),
@@ -176,8 +207,16 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             _clock,
             _serviceProvider.GetRequiredService<ILogger<BatchExecutor>>());
 
-        // Fire-and-forget against the HOST's lifetime, NOT the caller's CT.
-        var hostStopping = _hostStopping;
+        // Per-run cancellation: link the host-stopping token with a fresh source so an administrative
+        // cancel (via IBatchRunCanceller) trips ONLY this run; the host token still cancels every run on
+        // shutdown. The executor receives this linked token instead of the bare host token. Register the
+        // source immediately before the fire-and-forget so nothing can throw between registration and the
+        // Task.Run that owns its disposal.
+        var runCts = CancellationTokenSource.CreateLinkedTokenSource(_hostStopping);
+        _batchRunRegistry.Register(batchId, runCts);
+        var runToken = runCts.Token;
+
+        // Fire-and-forget against the HOST's lifetime + this run's cancel source, NOT the caller's CT.
         _ = Task.Run(async () =>
         {
             // Capture the runtime's terminal verdict so the hub fan-out can override the row-derived
@@ -187,7 +226,7 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             JobStatus? runtimeTerminal = null;
             try
             {
-                await executor.RunAsync(def, batchId, initialParameters ?? JobParameters.Empty, triggeredBy, hostStopping).ConfigureAwait(false);
+                await executor.RunAsync(def, batchId, initialParameters ?? JobParameters.Empty, triggeredBy, runToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException ex)
             {
@@ -203,11 +242,25 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             }
             finally
             {
+                // Finalize the run record from the runtime verdict + a single execution-count query. This
+                // is the data-layer source of truth for the run's terminal status (a gate-failed run
+                // leaves no execution row, so a pure roll-up would read Completed). Independent of the
+                // SignalR signal below.
+                await CompleteRunRecordAsync(batchId, runtimeTerminal).ConfigureAwait(false);
+
+                // De-register + dispose THIS run's cancel source. The registry only ever calls Cancel();
+                // ownership of disposal is here. Remove first (so a late Cancel misses the lookup), then
+                // dispose.
+                _batchRunRegistry.Remove(batchId);
+                runCts.Dispose();
+
                 // Signal the hub fan-out that the batch run has finished. The payload carries
                 // (BatchRunId, BatchDefinitionId, BatchName) so the hub fan-out can populate
                 // BatchCompletionSummary.BatchDefinitionId without an IBatchCatalogService roundtrip.
                 // RuntimeTerminalStatus carries the closure's verdict (null on clean completion).
-                // The hub queries the store ONCE per signal to compute the aggregate shard counts.
+                // The hub queries the store ONCE per signal to compute the aggregate shard counts. This
+                // path is unchanged from before the run-store existed — the two terminal side-effects are
+                // independent.
                 _batchCompletionSignal.Signal(new BatchCompletionSignalPayload
                 {
                     BatchRunId = batchId,
@@ -281,6 +334,64 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
         {
             yield return step;
         }
+    }
+
+    /// <summary>
+    /// Completes the run record from the runtime's terminal verdict and a single execution-count query.
+    /// Mirrors the hub fan-out roll-up: counts are row-derived; the run's STATUS prefers the runtime
+    /// verdict (a gate failure leaves no execution row, so a pure roll-up would read Completed).
+    /// CT-decoupled (CancellationToken.None) and exception-swallowing: the cancel path has the run token
+    /// already tripped, and the finally must never crash on a store/dispose hiccup at shutdown.
+    /// </summary>
+    private async Task CompleteRunRecordAsync(string batchId, JobStatus? runtimeTerminal)
+    {
+        try
+        {
+            var executions = await _jobStore.QueryAsync(
+                new JobQuery { BatchId = batchId, Limit = int.MaxValue, Offset = 0 }, CancellationToken.None).ConfigureAwait(false);
+
+            var succeeded = executions.Count(e => e.Status == JobStatus.Completed);
+            var failed = executions.Count(e => e.Status == JobStatus.Failed);
+            var cancelled = executions.Count(e => e.Status == JobStatus.Cancelled);
+
+            var rowAggregate = cancelled > 0 ? JobStatus.Cancelled
+                             : failed > 0 ? JobStatus.Failed
+                             : JobStatus.Completed;
+            var terminal = runtimeTerminal ?? rowAggregate;
+
+            await _batchRunStore.CompleteAsync(
+                batchId,
+                terminal,
+                new BatchRunCounts(executions.Count, succeeded, failed, cancelled),
+                _clock.GetUtcNow(),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Host shutting down — a pooled EF context factory may throw at disposal. Best-effort; don't
+            // surface a scary dispose trace from the fire-and-forget finally.
+        }
+        catch (Exception ex)
+        {
+            // Run completion is observability, not control flow — never let it crash the closure.
+            _logger.LogWarning(ex, "Could not finalize batch run record {BatchId}.", batchId);
+        }
+    }
+
+    /// <summary>
+    /// Counts the steps of a definition for the run record's <c>StepCount</c>: each Job step, each
+    /// ParallelGroup CHILD (the group is a grouping, not a step in its own right), each ApprovalGate
+    /// step, and each OnFailureSteps compensation step. A topology number, distinct from the
+    /// executed-row total.
+    /// </summary>
+    private static int CountDefinitionSteps(BatchDefinition def)
+    {
+        var count = 0;
+        foreach (var step in def.Steps)
+        {
+            count += step.ParallelGroup is { Steps: { } children } ? children.Count : 1;
+        }
+        return count + def.OnFailureSteps.Count;
     }
 
     /// <inheritdoc/>

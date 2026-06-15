@@ -20,7 +20,7 @@ namespace UKBatch.Storage.EntityFrameworkCore.Tests.Core;
 public sealed class MigrationSchemaTests
 {
     [Fact]
-    public async Task SqliteMigration_CreatesAllThreeTables()
+    public async Task SqliteMigration_CreatesAllFourTables()
     {
         await using var harness = await SqliteStoreHarness.CreateAsync();
         await using var db = await harness.NewContextAsync();
@@ -29,7 +29,7 @@ public sealed class MigrationSchemaTests
             .SqlQueryRaw<string>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .ToListAsync();
 
-        tables.Should().Contain(new[] { "JobExecutions", "BatchDefinitions", "ApprovalGates" });
+        tables.Should().Contain(new[] { "JobExecutions", "BatchDefinitions", "ApprovalGates", "BatchRuns" });
     }
 
     [Fact]
@@ -43,12 +43,15 @@ public sealed class MigrationSchemaTests
             .ToListAsync();
 
         // The plan: JobExecutions (Status,Enqueued)+(BatchDefId,Enqueued)+(JobName,Enqueued)+(BatchId);
-        // BatchDefinitions unique (Source,Name) + (Source,Created); ApprovalGates (Status). 7 named indexes.
+        // BatchDefinitions unique (Source,Name) + (Source,Created); ApprovalGates (Status);
+        // BatchRuns (BatchDefId,StartedAt) + (Status,StartedAt). 9 named indexes.
         indexes.Should().Contain("IX_BatchDefinitions_Source_Name", "the unique name index must be present and named");
         indexes.Should().Contain(i => i.Contains("JobExecutions", StringComparison.Ordinal) && i.Contains("Status", StringComparison.Ordinal));
         indexes.Should().Contain(i => i.Contains("JobExecutions", StringComparison.Ordinal) && i.Contains("BatchDefinitionId", StringComparison.Ordinal));
         indexes.Should().Contain(i => i.Contains("JobExecutions", StringComparison.Ordinal) && i.Contains("JobName", StringComparison.Ordinal));
         indexes.Should().Contain(i => i.Contains("ApprovalGates", StringComparison.Ordinal) && i.Contains("Status", StringComparison.Ordinal));
+        indexes.Should().Contain("IX_BatchRuns_BatchDefinitionId_StartedAtUtc", "the run-history-by-definition index must be present and named");
+        indexes.Should().Contain("IX_BatchRuns_Status_StartedAtUtc", "the status-filtered run index must be present and named");
     }
 
     [Fact]
@@ -129,6 +132,47 @@ public sealed class MigrationSchemaTests
             // A brand-new context (different instance) sees the persisted row.
             var fetched = await store.GetAsync("def-1", CancellationToken.None);
             fetched!.Name.Should().Be("persisted-batch");
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task SqliteMigration_RoundTripsBatchRun_Persists()
+    {
+        // A run created via EfBatchRunStore must survive across context instances on a temp-file DB
+        // (models restart durability — the run-store's whole reason for being persistent).
+        var dbPath = Path.Combine(Path.GetTempPath(), $"ukbatch-ef-run-persist-{Guid.NewGuid():N}.db");
+        try
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddUKBatch(_ => { });
+            services.AddUKBatchEntityFrameworkCoreStores(o => o.UseSqlite($"DataSource={dbPath}"));
+            await using var provider = services.BuildServiceProvider();
+            var factory = provider.GetRequiredService<IDbContextFactory<UKBatchDbContext>>();
+
+            await using (var ctx = await factory.CreateDbContextAsync())
+            {
+                await ctx.Database.MigrateAsync();
+            }
+
+            var store = new EfBatchRunStore(factory);
+            await store.CreateAsync(TestData.BatchRun("run-1", batchDefinitionId: "def-1", batchName: "persisted-run", stepCount: 3), CancellationToken.None);
+            await store.CompleteAsync(
+                "run-1", JobStatus.Completed, new BatchRunCounts(3, 3, 0, 0),
+                new DateTimeOffset(2026, 1, 1, 1, 0, 0, TimeSpan.Zero), CancellationToken.None);
+
+            // A brand-new store + context instance sees the persisted, completed run.
+            var reopened = new EfBatchRunStore(factory);
+            var fetched = await reopened.GetAsync("run-1", CancellationToken.None);
+            fetched.Should().NotBeNull();
+            fetched!.BatchName.Should().Be("persisted-run");
+            fetched.Status.Should().Be(JobStatus.Completed);
+            fetched.StepCount.Should().Be(3);
+            fetched.Total.Should().Be(3);
         }
         finally
         {

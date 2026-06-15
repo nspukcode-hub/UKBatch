@@ -137,6 +137,60 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Postgres
                     b.ToTable("BatchDefinitions", (string)null);
                 });
 
+            modelBuilder.Entity("UKBatch.Storage.EntityFrameworkCore.Entities.BatchRunEntity", b =>
+                {
+                    b.Property<string>("BatchId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("BatchDefinitionId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("BatchName")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<int>("Cancelled")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Failed")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("StepCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Succeeded")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Total")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("TriggeredBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.HasKey("BatchId");
+
+                    b.HasIndex("BatchDefinitionId", "StartedAtUtc");
+
+                    b.HasIndex("Status", "StartedAtUtc");
+
+                    b.ToTable("BatchRuns", (string)null);
+                });
+
             modelBuilder.Entity("UKBatch.Storage.EntityFrameworkCore.Entities.JobExecutionEntity", b =>
                 {
                     b.Property<string>("ExecutionId")

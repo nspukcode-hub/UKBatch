@@ -215,7 +215,7 @@ internal sealed class RestUKBatchClient : IUKBatchClient
         return payload.ExecutionId;
     }
 
-    // ── REST — Batches (5) ─────────────────────────────────────────────────────────────
+    // ── REST — Batches (10) ────────────────────────────────────────────────────────────
 
     public async Task<PageEnvelope<BatchDefinitionDto>> ListBatchesAsync(int offset, int limit, string? nameContains, BatchSource? source, CancellationToken ct)
     {
@@ -287,6 +287,29 @@ internal sealed class RestUKBatchClient : IUKBatchClient
             $"batches/by-id/{Uri.EscapeDataString(definitionId)}", ct).ConfigureAwait(false);
         // DELETE is idempotent server-side (NoContent even when absent). A non-2xx here would be a
         // ProblemDetails (e.g. code-source 400) — let ThrowIfErrorAsync surface it. 204 → no throw.
+        await ThrowIfErrorAsync(res, ct).ConfigureAwait(false);
+    }
+
+    public async Task<PageEnvelope<BatchRun>> QueryRunsAsync(string? batchDefinitionId, bool includeRunning, int offset, int limit, CancellationToken ct)
+    {
+        // Pure REST — NO EnsureConnected (the run list reads from the run-store and is hub-independent,
+        // mirroring GetBatchRunStatusAsync). Omit the definition filter entirely when null/empty so the
+        // server treats it as "any definition". The bool is rendered as a stable lowercase literal —
+        // culture-independent (no numeric/decimal formatting crosses the wire here).
+        var qs = $"?includeRunning={(includeRunning ? "true" : "false")}&offset={offset}&limit={limit}";
+        if (!string.IsNullOrEmpty(batchDefinitionId))
+            qs += $"&batchDefinitionId={Uri.EscapeDataString(batchDefinitionId)}";
+        using var res = await _http.GetAsync($"batches/runs{qs}", ct).ConfigureAwait(false);
+        return await DeserializeOrThrowAsync<PageEnvelope<BatchRun>>(res, ct).ConfigureAwait(false);
+    }
+
+    public async Task CancelRunAsync(string batchRunId, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchRunId);
+        // Idempotent server-side (204 whether the run was live, already finished, or unknown). An empty
+        // POST body — the run id is the only input. ThrowIfErrorAsync surfaces an unexpected non-2xx.
+        using var content = new StringContent(string.Empty);
+        using var res = await _http.PostAsync($"batches/{Uri.EscapeDataString(batchRunId)}/cancel", content, ct).ConfigureAwait(false);
         await ThrowIfErrorAsync(res, ct).ConfigureAwait(false);
     }
 

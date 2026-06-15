@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 using UKBatch.Abstractions.Batches;
 using UKBatch.Abstractions.Jobs;
 using UKBatch.Abstractions.Models;
+using UKBatch.Abstractions.Runtime;
 using UKBatch.Abstractions.Storage;
 using UKBatch.Api.Common;
 using UKBatch.AspNetCore.Triggering;
@@ -144,6 +145,7 @@ internal static class BatchesEndpoints
         batches.MapPost("/", async (
                 CreateBatchRequest body,
                 IBatchDefinitionStore store,
+                IBatchScheduleNotifier scheduleNotifier,
                 CancellationToken ct) =>
             {
                 ArgumentNullException.ThrowIfNull(body);
@@ -182,6 +184,10 @@ internal static class BatchesEndpoints
                 try
                 {
                     var created = await store.CreateAsync(def, ct).ConfigureAwait(false);
+                    // Re-arm the batch scheduler so a newly-created scheduled batch starts firing without a
+                    // restart. Fire-and-forget with CancellationToken.None on purpose: the rescan outlives
+                    // this request, so a fast-completing response must not cancel the arm mid-scan.
+                    _ = scheduleNotifier.NotifyDefinitionChangedAsync(CancellationToken.None);
                     return Results.Created(
                         $"/batches/by-id/{created.Id}",
                         BatchDefinitionDto.FromModel(created));
@@ -206,6 +212,7 @@ internal static class BatchesEndpoints
                 string id,
                 UpdateBatchRequest body,
                 IBatchDefinitionStore store,
+                IBatchScheduleNotifier scheduleNotifier,
                 CancellationToken ct) =>
             {
                 ArgumentException.ThrowIfNullOrEmpty(id);
@@ -249,6 +256,9 @@ internal static class BatchesEndpoints
                 try
                 {
                     var updated = await store.UpdateAsync(def, ct).ConfigureAwait(false);
+                    // Re-arm the batch scheduler so a schedule change (added/edited cron) takes effect
+                    // without a restart. CancellationToken.None — the rescan must outlive this request.
+                    _ = scheduleNotifier.NotifyDefinitionChangedAsync(CancellationToken.None);
                     return Results.Ok(BatchDefinitionDto.FromModel(updated));
                 }
                 catch (BatchDefinitionNotFoundException ex)
@@ -288,6 +298,7 @@ internal static class BatchesEndpoints
                 string id,
                 IBatchCatalogService catalog,
                 IBatchDefinitionStore store,
+                IBatchScheduleNotifier scheduleNotifier,
                 CancellationToken ct) =>
             {
                 ArgumentException.ThrowIfNullOrEmpty(id);
@@ -302,6 +313,9 @@ internal static class BatchesEndpoints
                         detail: "Code-source batches cannot be deleted.");
                 }
                 await store.DeleteAsync(id, ct).ConfigureAwait(false);
+                // Re-arm the batch scheduler so the deleted definition's schedule stops; a stale heap entry
+                // self-heals on its next failed fire. CancellationToken.None — the rescan outlives this request.
+                _ = scheduleNotifier.NotifyDefinitionChangedAsync(CancellationToken.None);
                 return Results.NoContent();
             })
             .WithUKBatchName(operationIdPrefix, "DeleteBatch")
@@ -341,6 +355,60 @@ internal static class BatchesEndpoints
             })
             .WithUKBatchName(operationIdPrefix, "GetBatchRunStatus")
             .WithSummary("Returns the executions for ONE batch RUN (the id returned from /run). Empty list if no executions — NOT a 404.");
+
+        // GET /batches/runs — run-paginated history. The run row carries the authoritative terminal status
+        // (a roll-up over execution rows is blind to a gate-failed run), so this is what the dashboard
+        // groups executions by run on.
+        batches.MapGet("/runs", async (
+                IBatchRunStore runStore,
+                IOptions<UKBatchOptions> options,
+                [FromQuery] string? batchDefinitionId,
+                [FromQuery] bool? includeRunning,
+                [FromQuery] int? offset,
+                [FromQuery] int? limit,
+                CancellationToken ct) =>
+            {
+                if (!PaginationDefaults.TryValidate(options, offset, limit, out var effectiveOffset, out var effectiveLimit, out var errors))
+                {
+                    return Results.ValidationProblem(errors);
+                }
+                var query = new BatchRunQuery
+                {
+                    BatchDefinitionId = batchDefinitionId,
+                    IncludeRunning = includeRunning ?? true,
+                    Offset = effectiveOffset,
+                    Limit = effectiveLimit,
+                };
+                var runs = await runStore.QueryAsync(query, ct).ConfigureAwait(false);
+                // CountAsync applies the same filter but ignores Offset/Limit (store contract), so the
+                // envelope carries the filter-wide total — pagers need it to know more pages exist.
+                var totalCount = await runStore.CountAsync(query, ct).ConfigureAwait(false);
+                return Results.Ok(new PageEnvelope<BatchRun>
+                {
+                    Items = runs,
+                    TotalCount = totalCount,
+                    Offset = effectiveOffset,
+                    Limit = effectiveLimit,
+                });
+            })
+            .WithUKBatchName(operationIdPrefix, "QueryRuns")
+            .WithSummary("Lists batch RUNS newest-first, optionally filtered by definition id. `includeRunning` (default true) keeps in-progress runs in the result. Filtering by specific terminal statuses is store-API-only and not exposed here.");
+
+        // POST /batches/{batchRunId}/cancel — administrative run cancel. This is an admin override whose
+        // purpose is to kill a run stuck on an approval gate nobody can decide, so it is INDEPENDENT of
+        // the gate's AllowedRoles and inherits only this group's write auth posture.
+        batches.MapPost("/{batchRunId}/cancel", (
+                string batchRunId,
+                IBatchRunCanceller canceller) =>
+            {
+                ArgumentException.ThrowIfNullOrEmpty(batchRunId);
+                // 204 regardless of whether the run was live: an unknown / already-finished run is treated
+                // as already-cancelled (idempotent — mirrors the single-execution cancel).
+                canceller.Cancel(batchRunId);
+                return Results.NoContent();
+            })
+            .WithUKBatchName(operationIdPrefix, "CancelBatchRun")
+            .WithSummary("Cancels an in-flight batch RUN (the id returned from /run). Idempotent — returns 204 even if the run is unknown or already finished. Administrative override, independent of approval-gate roles.");
     }
 
     private static IResult BatchNotFound(string detail) =>

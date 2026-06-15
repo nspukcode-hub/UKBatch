@@ -132,6 +132,8 @@ public sealed class ApiPackageInvariantsTests
             "InMemoryJobStore.",
             "BatchDefinitionRegistry.",
             "JobDefinitionRegistry.",
+            "BatchScheduler.",
+            "BatchRunRegistry.",
         };
         var offenders = new List<string>();
         foreach (var file in Directory.GetFiles(apiDir, "*.cs", SearchOption.AllDirectories))

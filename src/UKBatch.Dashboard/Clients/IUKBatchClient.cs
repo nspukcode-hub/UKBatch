@@ -17,10 +17,10 @@ namespace UKBatch.Dashboard.Clients;
 /// from events on dispose.
 /// </summary>
 /// <remarks>
-/// <para><b>Surface organization (36 reflection members):</b></para>
+/// <para><b>Surface organization (38 reflection members):</b></para>
 /// <list type="bullet">
 ///   <item><b>Identity + lifecycle</b> (5 members — 2 props + 1 event + 2 methods): <c>Service</c>, <c>State</c>, <c>StateChanged</c>, <c>ConnectAsync</c>, <c>DisconnectAsync</c>.</item>
-///   <item><b>REST</b> (19 methods): job catalog/detail/trigger (3), batch catalog/by-id/by-name/run/run-status (5) + create/update/delete (3) = 8, execution detail/query/cancel (3), approval list/approve/reject/by-batch-gates (4), worker snapshot (1).</item>
+///   <item><b>REST</b> (21 methods): job catalog/detail/trigger (3), batch catalog/by-id/by-name/run/run-status (5) + create/update/delete (3) + run-list/run-cancel (2) = 10, execution detail/query/cancel (3), approval list/approve/reject/by-batch-gates (4), worker snapshot (1).</item>
 ///   <item><b>Hub events</b> (4 events): <see cref="ExecutionStateChanged"/>, <see cref="ProgressUpdated"/>, <see cref="ApprovalRequested"/>, <see cref="BatchCompleted"/>.</item>
 ///   <item><b>Hub subscriptions</b> (8 methods): Subscribe/Unsubscribe × {Execution, Batch, Job, All}.</item>
 /// </list>
@@ -84,7 +84,7 @@ public interface IUKBatchClient : IAsyncDisposable
     /// <summary>POST <c>/jobs/{name}/trigger</c>. Returns the new execution id.</summary>
     Task<string> TriggerJobAsync(string jobName, IReadOnlyDictionary<string, object?>? parameters, string? triggeredBy, CancellationToken ct);
 
-    // ── REST — Batches (8) ─────────────────────────────────────────────────────────────
+    // ── REST — Batches (10) ────────────────────────────────────────────────────────────
 
     /// <summary>GET <c>/batches</c> — paged via the server-side batch catalog service.</summary>
     Task<PageEnvelope<BatchDefinitionDto>> ListBatchesAsync(int offset, int limit, string? nameContains, BatchSource? source, CancellationToken ct);
@@ -118,6 +118,19 @@ public interface IUKBatchClient : IAsyncDisposable
     /// DELETE <c>/batches/by-id/{id}</c>. Idempotent (404-absent treated as success). Code-source → 400.
     /// </summary>
     Task DeleteBatchAsync(string definitionId, CancellationToken ct);
+
+    /// <summary>
+    /// GET <c>/batches/runs</c> — run-paginated history. Filter by <paramref name="batchDefinitionId"/>
+    /// (null = across definitions); <paramref name="includeRunning"/> false hides in-progress runs.
+    /// The page's <c>TotalCount</c> is the filter-wide total (so the pager can page).
+    /// </summary>
+    Task<PageEnvelope<BatchRun>> QueryRunsAsync(string? batchDefinitionId, bool includeRunning, int offset, int limit, CancellationToken ct);
+
+    /// <summary>
+    /// POST <c>/batches/{batchRunId}/cancel</c>. Administrative cancel of an in-flight run (unblocks a
+    /// parked approval gate). Idempotent — succeeds even if the run already finished or never existed.
+    /// </summary>
+    Task CancelRunAsync(string batchRunId, CancellationToken ct);
 
     // ── REST — Executions (3) ──────────────────────────────────────────────────────────
 

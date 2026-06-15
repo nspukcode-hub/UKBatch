@@ -8,7 +8,7 @@ namespace UKBatch.Dashboard.Tests.Diagnostics;
 /// <summary>
 /// Dashboard package invariants:
 /// <list type="bullet">
-/// <item><see cref="IUKBatchClient"/> surface lock (2 props + 5 events + 29 methods = 36 reflection members).</item>
+/// <item><see cref="IUKBatchClient"/> surface lock (2 props + 5 events + 31 methods = 38 reflection members).</item>
 /// <item>Friend-access discipline — the Dashboard consumes a single allowed Core internal type (lock test mirrors the Api side).</item>
 /// </list>
 /// </summary>
@@ -38,12 +38,13 @@ public sealed class DashboardPackageInvariants
     }
 
     [Fact]
-    public void IUKBatchClient_HasExactly_29_PublicMethods()
+    public void IUKBatchClient_HasExactly_31_PublicMethods()
     {
         // Lifecycle: ConnectAsync, DisconnectAsync (2)
         // REST jobs: ListJobsAsync, GetJobAsync, TriggerJobAsync (3)
         // REST batches: ListBatchesAsync, GetBatchByIdAsync, GetBatchByNameAsync, RunBatchByIdAsync,
-        // GetBatchRunStatusAsync (5) + CreateBatchAsync, UpdateBatchAsync, DeleteBatchAsync (3) = 8
+        // GetBatchRunStatusAsync (5) + CreateBatchAsync, UpdateBatchAsync, DeleteBatchAsync (3)
+        // + QueryRunsAsync, CancelRunAsync (2) = 10
         // REST executions: GetExecutionAsync, QueryExecutionsAsync, CancelExecutionAsync (3)
         // REST approvals: ListApprovalsAsync, ApproveAsync, RejectAsync, ListBatchGatesAsync (4)
         // REST workers: GetWorkersAsync (1)
@@ -54,19 +55,23 @@ public sealed class DashboardPackageInvariants
             .Where(m => !m.IsSpecialName)
             .Where(m => m.DeclaringType == typeof(IUKBatchClient))
             .ToArray();
-        methods.Should().HaveCount(29,
-            "IUKBatchClient surface lock: 2 lifecycle + 19 REST (incl. CreateBatchAsync, UpdateBatchAsync, DeleteBatchAsync, ListBatchGatesAsync, GetWorkersAsync) + 8 hub subs = 29 methods. " +
+        methods.Should().HaveCount(31,
+            "IUKBatchClient surface lock: 2 lifecycle + 21 REST (incl. CreateBatchAsync, UpdateBatchAsync, DeleteBatchAsync, QueryRunsAsync, CancelRunAsync, ListBatchGatesAsync, GetWorkersAsync) + 8 hub subs = 31 methods. " +
             $"Actual: {string.Join(", ", methods.Select(m => m.Name))}");
         methods.Select(m => m.Name).Should().Contain("GetWorkersAsync",
             "the dashboard Workers panel relies on the GetWorkersAsync REST surface.");
         methods.Select(m => m.Name).Should().Contain("ListBatchGatesAsync",
             "the run-detail gate colouring reads every gate's own outcome via ListBatchGatesAsync.");
+        methods.Select(m => m.Name).Should().Contain("QueryRunsAsync",
+            "the Executions Runs view and Batches/Detail recent runs read the run-store via QueryRunsAsync.");
+        methods.Select(m => m.Name).Should().Contain("CancelRunAsync",
+            "the run-detail Cancel run button trips an in-flight run via CancelRunAsync.");
     }
 
     [Fact]
-    public void IUKBatchClient_TotalSurface_Is_36_Members()
+    public void IUKBatchClient_TotalSurface_Is_38_Members()
     {
-        // Combined: 2 properties + 5 events + 29 methods = 36 reflection members.
+        // Combined: 2 properties + 5 events + 31 methods = 38 reflection members.
         var t = typeof(IUKBatchClient);
         var propCount = t.GetProperties(BindingFlags.Instance | BindingFlags.Public).Length;
         var eventCount = t.GetEvents(BindingFlags.Instance | BindingFlags.Public).Length;
@@ -74,8 +79,8 @@ public sealed class DashboardPackageInvariants
             .Where(m => !m.IsSpecialName)
             .Where(m => m.DeclaringType == typeof(IUKBatchClient))
             .Count();
-        (propCount + eventCount + methodCount).Should().Be(36,
-            "IUKBatchClient surface: 2 props + 5 events + 29 methods = 36 members.");
+        (propCount + eventCount + methodCount).Should().Be(38,
+            "IUKBatchClient surface: 2 props + 5 events + 31 methods = 38 members.");
     }
 
     [Fact]
@@ -111,6 +116,8 @@ public sealed class DashboardPackageInvariants
             "ProgressBeatBroadcaster.",
             "BatchCompletionEvents.",
             "BatchCompletionSignalPayload.",
+            "BatchRunRegistry.",
+            "BatchScheduler.",
         };
         var offenders = new List<string>();
         foreach (var file in Directory.GetFiles(dashboardDir, "*.cs", SearchOption.AllDirectories))
