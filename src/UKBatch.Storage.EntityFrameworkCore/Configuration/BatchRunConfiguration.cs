@@ -25,6 +25,7 @@ internal sealed class BatchRunConfiguration : IEntityTypeConfiguration<BatchRunE
         b.Property(e => e.BatchName).HasMaxLength(512).IsRequired();
         b.Property(e => e.Status).HasConversion<string>().HasMaxLength(32);   // nullable enum→string; null column allowed
         b.Property(e => e.TriggeredBy).HasMaxLength(256);
+        b.Property(e => e.CurrentStepIndex);                                  // nullable int resume cursor; no index needed
 
         if (_isSqlite)
         {

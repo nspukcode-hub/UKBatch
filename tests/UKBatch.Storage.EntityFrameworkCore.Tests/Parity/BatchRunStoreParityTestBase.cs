@@ -143,6 +143,53 @@ public abstract class BatchRunStoreParityTestBase : IAsyncLifetime
         (await Store.GetAsync("ghost", CancellationToken.None)).Should().BeNull("the absent id must not be inserted");
     }
 
+    // ===== update cursor: resume marker round-trip =====
+
+    [Fact]
+    public async Task CreatedRun_CurrentStepIndex_DefaultsToNull()
+    {
+        await SeedAsync(TestData.BatchRun("r1", stepCount: 3));
+
+        var fetched = (await Store.GetAsync("r1", CancellationToken.None))!;
+        fetched.CurrentStepIndex.Should().BeNull("a freshly created run has no cursor recorded yet");
+    }
+
+    [Fact]
+    public async Task UpdateCursorAsync_SetsCursor_AndPreservesOtherFields()
+    {
+        await SeedAsync(TestData.BatchRun("r1", batchDefinitionId: "def-A", batchName: "Invoices", stepCount: 3));
+
+        await Store.UpdateCursorAsync("r1", 2, CancellationToken.None);
+
+        var fetched = (await Store.GetAsync("r1", CancellationToken.None))!;
+        fetched.CurrentStepIndex.Should().Be(2, "the resume cursor round-trips on every provider");
+        fetched.Status.Should().BeNull("advancing the cursor must not terminate the run");
+        fetched.BatchDefinitionId.Should().Be("def-A", "a cursor write must not disturb create-time fields");
+        fetched.BatchName.Should().Be("Invoices");
+        fetched.StepCount.Should().Be(3);
+        fetched.Total.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task UpdateCursorAsync_OverwritesPreviousCursor_LastWriteWins()
+    {
+        await SeedAsync(TestData.BatchRun("r1", stepCount: 5, currentStepIndex: 1));
+
+        await Store.UpdateCursorAsync("r1", 4, CancellationToken.None);
+
+        var fetched = (await Store.GetAsync("r1", CancellationToken.None))!;
+        fetched.CurrentStepIndex.Should().Be(4);
+    }
+
+    [Fact]
+    public async Task UpdateCursorAsync_AbsentId_IsNoOp_DoesNotThrow()
+    {
+        var act = async () => await Store.UpdateCursorAsync("ghost", 1, CancellationToken.None);
+
+        await act.Should().NotThrowAsync("a cursor write on a missing row must be a no-op on every provider");
+        (await Store.GetAsync("ghost", CancellationToken.None)).Should().BeNull("the absent id must not be inserted");
+    }
+
     // ===== query: filters =====
 
     [Fact]

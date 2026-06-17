@@ -3,6 +3,7 @@ using UKBatch.Abstractions.Batches;
 using UKBatch.Abstractions.Jobs;
 using UKBatch.Abstractions.Models;
 using UKBatch.Abstractions.Runtime;
+using UKBatch.Abstractions.Storage;
 using UKBatch.Abstractions.Transport;
 using UKBatch.Internal;
 using UKBatch.Validation;
@@ -29,6 +30,9 @@ internal sealed class BatchExecutor
     private readonly string? _thisServiceName;
     private readonly TimeProvider _timeProvider;
     private readonly CrossServiceStepInvoker _crossServiceInvoker;
+    private readonly IResumeShadowProbe? _resumeShadowProbe;
+    private readonly IResumeGateProbe? _resumeGateProbe;
+    private readonly Func<int, CancellationToken, Task>? _onStepCompleted;
     private readonly ILogger<BatchExecutor> _logger;
 
     /// <summary>Constructs the executor.</summary>
@@ -42,6 +46,22 @@ internal sealed class BatchExecutor
     /// </param>
     /// <param name="timeProvider">Clock for <see cref="JobMessage.EnqueuedAtUtc"/>.</param>
     /// <param name="logger">Diagnostic logger.</param>
+    /// <param name="onStepCompleted">
+    /// Optional resume-cursor seam, invoked with the next-to-run step index after each step succeeds.
+    /// <c>null</c> on the normal trigger path (no cursor is recorded); bound by the resume entry point
+    /// to persist progress so a host restart can continue from the recorded point.
+    /// </param>
+    /// <param name="resumeGateProbe">
+    /// Optional resume idempotency probe for approval gates. <c>null</c> on the trigger path (no prior
+    /// decision exists yet, so the gate arm is byte-for-byte); bound by the resume entry point so a gate
+    /// already decided before a crash is honored instead of re-opened.
+    /// </param>
+    /// <param name="resumeShadowProbe">
+    /// Optional resume idempotency probe for cross-service steps, threaded into the shared
+    /// <see cref="CrossServiceStepInvoker"/>. <c>null</c> on the trigger path (first-pass dispatch
+    /// unchanged); bound by the resume entry point so a cross-service step that already terminated before a
+    /// crash is not re-dispatched.
+    /// </param>
     public BatchExecutor(
         IJobRunnerInternal runner,
         IApprovalGateCoordinator approvalCoordinator,
@@ -49,7 +69,10 @@ internal sealed class BatchExecutor
         ITransport transport,
         string? thisServiceName,
         TimeProvider timeProvider,
-        ILogger<BatchExecutor> logger)
+        ILogger<BatchExecutor> logger,
+        Func<int, CancellationToken, Task>? onStepCompleted = null,
+        IResumeGateProbe? resumeGateProbe = null,
+        IResumeShadowProbe? resumeShadowProbe = null)
     {
         ArgumentNullException.ThrowIfNull(runner);
         ArgumentNullException.ThrowIfNull(approvalCoordinator);
@@ -63,7 +86,10 @@ internal sealed class BatchExecutor
         _transport = transport;
         _thisServiceName = thisServiceName;
         _timeProvider = timeProvider;
-        _crossServiceInvoker = new CrossServiceStepInvoker(transport, runner, thisServiceName, timeProvider);
+        _resumeShadowProbe = resumeShadowProbe;   // null in the byte-for-byte trigger path
+        _resumeGateProbe = resumeGateProbe;       // null in the byte-for-byte trigger path
+        _crossServiceInvoker = CrossServiceStepInvoker.Create(transport, runner, thisServiceName, timeProvider, resumeShadowProbe);
+        _onStepCompleted = onStepCompleted;   // null in the byte-for-byte trigger path
         _logger = logger;
     }
 
@@ -73,12 +99,23 @@ internal sealed class BatchExecutor
     /// <see cref="BatchFailurePolicy.StopOnFailure"/> or <see cref="BatchFailurePolicy.Compensate"/>
     /// re-throws.
     /// </summary>
+    /// <param name="def">The batch definition to run.</param>
+    /// <param name="batchId">The batch RUN id (one per run).</param>
+    /// <param name="initial">Initial parameters merged into each step's parameters.</param>
+    /// <param name="triggeredBy">Identity that triggered the run; <c>null</c> when unattributed.</param>
+    /// <param name="cancellationToken">Cancels the run (host shutdown / administrative cancel).</param>
+    /// <param name="startStepIndex">
+    /// Index into the ordered step sequence to start from. <c>0</c> (the default) runs the whole batch
+    /// from the beginning — the byte-for-byte trigger path. A resume passes the recorded cursor so
+    /// already-completed steps are skipped.
+    /// </param>
     public async Task RunAsync(
         BatchDefinition def,
         string batchId,
         JobParameters initial,
         string? triggeredBy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int startStepIndex = 0)
     {
         ArgumentNullException.ThrowIfNull(def);
         ArgumentException.ThrowIfNullOrEmpty(batchId);
@@ -94,11 +131,21 @@ internal sealed class BatchExecutor
         var orderedSteps = def.Steps.OrderBy(s => s.Order).ToList();
         Exception? firstFailure = null;
 
-        foreach (var step in orderedSteps)
+        for (var i = startStepIndex; i < orderedSteps.Count; i++)
         {
+            var step = orderedSteps[i];
             try
             {
                 await RunStepAsync(def, batchId, step, initial, triggeredBy, cancellationToken).ConfigureAwait(false);
+
+                // Persist the resume cursor AFTER the step succeeds (next-to-run = i + 1). Skipped
+                // entirely on the trigger path (seam unbound) — zero added work, identical exception
+                // surface. Placed inside the try, after the await, so a cursor write only happens on a
+                // genuinely completed step; a failed step throws above and never advances the cursor.
+                if (_onStepCompleted is not null)
+                {
+                    await _onStepCompleted(i + 1, cancellationToken).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -176,6 +223,10 @@ internal sealed class BatchExecutor
                 _logger.LogWarning(failure, "Batch {Batch} step {Step} failed; continuing per ContinueOnFailure policy.", batchId, step.StepId);
                 firstFailure ??= failure;
                 continueLoop = true;
+                // The cursor is NOT advanced for the failed step itself (the cursor write lives inside the
+                // try, after a successful await, so a throw skips it); it next advances when a LATER step
+                // succeeds. This is moot in practice: a ContinueOnFailure run always reaches a terminal
+                // status and is never resumed, so its cursor is never read.
                 return null;
 
             case BatchFailurePolicy.Compensate:
@@ -256,7 +307,8 @@ internal sealed class BatchExecutor
                     def, batchId, step, initial, triggeredBy,
                     _runner, _awaiter,
                     _transport, _thisServiceName, _timeProvider,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    _resumeShadowProbe).ConfigureAwait(false);
                 break;
 
             case BatchStepType.ApprovalGate:
@@ -265,6 +317,54 @@ internal sealed class BatchExecutor
                 {
                     throw new InvalidOperationException($"Step {step.StepId} is ApprovalGate but has no payload.");
                 }
+
+                // Resume idempotency: if THIS run already has a decided gate for THIS step (recorded before
+                // a crash), honor that decision instead of opening a fresh gate and blocking on a human
+                // again. Pending/absent → fall through to the normal await — and on the first pass there is
+                // no decided record yet, so the probe (null on the trigger path, empty result on resume)
+                // leaves this byte-for-byte.
+                if (_resumeGateProbe is not null)
+                {
+                    var priorOutcome = await _resumeGateProbe
+                        .TryGetDecidedOutcomeAsync(batchId, step.StepId, cancellationToken).ConfigureAwait(false);
+                    if (priorOutcome is { } outcome)
+                    {
+                        switch (outcome)
+                        {
+                            case ApprovalRecordOutcome.Approved:
+                            case ApprovalRecordOutcome.AutoApproved:
+                                break;   // already approved → skip the gate, proceed to the next step
+                            case ApprovalRecordOutcome.Rejected:
+                            case ApprovalRecordOutcome.TimedOutFail:
+                            case ApprovalRecordOutcome.Dismissed:
+                                // A genuine negative decision (human reject / timeout-fail / legacy dismiss)
+                                // fails the step exactly as it failed the original run.
+                                throw new BatchStepFailureException(
+                                    $"Step {step.StepId} approval gate was decided '{outcome}' on a prior attempt.");
+                            default:
+                                // Interrupted / Cancelled are crash-orphan markers (reaper-set or torn down),
+                                // NOT human decisions. Re-OPEN the gate so a real decision can still be made.
+                                await _approvalCoordinator.AwaitApprovalAsync(batchId, step.StepId, step.Approval, def.Name, def.Id, cancellationToken).ConfigureAwait(false);
+                                break;
+                        }
+                        break;
+                    }
+
+                    // No decided record, but a PENDING gate from a prior attempt may exist (a crash or
+                    // graceful shutdown within the reaper grace window left it Pending). RE-ATTACH to that
+                    // gate instead of minting a SECOND pending gate — otherwise the operator would see two
+                    // identical approvals for one step. null → no pending gate → fall through to the normal
+                    // mint (the first-attempt path).
+                    var pendingId = await _resumeGateProbe
+                        .TryGetPendingApprovalIdAsync(batchId, step.StepId, cancellationToken).ConfigureAwait(false);
+                    if (pendingId is { } existingId)
+                    {
+                        await _approvalCoordinator.ReattachApprovalAsync(
+                            existingId, batchId, step.StepId, step.Approval, def.Name, def.Id, cancellationToken).ConfigureAwait(false);
+                        break;
+                    }
+                }
+
                 await _approvalCoordinator.AwaitApprovalAsync(batchId, step.StepId, step.Approval, def.Name, def.Id, cancellationToken).ConfigureAwait(false);
                 break;
             }

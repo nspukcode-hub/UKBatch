@@ -46,10 +46,25 @@ internal sealed record class ApprovalGateRegistration
     /// resolve <see cref="Tcs"/>, so the centralized durable-record write in the
     /// <c>AwaitApprovalAsync</c> resolution path can attribute the outcome. <c>null</c> for outcomes
     /// produced WITHOUT a human (auto-approve / timeout-fail / cancellation) — those use sentinels.
-    /// Single-writer per gate lifecycle (one decision), so a plain settable property is safe.
+    /// Made single-writer by <see cref="TryClaimDecision"/>: only the caller that wins the claim writes
+    /// these fields, so two concurrent decisions can never cross outcome and attribution.
     /// </summary>
     public string? DecidedBy { get; set; }
 
     /// <summary>Decision note (approve) or reason (reject) captured before TCS resolution; <c>null</c> otherwise.</summary>
     public string? DecisionNote { get; set; }
+
+    private int _decisionClaimed;
+
+    /// <summary>
+    /// Atomically claims the right to record the human decision (set <see cref="DecidedBy"/>/
+    /// <see cref="DecisionNote"/> and resolve <see cref="Tcs"/>). Returns <c>true</c> for the FIRST caller,
+    /// <c>false</c> for any concurrent later one — which must then no-op. Without this, two concurrent
+    /// approve/reject calls both write the attribution fields and the LOSER (whose
+    /// <c>TrySetResult</c> didn't take) could overwrite the WINNER's — the outcome stays correct (the TCS
+    /// has a single winner) but the audit record would record the wrong decider/note. The timeout and
+    /// cancellation paths deliberately do NOT claim: they attribute with sentinels
+    /// (&lt;system&gt;/&lt;cancelled&gt;) and never read these fields.
+    /// </summary>
+    public bool TryClaimDecision() => Interlocked.CompareExchange(ref _decisionClaimed, 1, 0) == 0;
 }

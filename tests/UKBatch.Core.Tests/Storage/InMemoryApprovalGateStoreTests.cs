@@ -58,7 +58,8 @@ public sealed class InMemoryApprovalGateStoreTests
         var store = new InMemoryApprovalGateStore();
         var act = async () => await store.RecordOutcomeAsync(
             "ghost", ApprovalRecordOutcome.Approved, "x", T0, null, CancellationToken.None);
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*not found*");
+        (await act.Should().ThrowAsync<ApprovalGateNotFoundException>().WithMessage("*not found*"))
+            .Which.ApprovalId.Should().Be("ghost");
     }
 
     [Fact]

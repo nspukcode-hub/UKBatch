@@ -14,9 +14,11 @@ namespace UKBatch.Core.Tests.Runtime;
 /// <c>JobRunner.TriggerBatchAsync</c> captures the run's terminal verdict on
 /// <see cref="BatchCompletionSignalPayload.RuntimeTerminalStatus"/> so the hub fan-out can override a
 /// row aggregate that is blind to a gate failure. This pins the classification: a rejected approval
-/// gate (StopOnFailure) rethrows out of RunAsync → <see cref="JobStatus.Failed"/>; a host-stop while the
-/// run is parked on a gate → <see cref="JobStatus.Cancelled"/>; a clean completion → <c>null</c>
-/// (trust the rows).
+/// gate (StopOnFailure) rethrows out of RunAsync → <see cref="JobStatus.Failed"/>; a graceful host stop
+/// while the run is parked on a gate → the run is LEFT IN-FLIGHT (no terminal verdict, run-store
+/// <c>Status</c> stays null) so it resumes on the next start; a clean completion → <c>null</c>
+/// (trust the rows). An ADMINISTRATIVE cancel — distinct from a host stop — still ends the run
+/// <see cref="JobStatus.Cancelled"/> (pinned by <c>JobRunnerBatchRunIntegrationTests</c>).
 /// </summary>
 public class JobRunnerTerminalStatusClassificationTests
 {
@@ -25,6 +27,26 @@ public class JobRunnerTerminalStatusClassificationTests
     public sealed class OkJob : IJob
     {
         public Task ExecuteAsync(JobContext context, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A job that signals it started, then parks on the host cancellation token until the host shuts down,
+    /// so a run can be caught mid-local-job at a graceful host stop.
+    /// </summary>
+    public sealed class ParkingJob : IJob
+    {
+        public static TaskCompletionSource Entered { get; private set; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public static void Reset() => Entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task ExecuteAsync(JobContext context, CancellationToken cancellationToken)
+        {
+            Entered.TrySetResult();
+            // Park until the host stop cancels this token (raises OperationCanceledException). Models work
+            // that is still in-flight when a graceful shutdown begins.
+            await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static IBatchCompletionEvents ResolveSignal(IServiceProvider sp)
@@ -97,11 +119,14 @@ public class JobRunnerTerminalStatusClassificationTests
     }
 
     [Fact]
-    public async Task HostStopWhileParkedOnGate_SignalsRuntimeTerminalCancelled()
+    public async Task HostStopWhileParkedOnGate_LeavesRunInFlight_DoesNotFinalize()
     {
         // A held gate (no timeout) parks the run until cancellation. Stopping the host cancels
         // ApplicationStopping → the gate resolves Cancelled → AwaitApprovalAsync throws
-        // OperationCanceledException → the closure's OCE catch classifies the run as Cancelled.
+        // OperationCanceledException. Because the PARENT host-stopping token is cancelled, the closure
+        // recognises a graceful host shutdown (not an administrative cancel) and LEAVES THE RUN IN-FLIGHT:
+        // no terminal verdict on the signal, and the run-store Status stays null so the next host's
+        // recovery resumes it.
         var host = await TestHostBuilder.StartAsync(b =>
         {
             b.AddJob<OkJob>();
@@ -112,22 +137,67 @@ public class JobRunnerTerminalStatusClassificationTests
         }).ConfigureAwait(false);
 
         var runner = host.Services.GetRequiredService<IJobRunner>();
+        var runStore = host.Services.GetRequiredService<IBatchRunStore>();
         var def = host.Services.GetRequiredService<IBatchDefinitionLookup>().TryGetByName("classify.hoststop")!;
 
         var batchId = await runner.TriggerBatchAsync(def.Id, null, "test", default).ConfigureAwait(false);
         await WaitForPendingGateAsync(host.Services).ConfigureAwait(false);
 
-        // Start reading BEFORE the stop so the post-cancellation signal is never missed.
+        // Start reading BEFORE the stop so the post-shutdown signal is never missed.
         using var cts = new CancellationTokenSource(SignalDeadline);
         var readTask = ReadPayloadAsync(host.Services, batchId, cts.Token);
 
-        // Cancels ApplicationStopping → the parked gate unblocks as Cancelled.
+        // Cancels ApplicationStopping → the parked gate unblocks; the closure leaves the run in-flight.
         await TestHostBuilder.StopGracefullyAsync(host).ConfigureAwait(false);
 
         var payload = await readTask.ConfigureAwait(false);
-        payload.Should().NotBeNull("the run must signal completion after host stop (60s deadlock backstop).");
-        payload!.RuntimeTerminalStatus.Should().Be(JobStatus.Cancelled,
-            "host stop cancels the parked gate, so the closure classifies the run as Cancelled, not Failed.");
+        payload.Should().NotBeNull("the run must still signal the in-process run is over after host stop (60s deadlock backstop).");
+        payload!.RuntimeTerminalStatus.Should().BeNull(
+            "a graceful host shutdown leaves the run in-flight (no terminal verdict), so recovery can resume it.");
+
+        // THE regression lock: the run-store record is NOT finalized — Status stays null (in-flight) so the
+        // next host's DurableRunRecovery resumes it instead of skipping a terminal Cancelled record.
+        var run = await runStore.GetAsync(batchId, CancellationToken.None).ConfigureAwait(false);
+        run.Should().NotBeNull("the run record was created at trigger time.");
+        run!.Status.Should().BeNull(
+            "graceful host shutdown must leave the run in-progress (Status null), NOT finalize it Cancelled.");
+        run.CompletedAtUtc.Should().BeNull("an in-flight run has no completion time.");
+    }
+
+    [Fact]
+    public async Task HostStop_WhileMidLocalJob_LeavesRunInFlight()
+    {
+        // The same discrimination for a run caught mid-LOCAL-JOB (not parked on a gate): a graceful host
+        // stop interrupts the running job with OCE; because the host-stopping token is cancelled, the run
+        // is left in-flight (Status null), not finalized Cancelled.
+        ParkingJob.Reset();
+        var host = await TestHostBuilder.StartAsync(b =>
+        {
+            b.AddJob<ParkingJob>();
+            b.AddBatch("classify.hoststop.job", x => x.RunJob<ParkingJob>());
+        }).ConfigureAwait(false);
+
+        var runner = host.Services.GetRequiredService<IJobRunner>();
+        var runStore = host.Services.GetRequiredService<IBatchRunStore>();
+        var def = host.Services.GetRequiredService<IBatchDefinitionLookup>().TryGetByName("classify.hoststop.job")!;
+
+        var batchId = await runner.TriggerBatchAsync(def.Id, null, "test", default).ConfigureAwait(false);
+        // Wait until the job is actually executing, so the host stop genuinely interrupts it mid-step.
+        await ParkingJob.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+
+        using var cts = new CancellationTokenSource(SignalDeadline);
+        var readTask = ReadPayloadAsync(host.Services, batchId, cts.Token);
+
+        await TestHostBuilder.StopGracefullyAsync(host).ConfigureAwait(false);
+
+        var payload = await readTask.ConfigureAwait(false);
+        payload.Should().NotBeNull("the run must signal the in-process run is over after host stop (60s deadlock backstop).");
+        payload!.RuntimeTerminalStatus.Should().BeNull(
+            "a graceful host shutdown mid-local-job leaves the run in-flight, not Cancelled.");
+
+        var run = await runStore.GetAsync(batchId, CancellationToken.None).ConfigureAwait(false);
+        run!.Status.Should().BeNull(
+            "graceful host shutdown mid-local-job must leave the run in-progress (Status null) for recovery.");
     }
 
     [Fact]

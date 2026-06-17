@@ -23,6 +23,13 @@ namespace UKBatch.Runtime;
 internal static class ParallelGroupRunner
 {
     /// <summary>Executes a parallel-group step and joins per <see cref="ParallelGroupData.JoinPolicy"/>.</summary>
+    /// <remarks>
+    /// <paramref name="resumeShadowProbe"/> is the OPTIONAL cross-service resume idempotency probe,
+    /// threaded into the shared <see cref="CrossServiceStepInvoker"/> so a cross-service CHILD that already
+    /// terminated before a crash is not re-dispatched on resume. <c>null</c> on the trigger path keeps the
+    /// child dispatch byte-for-byte (the trailing-optional accommodation: an optional parameter cannot
+    /// precede the existing non-defaulted <paramref name="cancellationToken"/>).
+    /// </remarks>
     public static async Task RunAsync(
         BatchDefinition def,
         string batchId,
@@ -34,7 +41,8 @@ internal static class ParallelGroupRunner
         ITransport transport,
         string? thisServiceName,
         TimeProvider timeProvider,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IResumeShadowProbe? resumeShadowProbe = null)
     {
         ArgumentNullException.ThrowIfNull(def);
         ArgumentException.ThrowIfNullOrEmpty(batchId);
@@ -48,7 +56,7 @@ internal static class ParallelGroupRunner
         var group = groupStep.ParallelGroup
             ?? throw new InvalidOperationException($"Step {groupStep.StepId} is ParallelGroup but has no payload.");
 
-        var crossServiceInvoker = new CrossServiceStepInvoker(transport, runner, thisServiceName, timeProvider);
+        var crossServiceInvoker = CrossServiceStepInvoker.Create(transport, runner, thisServiceName, timeProvider, resumeShadowProbe);
 
         using var groupCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var children = group.Steps.OrderBy(s => s.Order).ToList();

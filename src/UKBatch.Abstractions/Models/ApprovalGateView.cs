@@ -30,4 +30,10 @@ public sealed record class ApprovalGateView
 
     /// <summary>Terminal decision once <see cref="Status"/> is decided; <c>null</c> while pending.</summary>
     public ApprovalRecordOutcome? Outcome { get; init; }
+
+    /// <summary>
+    /// UTC time the gate was decided; <c>null</c> while pending. Lets a consumer order multiple decided
+    /// records for the same step by decision recency instead of relying on the id's sort format.
+    /// </summary>
+    public DateTimeOffset? DecidedAtUtc { get; init; }
 }

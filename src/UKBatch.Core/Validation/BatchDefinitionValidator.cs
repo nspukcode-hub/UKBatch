@@ -47,7 +47,65 @@ internal static class BatchDefinitionValidator
             ValidateStep(def.OnFailureSteps[i], $"OnFailureSteps[{i}]", errors, allowParallel: true);
         }
 
+        ValidateStepIdUniqueness(def, errors);
+
         return new ValidationResult(errors);
+    }
+
+    /// <summary>
+    /// Every step in a definition must carry a unique <see cref="BatchStep.StepId"/> — across the main
+    /// sequence, ParallelGroup children, and compensation (OnFailure) steps. The id is the durable
+    /// correlation key that ties an execution row (and an approval-gate or cross-service shadow record)
+    /// back to its step; a reused id makes that mapping ambiguous and breaks per-step lookups. Tooling
+    /// (the fluent builder and the wizard) already generates collision-free ids, so this rejects only a
+    /// hand-built or REST-supplied definition that reuses one.
+    /// </summary>
+    private static void ValidateStepIdUniqueness(BatchDefinition def, List<ValidationError> errors)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var duplicates = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var stepId in EnumerateStepIds(def))
+        {
+            // Blank ids are already reported by ValidateStep; skip them here so a definition missing an
+            // id is not also flagged as a (spurious) duplicate of another blank.
+            if (string.IsNullOrWhiteSpace(stepId))
+            {
+                continue;
+            }
+            if (!seen.Add(stepId))
+            {
+                duplicates.Add(stepId);
+            }
+        }
+
+        foreach (var dup in duplicates)
+        {
+            errors.Add(new ValidationError("StepId", $"duplicate step id '{dup}' — every step id in a definition must be unique"));
+        }
+    }
+
+    /// <summary>
+    /// Walks every step id in the definition: top-level steps, single-level ParallelGroup children, and
+    /// OnFailure (compensation) steps — the same id space the runtime correlates against.
+    /// </summary>
+    private static IEnumerable<string> EnumerateStepIds(BatchDefinition def)
+    {
+        foreach (var step in def.Steps)
+        {
+            yield return step.StepId;
+            if (step.StepType == BatchStepType.ParallelGroup && step.ParallelGroup is not null)
+            {
+                foreach (var child in step.ParallelGroup.Steps)
+                {
+                    yield return child.StepId;
+                }
+            }
+        }
+        foreach (var step in def.OnFailureSteps)
+        {
+            yield return step.StepId;
+        }
     }
 
     private static void ValidateStep(BatchStep step, string path, List<ValidationError> errors, bool allowParallel)

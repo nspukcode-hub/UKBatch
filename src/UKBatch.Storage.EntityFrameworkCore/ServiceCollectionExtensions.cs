@@ -95,13 +95,18 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IApprovalGateStore, EfApprovalGateStore>();
         services.AddSingleton<IBatchRunStore, EfBatchRunStore>();
 
-        // 4) Hosted services. Migrator (when opted-in) BEFORE the reaper (it creates the tables the
-        //    reaper queries). The schema-guard warn-log is always present.
-        //    Recovery push is DROPPED — ApprovalGateService.ListPendingAsync is store-aware.
+        // 4) Hosted services, in start order (hosted services start in registration order):
+        //    migrator (when opted-in; creates the tables the others query) →
+        //    durable run recovery (re-launch in-flight runs with ResumeForward) →
+        //    schema guard (warn-log) →
+        //    orphan reaper (tombstone what recovery did NOT relaunch).
+        //    Recovery runs BEFORE the reaper so it re-dispatches a resumed run's remaining steps before
+        //    the reaper tombstones that run's prior orphaned execution rows.
         if (opts.MigrateOnStartup)
         {
             services.AddSingleton<IHostedService, EfMigrationHostedService>();
         }
+        services.AddSingleton<IHostedService, DurableRunRecovery>();
         services.AddSingleton<IHostedService, EfSchemaGuardHostedService>();
         services.AddSingleton<IHostedService, OrphanedExecutionReaper>();
 

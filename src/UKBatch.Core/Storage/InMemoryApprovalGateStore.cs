@@ -76,7 +76,10 @@ public sealed class InMemoryApprovalGateStore : IApprovalGateStore
         // AddOrUpdate-style guard: throw on absent (parity with the EF store's direct-caller contract).
         if (!_gates.TryGetValue(approvalId, out var existing))
         {
-            throw new InvalidOperationException($"Approval gate {approvalId} not found.");
+            throw new ApprovalGateNotFoundException($"Approval gate {approvalId} not found.")
+            {
+                ApprovalId = approvalId,
+            };
         }
         if (existing.Status == ApprovalRecordStatus.Decided)
         {

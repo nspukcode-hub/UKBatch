@@ -114,7 +114,8 @@ public sealed class EfApprovalGateStoreTests : IAsyncLifetime
         // the typed throw. (ApprovalGateService downgrades this to a warn-log for its never-persisted
         // crash-orphan path — but the STORE itself keeps the throw.)
         var act = async () => await _store.RecordOutcomeAsync("ghost", ApprovalRecordOutcome.Approved, "x", T0, null, CancellationToken.None);
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*not found*");
+        (await act.Should().ThrowAsync<ApprovalGateNotFoundException>().WithMessage("*not found*"))
+            .Which.ApprovalId.Should().Be("ghost");
     }
 
     [Fact]

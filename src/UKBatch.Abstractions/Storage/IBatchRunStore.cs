@@ -49,6 +49,23 @@ public interface IBatchRunStore
         DateTimeOffset completedAtUtc,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Sets the run's resume cursor (<see cref="BatchRun.CurrentStepIndex"/>) to
+    /// <paramref name="nextStepIndex"/> — the index of the next step to run. Called once per completed
+    /// step on the persistent path so a host restart can continue from the recorded point. A no-op when
+    /// the run id is absent (a torn-down or never-created run must not resurrect a half-row), mirroring
+    /// <see cref="CompleteAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// Last-write-wins; not deduped. The runtime advances the cursor monotonically within a single run
+    /// owner, so concurrent writers do not occur in practice. The default in-memory store overrides this
+    /// (cursors are observable in-process for tests); a store that cannot persist a cursor MAY leave the
+    /// default no-op (durable resume then degrades to "restart from the beginning", the pre-resume
+    /// behavior). Added in the durable-resume release.
+    /// </remarks>
+    Task UpdateCursorAsync(string batchId, int nextStepIndex, CancellationToken cancellationToken)
+        => Task.CompletedTask;   // default no-op: forward-compat for external stores
+
     /// <summary>Returns the run by id, or <c>null</c> if absent.</summary>
     Task<BatchRun?> GetAsync(string batchId, CancellationToken cancellationToken);
 

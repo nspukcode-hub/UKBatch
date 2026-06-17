@@ -155,6 +155,9 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Sqlite
                     b.Property<string>("CompletedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("CurrentStepIndex")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("Failed")
                         .HasColumnType("INTEGER");
 

@@ -427,4 +427,108 @@ public class BatchDefinitionValidatorTests
         var result = BatchDefinitionValidator.Validate(def);
         result.IsValid.Should().BeTrue();
     }
+
+    [Fact]
+    public void Validate_DuplicateTopLevelStepId_Fails()
+    {
+        var def = MinimalValid() with
+        {
+            Steps = new[]
+            {
+                new BatchStep { StepId = "dup", Order = 0, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "a" } },
+                new BatchStep { StepId = "dup", Order = 1, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "b" } },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "StepId" && e.Message.Contains("dup", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validate_TopLevelStepIdReusedByParallelChild_Fails()
+    {
+        // A top-level step and a ParallelGroup child share an id within one definition.
+        var def = MinimalValid() with
+        {
+            Steps = new[]
+            {
+                new BatchStep { StepId = "shared", Order = 0, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "a" } },
+                new BatchStep
+                {
+                    StepId = "g",
+                    Order = 1,
+                    StepType = BatchStepType.ParallelGroup,
+                    ParallelGroup = new ParallelGroupData
+                    {
+                        JoinPolicy = ParallelJoinPolicy.WaitAll,
+                        Steps = new[]
+                        {
+                            new BatchStep { StepId = "shared", Order = 0, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "c1" } },
+                            new BatchStep { StepId = "c2", Order = 1, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "c2" } },
+                        },
+                    },
+                },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "StepId" && e.Message.Contains("shared", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validate_OnFailureStepReusesMainStepId_Fails()
+    {
+        // A compensation step reuses a main-sequence step id within one definition.
+        var def = MinimalValid() with
+        {
+            FailurePolicy = BatchFailurePolicy.Compensate,
+            Steps = new[]
+            {
+                new BatchStep { StepId = "s1", Order = 0, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "main" } },
+            },
+            OnFailureSteps = new[]
+            {
+                new BatchStep { StepId = "s1", Order = 0, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "rollback" } },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "StepId" && e.Message.Contains("s1", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validate_UniqueStepIdsAcrossAllRegions_Succeeds()
+    {
+        // Distinct ids across top-level steps, parallel children, and compensation steps — the rule
+        // must not flag a legitimately unique definition.
+        var def = MinimalValid() with
+        {
+            FailurePolicy = BatchFailurePolicy.Compensate,
+            Steps = new[]
+            {
+                new BatchStep { StepId = "s1", Order = 0, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "a" } },
+                new BatchStep
+                {
+                    StepId = "g",
+                    Order = 1,
+                    StepType = BatchStepType.ParallelGroup,
+                    ParallelGroup = new ParallelGroupData
+                    {
+                        JoinPolicy = ParallelJoinPolicy.WaitAll,
+                        Steps = new[]
+                        {
+                            new BatchStep { StepId = "c1", Order = 0, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "c1" } },
+                            new BatchStep { StepId = "c2", Order = 1, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "c2" } },
+                        },
+                    },
+                },
+            },
+            OnFailureSteps = new[]
+            {
+                new BatchStep { StepId = "comp1", Order = 0, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "rollback" } },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeTrue();
+    }
 }

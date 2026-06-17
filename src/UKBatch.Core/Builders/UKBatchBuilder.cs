@@ -230,6 +230,13 @@ public sealed class UKBatchBuilder
         Services.TryAddSingleton<ApprovalGateService>();
         Services.TryAddSingleton<IApprovalGateService>(sp => sp.GetRequiredService<ApprovalGateService>());
         Services.TryAddSingleton<IApprovalGateCoordinator>(sp => sp.GetRequiredService<ApprovalGateService>());
+        // Resume idempotency probes: read-only seams over the existing approval service + job store,
+        // consulted ONLY on the resume path (JobRunner.ResumeBatchAsync passes them; TriggerBatchAsync
+        // leaves them null so the first pass is byte-for-byte). They honor a gate already decided before a
+        // crash and skip a cross-service step that already terminated, so resume does not re-open an
+        // approved gate or repeat completed remote work.
+        Services.TryAddSingleton<IResumeGateProbe, ResumeGateProbe>();
+        Services.TryAddSingleton<IResumeShadowProbe, ResumeShadowProbe>();
         // Friend seam for the SignalR hub fan-out pump.
         Services.TryAddSingleton<IApprovalGateEvents>(sp => sp.GetRequiredService<ApprovalGateService>());
         // Friend seam for the SignalR hub progress fan-out.

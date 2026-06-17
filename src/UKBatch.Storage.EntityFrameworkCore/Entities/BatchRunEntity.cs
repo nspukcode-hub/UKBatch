@@ -16,6 +16,7 @@ internal sealed class BatchRunEntity
     public string? TriggeredBy { get; set; }
     public DateTimeOffset StartedAtUtc { get; set; }
     public DateTimeOffset? CompletedAtUtc { get; set; }
+    public int? CurrentStepIndex { get; set; }                 // resume cursor; null == no cursor recorded
     public int StepCount { get; set; }
     public int Total { get; set; }
     public int Succeeded { get; set; }

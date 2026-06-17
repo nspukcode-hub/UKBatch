@@ -27,6 +27,16 @@ public sealed class EfStorageOptions
     /// </summary>
     public TimeSpan OrphanGracePeriod { get; set; } = TimeSpan.FromMinutes(2);
 
+    /// <summary>
+    /// When <c>true</c> (default), in-flight batch runs left non-terminal by a prior host crash are
+    /// automatically resumed with <c>ResumePolicy.ResumeForward</c> at startup, before the orphan reaper
+    /// runs. Set <c>false</c> to disable automatic resume (the runs stay in-flight as honest history; the
+    /// orphan reaper still tombstones their interrupted execution rows). Independent of
+    /// <see cref="OrphanGracePeriod"/> — recovery re-launches a run regardless of how long ago it stalled,
+    /// because a resumable run is not an orphan.
+    /// </summary>
+    public bool ResumeInFlightRunsOnStartup { get; set; } = true;
+
     /// <summary>Selects the PostgreSQL (Npgsql) provider with the given connection string.</summary>
     public EfStorageOptions UsePostgres(string connectionString)
     {
