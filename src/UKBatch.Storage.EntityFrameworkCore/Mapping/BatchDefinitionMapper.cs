@@ -17,6 +17,7 @@ internal static class BatchDefinitionMapper
             Name = model.Name,
             Source = model.Source,
             Schedule = model.Schedule,
+            ScheduleCatchUpWindowTicks = model.ScheduleCatchUpWindow?.Ticks,
             Steps = model.Steps,
             FailurePolicy = model.FailurePolicy,
             OnFailureSteps = model.OnFailureSteps,
@@ -38,6 +39,7 @@ internal static class BatchDefinitionMapper
             Name = entity.Name,
             Source = entity.Source,
             Schedule = entity.Schedule,
+            ScheduleCatchUpWindow = entity.ScheduleCatchUpWindowTicks is { } t ? TimeSpan.FromTicks(t) : null,
             Steps = entity.Steps,
             FailurePolicy = entity.FailurePolicy,
             OnFailureSteps = entity.OnFailureSteps,
@@ -51,8 +53,8 @@ internal static class BatchDefinitionMapper
 
     /// <summary>
     /// Copies the EDITABLE fields from an incoming update onto the tracked entity (the update path).
-    /// Writes EXACTLY: <c>Name, Source, Schedule, Steps, FailurePolicy, OnFailureSteps,
-    /// Metadata</c>. Does NOT write <c>Id</c> (PK — identity), <c>Version</c> (the concurrency token
+    /// Writes EXACTLY: <c>Name, Source, Schedule, ScheduleCatchUpWindowTicks, Steps, FailurePolicy,
+    /// OnFailureSteps, Metadata</c>. Does NOT write <c>Id</c> (PK — identity), <c>Version</c> (the concurrency token
     /// — the update path sets <c>entity.Version = definition.Version + 1</c> AND
     /// <c>OriginalValue</c> explicitly, so an accidental copy here would clobber the tracked
     /// original-value and defeat the token), or <c>CreatedAtUtc</c>/<c>CreatedBy</c> (create-time
@@ -72,6 +74,7 @@ internal static class BatchDefinitionMapper
         dst.Name = src.Name;
         dst.Source = src.Source;
         dst.Schedule = src.Schedule;
+        dst.ScheduleCatchUpWindowTicks = src.ScheduleCatchUpWindow?.Ticks;
         dst.Steps = src.Steps;
         dst.FailurePolicy = src.FailurePolicy;
         dst.OnFailureSteps = src.OnFailureSteps;

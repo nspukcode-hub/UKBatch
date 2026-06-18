@@ -84,6 +84,26 @@ public sealed class EfBatchDefinitionStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateThenUpdate_ScheduleCatchUpWindow_RoundTrips_AndIsEditable()
+    {
+        // The new catch-up window persists through create and is editable on update (cleared to null),
+        // exercising the long?-ticks column + the mapper's both-direction conversion.
+        var created = await _store.CreateAsync(
+            TestData.BatchDef("def-cu", "daily", schedule: "0 0 0 * * *", scheduleCatchUpWindow: TimeSpan.FromHours(2)),
+            CancellationToken.None);
+
+        var fetched = await _store.GetAsync("def-cu", CancellationToken.None);
+        fetched!.ScheduleCatchUpWindow.Should().Be(TimeSpan.FromHours(2), "the catch-up window round-trips through SQLite");
+
+        // Clearing the window on update must persist as null (editable field).
+        var cleared = created with { ScheduleCatchUpWindow = null };
+        await _store.UpdateAsync(cleared, CancellationToken.None);
+
+        var afterClear = await _store.GetAsync("def-cu", CancellationToken.None);
+        afterClear!.ScheduleCatchUpWindow.Should().BeNull("clearing the catch-up window persists as null");
+    }
+
+    [Fact]
     public async Task UpdateAsync_BumpsVersion_AndPersistsEditableFields()
     {
         var created = await _store.CreateAsync(TestData.BatchDef("def-1", "original"), CancellationToken.None);

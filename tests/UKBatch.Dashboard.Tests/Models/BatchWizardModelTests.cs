@@ -60,6 +60,107 @@ public sealed class BatchWizardModelTests
  "edit-load hydrates Metadata so a subsequent save round-trips operator-set hints ");
     }
 
+    // ── schedule catch-up window carry ─────────────
+    // Mirrors the Metadata carry tests above: the window must project into both requests and round-trip
+    // back on edit-load so editing a scheduled batch never silently drops the operator's catch-up setting.
+
+    [Fact]
+    public void ToCreateRequest_WithScheduleAndCatchUpWindow_ProjectsTimeSpan()
+    {
+        var model = new BatchWizardModel
+        {
+            Name = "b",
+            Schedule = "0 0 * * * *",
+            CatchUpWindowValue = 6,
+            CatchUpWindowUnit = CatchUpWindowUnit.Hours,
+        };
+
+        model.ToCreateRequest(createdBy: null).ScheduleCatchUpWindow.Should().Be(TimeSpan.FromHours(6),
+            "a scheduled batch with a 6-hour catch-up window must carry that window into the create request");
+    }
+
+    [Fact]
+    public void ToUpdateRequest_WithScheduleAndCatchUpWindow_ProjectsTimeSpan()
+    {
+        var model = new BatchWizardModel
+        {
+            Id = "id",
+            Version = 2,
+            Name = "b",
+            Schedule = "0 0 * * * *",
+            CatchUpWindowValue = 30,
+            CatchUpWindowUnit = CatchUpWindowUnit.Minutes,
+        };
+
+        model.ToUpdateRequest().ScheduleCatchUpWindow.Should().Be(TimeSpan.FromMinutes(30),
+            "edit-mode Save must carry the catch-up window");
+    }
+
+    [Fact]
+    public void ToCreateRequest_EmptyCatchUpWindow_ProjectsNull()
+    {
+        // The common default: a scheduled batch with no catch-up window must send null (skip a missed fire).
+        var model = new BatchWizardModel { Name = "b", Schedule = "0 0 * * * *", CatchUpWindowValue = null };
+
+        model.ToCreateRequest(createdBy: null).ScheduleCatchUpWindow.Should().BeNull(
+            "no magnitude entered ⇒ no catch-up window");
+    }
+
+    [Fact]
+    public void ToCreateRequest_CatchUpWindowWithoutSchedule_ProjectsNull()
+    {
+        // The window has no effect without a schedule (the contract ignores it), so the request body must
+        // not claim a window the runtime won't honour.
+        var model = new BatchWizardModel
+        {
+            Name = "b",
+            Schedule = null,
+            CatchUpWindowValue = 10,
+            CatchUpWindowUnit = CatchUpWindowUnit.Hours,
+        };
+
+        model.ToCreateRequest(createdBy: null).ScheduleCatchUpWindow.Should().BeNull(
+            "a catch-up window without a schedule is projected as null (no effect at runtime)");
+    }
+
+    [Fact]
+    public void FromDefinition_RoundTripsCatchUpWindow_AsLargestWholeUnit()
+    {
+        // A persisted 6-hour window must hydrate the editable value+unit as the operator would recognise
+        // it (6 Hours, not 360 Minutes), so an edit preserves it.
+        var dto = new BatchDefinitionDto
+        {
+            Id = "id", Name = "b", Source = BatchSource.Dashboard, Version = 1,
+            Schedule = "0 0 * * * *",
+            ScheduleCatchUpWindow = TimeSpan.FromHours(6),
+            Steps = [], FailurePolicy = BatchFailurePolicy.StopOnFailure,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+        };
+
+        var model = BatchWizardModel.FromDefinition(dto);
+
+        model.CatchUpWindowValue.Should().Be(6, "edit-load must not lose the configured catch-up window");
+        model.CatchUpWindowUnit.Should().Be(CatchUpWindowUnit.Hours);
+        model.ScheduleCatchUpWindow.Should().Be(TimeSpan.FromHours(6),
+            "the round-tripped value+unit recompose to the original window");
+    }
+
+    [Fact]
+    public void FromDefinition_NullCatchUpWindow_LeavesValueNull()
+    {
+        var dto = new BatchDefinitionDto
+        {
+            Id = "id", Name = "b", Source = BatchSource.Dashboard, Version = 1,
+            Schedule = "0 0 * * * *",
+            ScheduleCatchUpWindow = null,
+            Steps = [], FailurePolicy = BatchFailurePolicy.StopOnFailure,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+        };
+
+        BatchWizardModel.FromDefinition(dto).CatchUpWindowValue.Should().BeNull(
+            "a definition with no catch-up window loads as an empty field");
+    }
+
     [Fact]
     public void FromDefinition_ApprovalGateTimeout_RoundTripsIntoDraft()
     {

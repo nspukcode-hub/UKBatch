@@ -92,12 +92,14 @@ internal static class TestData
         string? schedule = null,
         BatchFailurePolicy failurePolicy = BatchFailurePolicy.StopOnFailure,
         IReadOnlyList<BatchStep>? onFailureSteps = null,
-        string? createdBy = null) => new()
+        string? createdBy = null,
+        TimeSpan? scheduleCatchUpWindow = null) => new()
         {
             Id = id,
             Name = name,
             Source = source,
             Schedule = schedule,
+            ScheduleCatchUpWindow = scheduleCatchUpWindow,
             Steps = steps ?? Array.Empty<BatchStep>(),
             FailurePolicy = failurePolicy,
             OnFailureSteps = onFailureSteps ?? Array.Empty<BatchStep>(),

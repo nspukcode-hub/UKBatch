@@ -109,6 +109,9 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Sqlite
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
+                    b.Property<long?>("ScheduleCatchUpWindowTicks")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -270,6 +273,21 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Sqlite
                     b.HasIndex("Status", "EnqueuedAtUtc");
 
                     b.ToTable("JobExecutions", (string)null);
+                });
+
+            modelBuilder.Entity("UKBatch.Storage.EntityFrameworkCore.Entities.ScheduleStateEntity", b =>
+                {
+                    b.Property<string>("BatchDefinitionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("LastFiredOccurrenceUtc")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("BatchDefinitionId");
+
+                    b.ToTable("ScheduleStates", (string)null);
                 });
 #pragma warning restore 612, 618
         }

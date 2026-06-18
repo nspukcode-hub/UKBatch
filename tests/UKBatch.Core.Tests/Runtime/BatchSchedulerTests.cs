@@ -115,6 +115,61 @@ public class BatchSchedulerTests
         public Task<long> CountAsync(BatchSource source, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
+    /// <summary>
+    /// In-test durable watermark store. Seedable + recording — there is no production in-memory
+    /// implementation (catch-up is EF-only), so the test supplies one to exercise the catch-up path.
+    /// Monotonic, mirroring the EF store contract.
+    /// </summary>
+    private sealed class RecordingScheduleStateStore : IScheduleStateStore
+    {
+        private readonly object _lock = new();
+        private readonly Dictionary<string, DateTimeOffset> _watermarks = new(StringComparer.Ordinal);
+        private readonly List<(string DefId, DateTimeOffset Occurrence)> _recorded = new();
+
+        public void Seed(string batchDefinitionId, DateTimeOffset occurrenceUtc)
+        {
+            lock (_lock) { _watermarks[batchDefinitionId] = occurrenceUtc; }
+        }
+
+        /// <summary>Every RecordFiredAsync call, in order.</summary>
+        public IReadOnlyList<(string DefId, DateTimeOffset Occurrence)> Recorded
+        {
+            get { lock (_lock) { return _recorded.ToList(); } }
+        }
+
+        public Task<IReadOnlyDictionary<string, DateTimeOffset>> GetAllAsync(CancellationToken cancellationToken)
+        {
+            lock (_lock)
+            {
+                return Task.FromResult<IReadOnlyDictionary<string, DateTimeOffset>>(
+                    new Dictionary<string, DateTimeOffset>(_watermarks, StringComparer.Ordinal));
+            }
+        }
+
+        public Task RecordFiredAsync(string batchDefinitionId, DateTimeOffset occurrenceUtc, CancellationToken cancellationToken)
+        {
+            lock (_lock)
+            {
+                _recorded.Add((batchDefinitionId, occurrenceUtc));
+                if (!_watermarks.TryGetValue(batchDefinitionId, out var existing) || occurrenceUtc > existing)
+                {
+                    _watermarks[batchDefinitionId] = occurrenceUtc;   // monotonic
+                }
+            }
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>A watermark store whose GetAllAsync faults — proves StartAsync still arms (empty dict) and does not crash.</summary>
+    private sealed class FaultingScheduleStateStore : IScheduleStateStore
+    {
+        public Task<IReadOnlyDictionary<string, DateTimeOffset>> GetAllAsync(CancellationToken cancellationToken)
+            => Task.FromException<IReadOnlyDictionary<string, DateTimeOffset>>(new InvalidOperationException("watermark store unavailable"));
+
+        public Task RecordFiredAsync(string batchDefinitionId, DateTimeOffset occurrenceUtc, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+    }
+
     /// <summary>A store that lists empty until <see cref="ShouldFault"/> is set, then faults — to prove a
     /// rescan failure is swallowed without breaking the initial start scan.</summary>
     private sealed class FaultingStore : IBatchDefinitionStore
@@ -161,12 +216,15 @@ public class BatchSchedulerTests
         }
     }
 
-    private static BatchDefinition Def(string id, string name, string? schedule, BatchSource source = BatchSource.Code) => new()
+    private static BatchDefinition Def(
+        string id, string name, string? schedule, BatchSource source = BatchSource.Code,
+        TimeSpan? catchUpWindow = null) => new()
     {
         Id = id,
         Name = name,
         Source = source,
         Schedule = schedule,
+        ScheduleCatchUpWindow = catchUpWindow,
         Steps = Array.Empty<BatchStep>(),
         FailurePolicy = BatchFailurePolicy.StopOnFailure,
         OnFailureSteps = Array.Empty<BatchStep>(),
@@ -178,7 +236,8 @@ public class BatchSchedulerTests
         FakeTimeProvider clock,
         IBatchDefinitionLookup? lookup = null,
         IBatchDefinitionStore? store = null,
-        RecordingRunner? runner = null)
+        RecordingRunner? runner = null,
+        IScheduleStateStore? scheduleState = null)
     {
         runner ??= new RecordingRunner();
         var fakeStore = store as FakeStore ?? new FakeStore();
@@ -195,6 +254,8 @@ public class BatchSchedulerTests
             new CronExpressionCache(),
             clock,
             options,
+            // Mirror DI: an empty enumerable when no durable store is present (catch-up inactive).
+            scheduleState is null ? Array.Empty<IScheduleStateStore>() : new[] { scheduleState },
             logger);
         return (scheduler, runner, fakeStore, logger);
     }
@@ -489,6 +550,285 @@ public class BatchSchedulerTests
             await Task.Delay(TimeSpan.FromMilliseconds(300));
             runner.CountFor("gone").Should().Be(countAtPrune,
                 "a definition found deleted at fire time is pruned from the heap, not re-armed as a zombie");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    // ----- Missed-fire catch-up (startup only, EF-only durable watermark, per-batch window) -----
+
+    // A daily-midnight cron makes the missed/stale windows unambiguous (occurrences are sparse, so the
+    // latest missed occurrence is not always seconds away from "now" the way an every-second cron is).
+    private const string DailyMidnight = "0 0 0 * * *";
+    private static readonly DateTimeOffset Jan1Midnight = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset Jan2Midnight = new(2026, 1, 2, 0, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public async Task CatchUp_MissedOccurrenceWithinWindow_FiresOnceAtStartup_NoClockAdvance_AndRecordsWatermarkFirst()
+    {
+        // Process was last up at Jan-1 midnight (the watermark) and is booting at Jan-2 00:30 — the Jan-2
+        // midnight occurrence was missed, 30 min ago, within the 1-hour catch-up window. It must replay
+        // exactly once at startup WITHOUT advancing the clock, and the watermark must be recorded before
+        // the trigger (persist-before-fire).
+        var clock = new FakeTimeProvider(Jan2Midnight.AddMinutes(30));
+        var state = new RecordingScheduleStateStore();
+        state.Seed("def-1", Jan1Midnight);
+        var lookup = new FakeLookup(Def("def-1", "daily", DailyMidnight, catchUpWindow: TimeSpan.FromHours(1)));
+        var (scheduler, runner, _, _) = Build(clock, lookup: lookup, scheduleState: state);
+
+        await scheduler.StartAsync(default);
+        try
+        {
+            // No clock advance: the armed entry is a PAST instant, so the loop fires it immediately.
+            var fired = await Waits.ForAsync(() => runner.CountFor("def-1") >= 1, TimeSpan.FromSeconds(10));
+            fired.Should().BeTrue("a missed occurrence within the window is replayed at startup with no clock advance");
+
+            // Hold the clock; the re-arm points at the next future occurrence (Jan-3 midnight), so no second fire.
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+            runner.CountFor("def-1").Should().Be(1, "the missed occurrence is coalesced to a single catch-up run");
+
+            state.Recorded.Should().ContainSingle()
+                .Which.Should().Be(("def-1", Jan2Midnight),
+                    "the watermark for the replayed occurrence is recorded (before the trigger) so a restart cannot double-fire it");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task CatchUp_MissedOccurrenceOlderThanWindow_DoesNotFire_ArmsNextFuture()
+    {
+        // Last up at Jan-1 midnight; booting at Jan-2 06:00. The missed Jan-2 midnight occurrence is 6
+        // hours old — outside the 1-hour window — so it is NOT replayed. Nothing fires until the next
+        // future occurrence (Jan-3 midnight), and no catch-up watermark is written.
+        var clock = new FakeTimeProvider(Jan2Midnight.AddHours(6));
+        var state = new RecordingScheduleStateStore();
+        state.Seed("def-1", Jan1Midnight);
+        var lookup = new FakeLookup(Def("def-1", "daily", DailyMidnight, catchUpWindow: TimeSpan.FromHours(1)));
+        var (scheduler, runner, _, _) = Build(clock, lookup: lookup, scheduleState: state);
+
+        await scheduler.StartAsync(default);
+        try
+        {
+            // Give the loop time to (not) fire a stale catch-up.
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+            runner.CountFor("def-1").Should().Be(0, "a missed occurrence older than the window is not replayed");
+            state.Recorded.Should().BeEmpty("no fire happened, so no watermark is recorded");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task CatchUp_NoMissedOccurrenceSinceWatermark_DoesNotFire()
+    {
+        // Last fired at Jan-2 midnight and booting only 30 minutes later — no NEW occurrence is due yet
+        // (the next is Jan-3 midnight). Nothing replays.
+        var clock = new FakeTimeProvider(Jan2Midnight.AddMinutes(30));
+        var state = new RecordingScheduleStateStore();
+        state.Seed("def-1", Jan2Midnight);
+        var lookup = new FakeLookup(Def("def-1", "daily", DailyMidnight, catchUpWindow: TimeSpan.FromHours(2)));
+        var (scheduler, runner, _, _) = Build(clock, lookup: lookup, scheduleState: state);
+
+        await scheduler.StartAsync(default);
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+            runner.CountFor("def-1").Should().Be(0, "no occurrence has come due since the last recorded fire");
+            state.Recorded.Should().BeEmpty();
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task CatchUp_NoWatermarkForDefinition_DoesNotFire_ArmsNextFuture()
+    {
+        // A catch-up-enabled batch with NO recorded watermark (first ever run) must not replay anything —
+        // there is no "last fired" to walk forward from. It simply arms its next future occurrence.
+        var clock = new FakeTimeProvider(Jan2Midnight.AddMinutes(30));
+        var state = new RecordingScheduleStateStore();   // empty — no watermark seeded
+        var lookup = new FakeLookup(Def("def-1", "daily", DailyMidnight, catchUpWindow: TimeSpan.FromHours(1)));
+        var (scheduler, runner, _, _) = Build(clock, lookup: lookup, scheduleState: state);
+
+        await scheduler.StartAsync(default);
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+            runner.CountFor("def-1").Should().Be(0, "with no watermark there is no missed occurrence to catch up");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task NullWindow_NoCatchUp_AndNoWatermarkWrittenEvenAfterNormalFire()
+    {
+        // A batch WITHOUT a catch-up window behaves exactly as before: even with a seeded watermark and a
+        // missed occurrence available, it never replays, and a normal scheduled fire writes NO watermark
+        // (the watermark store is only touched for catch-up-enabled batches).
+        var clock = new FakeTimeProvider(Jan2Midnight.AddMinutes(30));
+        var state = new RecordingScheduleStateStore();
+        state.Seed("def-1", Jan1Midnight);   // a missed Jan-2 occurrence exists, but the batch opts out
+        var lookup = new FakeLookup(Def("def-1", "every-second", "* * * * * *", catchUpWindow: null));
+        var (scheduler, runner, _, _) = Build(clock, lookup: lookup, scheduleState: state);
+
+        await scheduler.StartAsync(default);
+        try
+        {
+            // The next future occurrence fires after a 1-second advance (normal scheduling), NOT a catch-up.
+            clock.Advance(TimeSpan.FromSeconds(1));
+            var fired = await Waits.ForAsync(() => runner.CountFor("def-1") >= 1, TimeSpan.FromSeconds(10));
+            fired.Should().BeTrue("a window-less batch still fires on its normal schedule");
+
+            state.Recorded.Should().BeEmpty("no watermark is written for a batch without a catch-up window");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task NoScheduleStateStore_CatchUpInactive_DoesNotThrow()
+    {
+        // With no durable watermark store (the in-memory deployment), a catch-up-enabled batch is silently
+        // treated as no-catch-up: nothing replays, StartAsync does not throw.
+        var clock = new FakeTimeProvider(Jan2Midnight.AddMinutes(30));
+        var lookup = new FakeLookup(Def("def-1", "daily", DailyMidnight, catchUpWindow: TimeSpan.FromHours(1)));
+        var (scheduler, runner, _, _) = Build(clock, lookup: lookup, scheduleState: null);
+
+        var start = () => scheduler.StartAsync(default);
+        await start.Should().NotThrowAsync();
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+            runner.CountFor("def-1").Should().Be(0, "catch-up is inactive without a durable watermark store");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task GetAllAsyncThrows_StartStillArms_NoCrash()
+    {
+        // A faulting watermark store (e.g. the schedule table is not yet migrated) must not break startup:
+        // GetAllAsync's failure is swallowed (empty dict), so every batch arms its next future occurrence.
+        var clock = new FakeTimeProvider(Jan2Midnight.AddMinutes(30));
+        var faulting = new FaultingScheduleStateStore();
+        // every-second so the next future occurrence fires promptly after a 1s advance, proving startup armed.
+        var lookup = new FakeLookup(Def("def-1", "every-second", "* * * * * *", catchUpWindow: TimeSpan.FromHours(1)));
+        var (scheduler, runner, _, _) = Build(clock, lookup: lookup, scheduleState: faulting);
+
+        var start = () => scheduler.StartAsync(default);
+        await start.Should().NotThrowAsync("a watermark-read failure must not crash startup");
+        try
+        {
+            clock.Advance(TimeSpan.FromSeconds(1));
+            var fired = await Waits.ForAsync(() => runner.CountFor("def-1") >= 1, TimeSpan.FromSeconds(10));
+            fired.Should().BeTrue("the batch still arms its next future occurrence after the watermark read failed");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task NotifyDefinitionChanged_DoesNotCatchUp_NoPastDatedFire()
+    {
+        // A definition-change rescan must NEVER replay a missed occurrence — only the startup scan does.
+        // Start with no scheduled batch (so the startup scan catches nothing), then add a catch-up-enabled
+        // batch WITH a missed occurrence available and rescan: the rescan arms the next FUTURE occurrence,
+        // never the past one.
+        var clock = new FakeTimeProvider(Jan2Midnight.AddMinutes(30));
+        var state = new RecordingScheduleStateStore();
+        state.Seed("def-1", Jan1Midnight);   // a missed Jan-2 occurrence exists
+        var store = new FakeStore();          // empty at start
+        var (scheduler, runner, _, _) = Build(clock, store: store, scheduleState: state);
+
+        await scheduler.StartAsync(default);
+        try
+        {
+            // Now introduce the scheduled, catch-up-enabled batch and rescan.
+            store.Set(Def("def-1", "daily", DailyMidnight, BatchSource.Dashboard, catchUpWindow: TimeSpan.FromHours(1)));
+            await scheduler.NotifyDefinitionChangedAsync(CancellationToken.None);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+            runner.CountFor("def-1").Should().Be(0,
+                "a rescan arms the next future occurrence only; it must not retroactively fire a missed run");
+            state.Recorded.Should().BeEmpty("no catch-up fire happened on a rescan, so no watermark is written");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task CatchUp_WatermarkAfterNow_ClockMovedBack_DoesNotFire()
+    {
+        // A backward wall-clock correction (e.g. NTP) can leave the recorded watermark AFTER "now". There
+        // is no occurrence in the half-open (lastFired, now] interval to replay, so catch-up does nothing
+        // and the batch simply arms its next future occurrence — never a spurious past-dated fire.
+        var clock = new FakeTimeProvider(Jan1Midnight.AddHours(12));   // now is BEFORE the recorded watermark
+        var state = new RecordingScheduleStateStore();
+        state.Seed("def-1", Jan2Midnight);                              // last fired "in the future" relative to now
+        var lookup = new FakeLookup(Def("def-1", "daily", DailyMidnight, catchUpWindow: TimeSpan.FromHours(2)));
+        var (scheduler, runner, _, _) = Build(clock, lookup: lookup, scheduleState: state);
+
+        await scheduler.StartAsync(default);
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+            runner.CountFor("def-1").Should().Be(0, "a watermark after 'now' leaves no missed occurrence to replay");
+            state.Recorded.Should().BeEmpty();
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task CatchUp_DownAcrossMultipleSlots_FiresOnce_ForLatestMissed_Coalesced()
+    {
+        // Hourly cron, last up at 00:00, booting at 03:30 within a 4-hour window: three occurrences were
+        // missed (01:00, 02:00, 03:00). Catch-up coalesces to exactly ONE fire for the LATEST missed slot
+        // (03:00), never a burst, and the recorded watermark is that latest occurrence — so the earlier
+        // missed slots are not replayed on a subsequent restart.
+        const string hourly = "0 0 * * * *";
+        var bootAt = Jan1Midnight.AddHours(3).AddMinutes(30);
+        var latestMissed = Jan1Midnight.AddHours(3);
+        var clock = new FakeTimeProvider(bootAt);
+        var state = new RecordingScheduleStateStore();
+        state.Seed("def-1", Jan1Midnight);
+        var lookup = new FakeLookup(Def("def-1", "hourly", hourly, catchUpWindow: TimeSpan.FromHours(4)));
+        var (scheduler, runner, _, _) = Build(clock, lookup: lookup, scheduleState: state);
+
+        await scheduler.StartAsync(default);
+        try
+        {
+            var fired = await Waits.ForAsync(() => runner.CountFor("def-1") >= 1, TimeSpan.FromSeconds(10));
+            fired.Should().BeTrue("the latest missed occurrence replays at startup");
+
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+            runner.CountFor("def-1").Should().Be(1, "three missed slots coalesce to a single catch-up run, never a burst");
+            state.Recorded.Should().ContainSingle()
+                .Which.Should().Be(("def-1", latestMissed),
+                    "the watermark is the LATEST missed occurrence, closing the whole gap in one shot");
         }
         finally
         {

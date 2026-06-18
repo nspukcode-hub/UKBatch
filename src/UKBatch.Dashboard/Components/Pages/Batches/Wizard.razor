@@ -5,6 +5,7 @@
    — the host MUST also call app.UseAntiforgery(). *@
 @page "/dashboard/{ServiceName}/batches/new"
 @page "/dashboard/{ServiceName}/batches/{BatchId}/edit"
+@using System.Globalization
 @inject IUKBatchServiceRegistry Registry
 @inject IUKBatchClientFactory ClientFactory
 @inject IDashboardState State
@@ -257,6 +258,32 @@ else
             <span class="form-field__hint">Note: the schedule is stored with the definition but is NOT executed yet — batch cron scheduling
                 arrives in a future release. Until then, trigger batches manually or via the REST API.</span>
         </div>
+
+        <div class="form-field">
+            <label class="form-field__label" for="catchup-value">Missed-fire catch-up window</label>
+            <div class="form-row">
+                <input id="catchup-value" type="number" min="0" inputmode="numeric"
+                       class="form-field__input" placeholder="none"
+                       value="@_catchUpValueText"
+                       @onchange="OnCatchUpValueChanged"
+                       disabled="@(!HasSchedule)" />
+                <select class="form-field__select" @bind="_model.CatchUpWindowUnit" disabled="@(!HasSchedule)">
+                    <option value="@CatchUpWindowUnit.Minutes">Minutes</option>
+                    <option value="@CatchUpWindowUnit.Hours">Hours</option>
+                    <option value="@CatchUpWindowUnit.Days">Days</option>
+                </select>
+            </div>
+            @if (CatchUpWindowError() is { } cuErr)
+            {
+                <span class="form-field__error">@cuErr</span>
+            }
+            <span class="form-field__hint">Leave empty for no catch-up. If a scheduled fire is missed while the service is down,
+                it is caught up at most once on restart — and only if the missed run falls within this window. Requires durable (EF) storage.</span>
+            @if (!HasSchedule)
+            {
+                <span class="form-field__hint">No effect without a cron schedule above.</span>
+            }
+        </div>
     </div>;
 
     private RenderFragment RenderReviewStep() => @<div class="wizard-pane">
@@ -264,6 +291,7 @@ else
             <dt>Name</dt><dd>@_model.Name</dd>
             <dt>Source</dt><dd>@_model.Source</dd>
             <dt>Schedule</dt><dd class="mono">@(string.IsNullOrWhiteSpace(_model.Schedule) ? "—" : _model.Schedule)</dd>
+            <dt>Catch-up window</dt><dd>@CatchUpWindowDuration.Describe(_model.ScheduleCatchUpWindow)</dd>
             <dt>Failure policy</dt><dd>@_model.FailurePolicy</dd>
             <dt>Steps</dt><dd>@_model.Steps.Count</dd>
             <dt>Compensation steps</dt><dd>@_model.OnFailureSteps.Count</dd>
@@ -407,7 +435,7 @@ else
             : Empty,
         WizardStep.Steps => StepListErrors(),
         WizardStep.FailurePolicy => Empty, // dropdown is always a valid enum; OnFailure is optional
-        WizardStep.Schedule => Empty,      // cron validity is server-side
+        WizardStep.Schedule => ScheduleStepErrors(), // cron validity is server-side; the catch-up window is checked here
         WizardStep.Review => BatchDefinitionClientValidator.Validate(_model),
         _ => Empty,
     };
@@ -420,6 +448,16 @@ else
         var all = BatchDefinitionClientValidator.Validate(_model);
         return all
             .Where(kv => kv.Key == "Steps" || kv.Key.StartsWith("Steps[", StringComparison.Ordinal))
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
+    }
+
+    private IReadOnlyDictionary<string, string[]> ScheduleStepErrors()
+    {
+        // Keep only the Schedule paths so this step's Next gating reflects the catch-up window check
+        // (a negative magnitude / a window with no schedule); cron validity stays server-side.
+        var all = BatchDefinitionClientValidator.Validate(_model);
+        return all
+            .Where(kv => kv.Key.StartsWith("Schedule", StringComparison.Ordinal))
             .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
     }
 
@@ -539,6 +577,7 @@ else
             var p when p.StartsWith("OnFailureSteps", StringComparison.Ordinal) => WizardStep.FailurePolicy,
             var p when p.StartsWith("Steps", StringComparison.Ordinal) => WizardStep.Steps,
             "FailurePolicy" => WizardStep.FailurePolicy,
+            var p when p.StartsWith("Schedule", StringComparison.Ordinal) => WizardStep.Schedule,
             _ => WizardStep.Review,
         };
     }
@@ -566,6 +605,37 @@ else
 
     private string? FieldError(string path)
         => _serverFieldErrors.TryGetValue(path, out var msgs) && msgs.Length > 0 ? string.Join("; ", msgs) : null;
+
+    // ── schedule catch-up window field ─────────────────────────────────────────────
+
+    private bool HasSchedule => !string.IsNullOrWhiteSpace(_model.Schedule);
+
+    // The numeric input is bound manually (not @bind) so empty parses to null and the magnitude
+    // crosses the string boundary with InvariantCulture (a comma-decimal locale must not corrupt it).
+    private string _catchUpValueText =>
+        _model.CatchUpWindowValue?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+
+    private void OnCatchUpValueChanged(ChangeEventArgs e)
+    {
+        var raw = e.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            _model.CatchUpWindowValue = null;
+            return;
+        }
+        _model.CatchUpWindowValue =
+            int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                ? parsed
+                : null;
+    }
+
+    // Inline message for the catch-up field: a server error (after submit) wins; otherwise the live
+    // client-validation message so the operator sees the problem as they type, matching the step editor.
+    private string? CatchUpWindowError()
+        => FieldError("Schedule.CatchUpWindow")
+           ?? (ScheduleStepErrors().TryGetValue("Schedule.CatchUpWindow", out var msgs) && msgs.Length > 0
+               ? string.Join("; ", msgs)
+               : null);
 
     private string StepperClass(WizardStep step)
     {

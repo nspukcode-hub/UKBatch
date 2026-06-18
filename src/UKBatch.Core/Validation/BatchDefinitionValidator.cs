@@ -34,6 +34,14 @@ internal static class BatchDefinitionValidator
             errors.Add(new ValidationError("FailurePolicy", $"unknown enum value {(int)def.FailurePolicy}"));
         }
 
+        // A catch-up window, when set, must be non-negative (a negative window is meaningless). It is NOT
+        // rejected when Schedule is null — an unscheduled batch simply ignores it, so blocking would be a
+        // spurious failure for a definition that is merely over-specified.
+        if (def.ScheduleCatchUpWindow is { } catchUpWindow && catchUpWindow < TimeSpan.Zero)
+        {
+            errors.Add(new ValidationError("ScheduleCatchUpWindow", "must be non-negative"));
+        }
+
         for (var i = 0; i < def.Steps.Count; i++)
         {
             ValidateStep(def.Steps[i], $"Steps[{i}]", errors, allowParallel: true);

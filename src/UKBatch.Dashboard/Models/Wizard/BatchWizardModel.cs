@@ -31,6 +31,24 @@ public sealed class BatchWizardModel
     /// <summary>Optional cron expression; <c>null</c>/blank = trigger-only.</summary>
     public string? Schedule { get; set; }
 
+    /// <summary>
+    /// Magnitude of the schedule catch-up window, in <see cref="CatchUpWindowUnit"/> units;
+    /// <c>null</c>/non-positive = no catch-up (a missed scheduled fire is skipped). Only meaningful
+    /// when <see cref="Schedule"/> is set. Combined with <see cref="CatchUpWindowUnit"/> to produce
+    /// <see cref="ScheduleCatchUpWindow"/>.
+    /// </summary>
+    public int? CatchUpWindowValue { get; set; }
+
+    /// <summary>Unit for <see cref="CatchUpWindowValue"/>.</summary>
+    public CatchUpWindowUnit CatchUpWindowUnit { get; set; } = CatchUpWindowUnit.Minutes;
+
+    /// <summary>
+    /// The catch-up window as a <see cref="TimeSpan"/> (<c>null</c> when no window is set), derived from
+    /// <see cref="CatchUpWindowValue"/> + <see cref="CatchUpWindowUnit"/>. Projected into the
+    /// create/update request only when a schedule is also present (the contract ignores it otherwise).
+    /// </summary>
+    public TimeSpan? ScheduleCatchUpWindow => CatchUpWindowDuration.ToTimeSpan(CatchUpWindowValue, CatchUpWindowUnit);
+
     /// <summary>Failure policy.</summary>
     public BatchFailurePolicy FailurePolicy { get; set; } = BatchFailurePolicy.StopOnFailure;
 
@@ -79,12 +97,18 @@ public sealed class BatchWizardModel
     public bool ShouldWarnEmptyCompensate()
         => OnFailureSteps.Count == 0 && FailurePolicy == BatchFailurePolicy.Compensate;
 
+    // The catch-up window has no effect without a schedule (the contract ignores it), so the request
+    // carries null when the schedule is blank — the body never claims a window the runtime won't honour.
+    private TimeSpan? ProjectedCatchUpWindow
+        => string.IsNullOrWhiteSpace(Schedule) ? null : ScheduleCatchUpWindow;
+
     /// <summary>Builds the create request (no id — the server assigns it).</summary>
     public CreateBatchRequest ToCreateRequest(string? createdBy) => new()
     {
         Name = Name.Trim(),
         Source = Source,
         Schedule = string.IsNullOrWhiteSpace(Schedule) ? null : Schedule.Trim(),
+        ScheduleCatchUpWindow = ProjectedCatchUpWindow,
         Steps = Steps.Select((s, i) => s.ToBatchStep(i)).ToList(),
         FailurePolicy = FailurePolicy,
         OnFailureSteps = OnFailureSteps.Select((s, i) => s.ToBatchStep(i)).ToList(),
@@ -103,6 +127,7 @@ public sealed class BatchWizardModel
         Name = Name.Trim(),
         Source = Source,
         Schedule = string.IsNullOrWhiteSpace(Schedule) ? null : Schedule.Trim(),
+        ScheduleCatchUpWindow = ProjectedCatchUpWindow,
         Steps = Steps.Select((s, i) => s.ToBatchStep(i)).ToList(),
         FailurePolicy = FailurePolicy,
         OnFailureSteps = OnFailureSteps.Select((s, i) => s.ToBatchStep(i)).ToList(),
@@ -123,6 +148,7 @@ public sealed class BatchWizardModel
     public static BatchWizardModel FromDefinition(BatchDefinitionDto def)
     {
         ArgumentNullException.ThrowIfNull(def);
+        var (catchUpValue, catchUpUnit) = CatchUpWindowDuration.FromTimeSpan(def.ScheduleCatchUpWindow);
         return new BatchWizardModel
         {
             Id = def.Id,
@@ -130,6 +156,10 @@ public sealed class BatchWizardModel
             Name = def.Name,
             Source = def.Source,   // preserve the loaded source (a hardcoded Dashboard would flip Api-source batches).
             Schedule = def.Schedule,
+            // Decompose the stored window into the magnitude + unit an operator would recognise, so an
+            // edit preserves it instead of silently dropping the field.
+            CatchUpWindowValue = catchUpValue,
+            CatchUpWindowUnit = catchUpUnit,
             FailurePolicy = def.FailurePolicy,
             Steps = def.Steps.OrderBy(s => s.Order).Select(WizardStepDraft.FromBatchStep).ToList(),
             OnFailureSteps = def.OnFailureSteps.OrderBy(s => s.Order).Select(WizardStepDraft.FromBatchStep).ToList(),

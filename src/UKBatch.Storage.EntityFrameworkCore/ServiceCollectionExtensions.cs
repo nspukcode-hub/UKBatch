@@ -94,6 +94,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IBatchDefinitionStore, EfBatchDefinitionStore>();
         services.AddSingleton<IApprovalGateStore, EfApprovalGateStore>();
         services.AddSingleton<IBatchRunStore, EfBatchRunStore>();
+        // Durable schedule watermarks. Core registers no default (catch-up is EF-only), so there is
+        // no in-memory descriptor to RemoveAll — this is a plain add that the BatchScheduler resolves
+        // optionally (it stays inactive when this store is absent).
+        services.AddSingleton<IScheduleStateStore, EfScheduleStateStore>();
 
         // 4) Hosted services, in start order (hosted services start in registration order):
         //    migrator (when opted-in; creates the tables the others query) →

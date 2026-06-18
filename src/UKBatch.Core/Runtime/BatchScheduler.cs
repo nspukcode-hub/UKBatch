@@ -25,8 +25,18 @@ namespace UKBatch.Runtime;
 /// Scheduled batches come from two sources: code-defined batches (the in-process registry, scanned
 /// synchronously) and stored batches (dashboard- and API-defined, scanned through the async store). A
 /// definition added or de-scheduled after start is picked up via <see cref="NotifyDefinitionChangedAsync"/>
-/// without a restart. Missed-fires-on-downtime are by-design; a durable scheduler is planned for a later
-/// release.
+/// without a restart.
+/// <para>By default a scheduled fire that was due while the process was down is skipped (the loop arms
+/// each batch's next future occurrence on start). A batch may OPT IN to catching up the single most
+/// recent missed occurrence on restart by setting <c>BatchDefinition.ScheduleCatchUpWindow</c>; this
+/// requires a durable <see cref="IScheduleStateStore"/> (the EF adapter) and is bounded by the per-batch
+/// window — only an occurrence missed within that window is replayed, exactly once, and the persisted
+/// last-fire watermark prevents firing the same occurrence twice. With in-memory storage no watermark
+/// store is registered, so catch-up stays inactive and the skip behavior is unchanged.</para>
+/// <para>Single-node: a shared watermark store records the last fire but does not coordinate two
+/// scheduler instances. Two nodes against one database would each read the same watermarks at start and
+/// both catch up the same occurrence (the monotonic watermark dedupes the write, not the fire).
+/// Distributed catch-up (a claim/lease) is out of scope.</para>
 /// </remarks>
 internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
 {
@@ -44,6 +54,7 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
     private readonly CronExpressionCache _cronCache;
     private readonly TimeProvider _clock;
     private readonly UKBatchOptions _options;
+    private readonly IScheduleStateStore? _scheduleState;
     private readonly ILogger<BatchScheduler> _logger;
 
     private CancellationTokenSource? _stoppingCts;
@@ -51,7 +62,12 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
     private int _started;
     private int _disposed;
 
-    /// <summary>Constructs the scheduler with composed dependencies.</summary>
+    /// <summary>
+    /// Constructs the scheduler with composed dependencies. <paramref name="scheduleStateStores"/> is an
+    /// enumerable purely so missed-fire catch-up can be OPTIONAL: the durable watermark store is
+    /// registered only by the EF adapter, so an <c>IEnumerable</c> resolves to an empty sequence (and
+    /// catch-up stays inactive) when no EF adapter is present, without needing a custom DI factory.
+    /// </summary>
     public BatchScheduler(
         IBatchDefinitionLookup batchLookup,
         IBatchDefinitionStore batchStore,
@@ -59,6 +75,7 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
         CronExpressionCache cronCache,
         TimeProvider clock,
         IOptions<UKBatchOptions> options,
+        IEnumerable<IScheduleStateStore> scheduleStateStores,
         ILogger<BatchScheduler> logger)
     {
         ArgumentNullException.ThrowIfNull(batchLookup);
@@ -67,6 +84,7 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
         ArgumentNullException.ThrowIfNull(cronCache);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(scheduleStateStores);
         ArgumentNullException.ThrowIfNull(logger);
         _batchLookup = batchLookup;
         _batchStore = batchStore;
@@ -74,6 +92,9 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
         _cronCache = cronCache;
         _clock = clock;
         _options = options.Value;
+        // At most one durable watermark store is ever registered (the EF adapter); take the first if
+        // present, else null — catch-up is then a no-op.
+        _scheduleState = scheduleStateStores.FirstOrDefault();
         _logger = logger;
         _wakeChannel = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
         {
@@ -99,7 +120,9 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
 
         // Scan both sources (the store scan is async, so unlike the single-job scheduler the initial
         // heap load happens after an await rather than synchronously inside the lock) and arm the heap.
-        var entries = await ComputeScheduledEntriesAsync(cancellationToken).ConfigureAwait(false);
+        // Only the startup scan catches up missed occurrences; a later rescan must not (see
+        // NotifyDefinitionChangedAsync). This is the one path that consults the durable watermarks.
+        var entries = await ComputeScheduledEntriesAsync(catchUp: true, cancellationToken).ConfigureAwait(false);
         lock (_heapLock)
         {
             foreach (var entry in entries)
@@ -117,15 +140,41 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
     /// caller takes the lock only to mutate the heap with the returned entries. A malformed cron skips ONLY
     /// that batch (logged), never the whole scan, so one bad definition cannot block scheduling for the rest.
     /// </summary>
-    private async Task<List<ScheduledBatchEntry>> ComputeScheduledEntriesAsync(CancellationToken cancellationToken)
+    private async Task<List<ScheduledBatchEntry>> ComputeScheduledEntriesAsync(bool catchUp, CancellationToken cancellationToken)
     {
         var nowUtc = _clock.GetUtcNow();
         var entries = new List<ScheduledBatchEntry>();
 
+        // Only the startup scan with a durable store present reads the watermarks (one round-trip). A
+        // rescan, or an in-memory deployment, gets an empty map so every batch arms its next future
+        // occurrence (no catch-up).
+        IReadOnlyDictionary<string, DateTimeOffset> watermarks = EmptyWatermarks;
+        if (catchUp && _scheduleState is not null)
+        {
+            try
+            {
+                watermarks = await _scheduleState.GetAllAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // First boot before migrations are applied throws a missing-table exception; that is
+                // expected, not a warning. Skip catch-up this start (every batch arms its next future
+                // occurrence) and let the host come up.
+                // A genuine fault here (the schedule database is unreachable at startup) would otherwise
+                // silently disable catch-up for every batch, so surface it at Information rather than bury
+                // it at Debug. The benign first-boot case (the table does not exist yet, before migrations
+                // run) lands here too and logs a single line — an acceptable cost for the visibility a real
+                // outage needs.
+                _logger.LogInformation(
+                    ex, "Schedule catch-up skipped this start: the watermark store could not be read; arming next future occurrences only.");
+                watermarks = EmptyWatermarks;
+            }
+        }
+
         // Code-defined batches (in-process registry, synchronous).
         foreach (var def in _batchLookup.All())
         {
-            if (TryBuildEntry(def, nowUtc, out var entry))
+            if (TryBuildEntry(def, nowUtc, watermarks, catchUp, out var entry))
             {
                 entries.Add(entry);
             }
@@ -141,7 +190,7 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
                 var page = await _batchStore.ListAsync(source, offset, pageSize, cancellationToken).ConfigureAwait(false);
                 foreach (var def in page)
                 {
-                    if (TryBuildEntry(def, nowUtc, out var entry))
+                    if (TryBuildEntry(def, nowUtc, watermarks, catchUp, out var entry))
                     {
                         entries.Add(entry);
                     }
@@ -157,12 +206,20 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
         return entries;
     }
 
+    private static readonly IReadOnlyDictionary<string, DateTimeOffset> EmptyWatermarks =
+        new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+
     /// <summary>
     /// Builds a heap entry for a scheduled definition, or returns <c>false</c> for an unscheduled definition,
     /// a malformed cron expression, or an expression with no future occurrence. Pure (no heap mutation, no
     /// I/O) so it is safe to call from the rebuild path while holding nothing.
     /// </summary>
-    private bool TryBuildEntry(BatchDefinition def, DateTimeOffset nowUtc, out ScheduledBatchEntry entry)
+    private bool TryBuildEntry(
+        BatchDefinition def,
+        DateTimeOffset nowUtc,
+        IReadOnlyDictionary<string, DateTimeOffset> watermarks,
+        bool catchUp,
+        out ScheduledBatchEntry entry)
     {
         entry = null!;
         if (string.IsNullOrEmpty(def.Schedule))
@@ -184,7 +241,42 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
                 def.Name, def.Schedule, _options.CronFormat);
             return false;
         }
+
+        // Default arming: the next future occurrence (the established skip-on-downtime behavior). Used for
+        // every batch without a catch-up window, on every rescan, and as the fallback when no missed
+        // occurrence is fresh enough to replay.
         var next = expr.GetNextOccurrence(nowUtc.UtcDateTime, TimeZoneInfo.Utc);
+
+        // Missed-fire catch-up (startup only, durable store present, per-batch window set). If a cron
+        // occurrence was missed within the window since the last recorded fire, arm THAT past occurrence
+        // so the loop fires it immediately; otherwise fall through to the next future occurrence.
+        if (catchUp
+            && _scheduleState is not null
+            && def.ScheduleCatchUpWindow is { } window
+            && window > TimeSpan.Zero
+            && watermarks.TryGetValue(def.Id, out var lastFired))
+        {
+            var missed = LatestMissedOccurrence(expr, lastFired, nowUtc);
+            // Replay only when the occurrence is fresh enough (now - O <= window). A stale gap (down longer
+            // than the window) is intentionally NOT replayed — the run would be too late to be useful. The
+            // `occurrence > lastFired` check is defense-in-depth: LatestMissedOccurrence walks forward from
+            // lastFired via GetNextOccurrence, which is exclusive of its argument, so `missed` is already
+            // strictly after the watermark — but the explicit guard documents and guarantees the
+            // no-double-fire invariant even if that walk is ever changed to be inclusive.
+            if (missed is { } occurrence && occurrence > lastFired && nowUtc - occurrence <= window)
+            {
+                entry = new ScheduledBatchEntry
+                {
+                    BatchDefinitionId = def.Id,
+                    BatchName = def.Name,
+                    CronExpression = expr,
+                    NextFireUtc = occurrence,   // a PAST instant — the loop fires it immediately, then re-arms forward
+                    CatchUpWindow = def.ScheduleCatchUpWindow,
+                };
+                return true;
+            }
+        }
+
         if (next is null)
         {
             return false;
@@ -195,8 +287,48 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
             BatchName = def.Name,
             CronExpression = expr,
             NextFireUtc = new DateTimeOffset(next.Value, TimeSpan.Zero),
+            CatchUpWindow = def.ScheduleCatchUpWindow,
         };
         return true;
+    }
+
+    /// <summary>
+    /// Returns the LATEST cron occurrence in the half-open interval <c>(lastFired, now]</c>, or
+    /// <c>null</c> if there is none. Walks forward from <paramref name="lastFired"/>, keeping the last
+    /// occurrence that is still at or before <paramref name="nowUtc"/>. The walk is capped so a very
+    /// stale watermark (process down for a long time on a frequent schedule) cannot spin: past the cap we
+    /// give up on catch-up (the caller arms the next future occurrence instead).
+    /// </summary>
+    private DateTimeOffset? LatestMissedOccurrence(CronExpression expr, DateTimeOffset lastFired, DateTimeOffset nowUtc)
+    {
+        // 100,000 occurrences covers ~1.1 days of an every-second cron (the worst realistic frequent
+        // schedule) before giving up; a coarser cron exhausts its missed slots far sooner. Past the cap we
+        // decline catch-up (the caller arms the next future occurrence) rather than spin on a stale watermark.
+        const int maxIterations = 100_000;
+        DateTimeOffset? latest = null;
+        var cursor = lastFired.UtcDateTime;
+        for (var i = 0; i < maxIterations; i++)
+        {
+            var nextUtc = expr.GetNextOccurrence(cursor, TimeZoneInfo.Utc);
+            if (nextUtc is null)
+            {
+                return latest;   // schedule has no further occurrences — the last one we kept is the answer.
+            }
+            var candidate = new DateTimeOffset(nextUtc.Value, TimeSpan.Zero);
+            if (candidate > nowUtc)
+            {
+                return latest;   // walked past now — the previous candidate (if any) is the latest missed one.
+            }
+            latest = candidate;
+            cursor = nextUtc.Value;
+        }
+
+        // Hit the iteration cap without reaching now: the watermark is too stale to walk on a frequent
+        // schedule. Decline catch-up so we cannot spin; the caller arms the next future occurrence.
+        _logger.LogDebug(
+            "Schedule catch-up walk exceeded {Cap} iterations for a stale watermark; skipping catch-up and arming the next future occurrence.",
+            maxIterations);
+        return null;
     }
 
     private async Task LoopAsync(CancellationToken ct)
@@ -344,6 +476,25 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
     {
         try
         {
+            // Persist the last-fire watermark BEFORE triggering, for catch-up-enabled batches with a
+            // durable store. This is deliberately at-most-once: a crash in the tiny window between this
+            // write and the trigger loses THIS fire rather than risking a double-fire (the watermark
+            // already advanced, so a restart will not replay this occurrence). A watermark write failure
+            // must never abort the fire — log at Debug and proceed.
+            if (entry.CatchUpWindow is { } window && window > TimeSpan.Zero && _scheduleState is not null)
+            {
+                try
+                {
+                    await _scheduleState.RecordFiredAsync(entry.BatchDefinitionId, entry.NextFireUtc, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogDebug(
+                        ex, "Could not persist the schedule watermark for '{Batch}' ({DefId}) before firing; proceeding.",
+                        entry.BatchName, entry.BatchDefinitionId);
+                }
+            }
+
             // The run owns its own lifecycle (the run record + the execution rows). There is no
             // orphan-row compensation here — unlike the single-job scheduler, no pre-created row exists
             // to fail. TriggerBatchAsync returns a run id and the run proceeds on its own.
@@ -401,7 +552,10 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
 
         try
         {
-            var entries = await ComputeScheduledEntriesAsync(cancellationToken).ConfigureAwait(false);
+            // catchUp: false — a definition-change rescan must never replay a missed occurrence; only the
+            // startup scan does. (A dashboard edit landing after a brief downtime must not retroactively
+            // fire a past run.)
+            var entries = await ComputeScheduledEntriesAsync(catchUp: false, cancellationToken).ConfigureAwait(false);
             lock (_heapLock)
             {
                 // Clear-and-rebuild in a single lock region. Enumerating PriorityQueue.UnorderedItems while

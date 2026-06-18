@@ -5,10 +5,10 @@ using UKBatch.Storage.EntityFrameworkCore.Entities;
 namespace UKBatch.Storage.EntityFrameworkCore;
 
 /// <summary>
-/// EF Core context for the UKBatch persistent stores. Four tables: <c>JobExecutions</c>,
-/// <c>BatchDefinitions</c>, <c>ApprovalGates</c>, <c>BatchRuns</c>. <c>BatchStep</c>s are JSON-embedded
-/// inside <c>BatchDefinitions</c> (no separate table) — recursion-safe for nested parallel groups and
-/// forward-compatible via <c>BatchStep.Metadata</c> round-tripped verbatim.
+/// EF Core context for the UKBatch persistent stores. Five tables: <c>JobExecutions</c>,
+/// <c>BatchDefinitions</c>, <c>ApprovalGates</c>, <c>BatchRuns</c>, <c>ScheduleStates</c>.
+/// <c>BatchStep</c>s are JSON-embedded inside <c>BatchDefinitions</c> (no separate table) — recursion-safe
+/// for nested parallel groups and forward-compatible via <c>BatchStep.Metadata</c> round-tripped verbatim.
 /// </summary>
 /// <remarks>
 /// <para><b>Provider neutrality:</b> there is NO <c>OnConfiguring</c> provider switch. Provider
@@ -56,6 +56,8 @@ public class UKBatchDbContext : DbContext
 
     internal DbSet<BatchRunEntity> BatchRuns => Set<BatchRunEntity>();
 
+    internal DbSet<ScheduleStateEntity> ScheduleStates => Set<ScheduleStateEntity>();
+
     /// <inheritdoc/>
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -71,5 +73,7 @@ public class UKBatchDbContext : DbContext
         modelBuilder.ApplyConfiguration(new ApprovalGateConfiguration(jsonType, isSqlite));
         // BatchRuns has no JSON column, so its configuration takes only the provider flag.
         modelBuilder.ApplyConfiguration(new BatchRunConfiguration(isSqlite));
+        // ScheduleStates has no JSON column either — only the provider flag (for the SQLite date converter).
+        modelBuilder.ApplyConfiguration(new ScheduleStateConfiguration(isSqlite));
     }
 }

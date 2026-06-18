@@ -29,6 +29,7 @@ public static class BatchDefinitionClientValidator
         var errors = new List<(string Path, string Msg)>();
         if (string.IsNullOrWhiteSpace(model.Name)) errors.Add(("Name", "must be non-empty"));
         if (model.Steps.Count == 0) errors.Add(("Steps", "must contain at least one step"));
+        ValidateCatchUpWindow(model, errors);
         for (var i = 0; i < model.Steps.Count; i++)
             ValidateStep(model.Steps[i], $"Steps[{i}]", errors, allowParallel: true);
         // Validate OnFailureSteps (Compensate branch). The server validator currently has a parallel
@@ -78,6 +79,23 @@ public static class BatchDefinitionClientValidator
                     errors.Add(($"{path}.Approval.Timeout", "required when the on-timeout action is AutoApprove or Hold"));
                 break;
         }
+    }
+
+    // The schedule catch-up window is a CLIENT-ONLY check (excluded from server parity, like the
+    // parameter-key rules below). A negative magnitude can't express a real window, and a window with no
+    // schedule has no effect at runtime — the wizard surfaces both up front so the operator notices,
+    // rather than silently coercing the value to null. The path routes the Next-gating to the Schedule step.
+    private static void ValidateCatchUpWindow(BatchWizardModel model, List<(string, string)> errors)
+    {
+        if (model.CatchUpWindowValue is { } v && v < 0)
+        {
+            errors.Add(("Schedule.CatchUpWindow", "must be zero or greater"));
+            return; // a negative value is the primary problem; don't also nag about the schedule
+        }
+
+        var hasWindow = model.CatchUpWindowValue is { } w && w > 0;
+        if (hasWindow && string.IsNullOrWhiteSpace(model.Schedule))
+            errors.Add(("Schedule.CatchUpWindow", "has no effect without a cron schedule"));
     }
 
     // The conversion to a parameter dictionary drops blank-key rows and resolves duplicate keys

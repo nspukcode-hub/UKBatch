@@ -14,6 +14,12 @@ public sealed record class CreateBatchRequest
     /// <summary>Optional cron expression for scheduler-armed batches.</summary>
     public string? Schedule { get; init; }
 
+    /// <summary>
+    /// Optional per-batch window for catching up a single missed scheduled fire on restart. Must be
+    /// non-negative when set; ignored when <see cref="Schedule"/> is null. Requires the EF storage adapter.
+    /// </summary>
+    public TimeSpan? ScheduleCatchUpWindow { get; init; }
+
     /// <summary>Step list (Abstractions type used directly).</summary>
     public required IReadOnlyList<BatchStep> Steps { get; init; }
 
