@@ -29,4 +29,18 @@ public interface IJobRunner
 
     /// <summary>Cancels an in-flight execution.</summary>
     Task CancelAsync(string executionId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Resumes an in-flight batch run from its recorded cursor, per <paramref name="policy"/>. Used by
+    /// the durable crash-recovery service to continue a run that a host restart interrupted, so a
+    /// completed step (e.g. a payment) is not re-run. Idempotent: a run that is already terminal is a
+    /// no-op.
+    /// </summary>
+    /// <remarks>
+    /// Default-implemented as a hard <see cref="NotSupportedException"/>: durable resume is a property
+    /// of the runtime <c>JobRunner</c>, so a non-runtime <see cref="IJobRunner"/> stub fails loudly
+    /// rather than silently dropping the resume. The runtime supplies the real override.
+    /// </remarks>
+    Task ResumeBatchAsync(string batchId, ResumePolicy policy, CancellationToken cancellationToken)
+        => throw new NotSupportedException("Durable resume requires the runtime JobRunner.");
 }

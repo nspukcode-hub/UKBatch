@@ -65,7 +65,8 @@ internal static class TestData
         int total = 0,
         int succeeded = 0,
         int failed = 0,
-        int cancelled = 0) => new()
+        int cancelled = 0,
+        int? currentStepIndex = null) => new()
         {
             BatchId = batchId,
             BatchDefinitionId = batchDefinitionId,
@@ -74,6 +75,7 @@ internal static class TestData
             TriggeredBy = triggeredBy,
             StartedAtUtc = startedAtUtc ?? new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
             CompletedAtUtc = completedAtUtc,
+            CurrentStepIndex = currentStepIndex,
             StepCount = stepCount,
             Total = total,
             Succeeded = succeeded,
@@ -90,12 +92,14 @@ internal static class TestData
         string? schedule = null,
         BatchFailurePolicy failurePolicy = BatchFailurePolicy.StopOnFailure,
         IReadOnlyList<BatchStep>? onFailureSteps = null,
-        string? createdBy = null) => new()
+        string? createdBy = null,
+        TimeSpan? scheduleCatchUpWindow = null) => new()
         {
             Id = id,
             Name = name,
             Source = source,
             Schedule = schedule,
+            ScheduleCatchUpWindow = scheduleCatchUpWindow,
             Steps = steps ?? Array.Empty<BatchStep>(),
             FailurePolicy = failurePolicy,
             OnFailureSteps = onFailureSteps ?? Array.Empty<BatchStep>(),

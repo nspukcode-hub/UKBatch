@@ -20,4 +20,11 @@ internal sealed record class ScheduledBatchEntry
 
     /// <summary>UTC time at which this entry next fires.</summary>
     public required DateTimeOffset NextFireUtc { get; init; }
+
+    /// <summary>
+    /// Per-batch missed-fire catch-up window copied from the definition at build time; <c>null</c> or
+    /// <see cref="TimeSpan.Zero"/> means no catch-up. Used to decide whether to persist a last-fire
+    /// watermark before firing, and (at startup) whether a missed occurrence is fresh enough to replay.
+    /// </summary>
+    public TimeSpan? CatchUpWindow { get; init; }
 }

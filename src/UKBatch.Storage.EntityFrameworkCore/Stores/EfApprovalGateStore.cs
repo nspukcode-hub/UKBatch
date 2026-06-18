@@ -91,7 +91,10 @@ internal sealed class EfApprovalGateStore : IApprovalGateStore
         {
             // Direct-caller contract (e.g. dashboard approve of a truly-missing id → 404 via typed map).
             // ApprovalGateService downgrades this to a warn-log for its never-persisted-crash-orphan path.
-            throw new InvalidOperationException($"Approval gate {approvalId} not found.");
+            throw new ApprovalGateNotFoundException($"Approval gate {approvalId} not found.")
+            {
+                ApprovalId = approvalId,
+            };
         }
         if (entity.Status == ApprovalRecordStatus.Decided)
         {

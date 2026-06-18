@@ -12,6 +12,7 @@ public sealed class BatchBuilder
     private readonly List<BatchStep> _onFailureSteps = new();
     private BatchFailurePolicy _failurePolicy = BatchFailurePolicy.StopOnFailure;
     private string? _schedule;
+    private TimeSpan? _catchUpWindow;
 
     internal BatchBuilder(UKBatchOptions options)
     {
@@ -210,6 +211,24 @@ public sealed class BatchBuilder
         return this;
     }
 
+    /// <summary>
+    /// Opts this scheduled batch in to catching up a single missed fire on restart, bounded by
+    /// <paramref name="window"/>. If a scheduled occurrence was due while the process was down, on the
+    /// next start the most recent occurrence missed within the window is replayed exactly once (coalesced,
+    /// never double-fired). Has effect only with the EF storage adapter (the durable last-fire watermark)
+    /// and only when a <see cref="WithSchedule"/> cron is set. A zero window disables catch-up.
+    /// </summary>
+    /// <param name="window">Maximum age of a missed occurrence to replay. Must be non-negative.</param>
+    public BatchBuilder CatchUpMissedWithin(TimeSpan window)
+    {
+        if (window < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(window), window, "catch-up window must be non-negative");
+        }
+        _catchUpWindow = window;
+        return this;
+    }
+
     /// <summary>Builds the immutable <see cref="BatchDefinition"/>.</summary>
     internal BatchDefinition Build(string id, string name, DateTimeOffset createdAtUtc)
     {
@@ -221,6 +240,7 @@ public sealed class BatchBuilder
             Name = name,
             Source = BatchSource.Code,
             Schedule = _schedule,
+            ScheduleCatchUpWindow = _catchUpWindow,
             Steps = _steps,
             FailurePolicy = _failurePolicy,
             OnFailureSteps = _onFailureSteps,

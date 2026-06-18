@@ -20,12 +20,14 @@ internal sealed class CrossServiceStepInvoker
     private readonly IJobRunnerInternal _runner;
     private readonly string? _thisServiceName;
     private readonly TimeProvider _timeProvider;
+    private readonly IResumeShadowProbe? _resumeShadowProbe;
 
     public CrossServiceStepInvoker(
         ITransport transport,
         IJobRunnerInternal runner,
         string? thisServiceName,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        IResumeShadowProbe? resumeShadowProbe = null)
     {
         ArgumentNullException.ThrowIfNull(transport);
         ArgumentNullException.ThrowIfNull(runner);
@@ -34,7 +36,22 @@ internal sealed class CrossServiceStepInvoker
         _runner = runner;
         _thisServiceName = thisServiceName;
         _timeProvider = timeProvider;
+        _resumeShadowProbe = resumeShadowProbe;   // null on the trigger path: first-pass dispatch is unchanged
     }
+
+    /// <summary>
+    /// Single construction point shared by the sequential executor and the parallel-group fan-out so the
+    /// resume shadow probe is threaded identically at BOTH sites. The probe is <c>null</c> on the trigger
+    /// path (first-pass dispatch unchanged) and bound on the resume path so a completed cross-service step
+    /// is not re-dispatched. Centralizing the build avoids the two-site drift that threading by hand invites.
+    /// </summary>
+    public static CrossServiceStepInvoker Create(
+        ITransport transport,
+        IJobRunnerInternal runner,
+        string? thisServiceName,
+        TimeProvider timeProvider,
+        IResumeShadowProbe? resumeShadowProbe)
+        => new(transport, runner, thisServiceName, timeProvider, resumeShadowProbe);
 
     /// <summary>
     /// Dispatches one cross-service Job step and returns its terminal <see cref="JobStatus"/>.
@@ -84,6 +101,23 @@ internal sealed class CrossServiceStepInvoker
                 "service identity to be set. Configure UKBatchOptions.ThisServiceName " +
                 "(appsettings 'UKBatch:ThisServiceName' or builder.Configure(o => o.ThisServiceName = ...)) " +
                 "OR set the UKBATCH_SERVICE_NAME environment variable.");
+        }
+
+        // Resume idempotency: a prior attempt may have already COMPLETED this cross-service step. If a
+        // Completed shadow row exists for (run, step), skip the transport call and return Completed. The
+        // probe returns ONLY Completed (a non-terminal/orphan/remote-failed row does not prove the remote
+        // work finished), so an in-flight-at-crash or reaper-tombstoned step is re-dispatched (the
+        // documented at-least-once replay) — the symmetric counterpart of an Interrupted gate re-opening.
+        // On the first pass (and whenever the probe is unbound) there is no prior Completed row, so dispatch
+        // proceeds unchanged.
+        if (_resumeShadowProbe is not null)
+        {
+            var priorCompleted = await _resumeShadowProbe
+                .TryGetCompletedStatusAsync(batchId, step.StepId, transportCancellationToken).ConfigureAwait(false);
+            if (priorCompleted is { } prior)
+            {
+                return prior;   // always JobStatus.Completed; skip re-dispatch
+            }
         }
 
         var msg = new JobMessage

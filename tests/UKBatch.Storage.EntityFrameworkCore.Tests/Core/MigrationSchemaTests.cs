@@ -11,7 +11,7 @@ using Xunit;
 namespace UKBatch.Storage.EntityFrameworkCore.Tests.Core;
 
 /// <summary>
-/// Real-migration schema shape on SQLite (Docker-free): the migration creates all 3 tables + the
+/// Real-migration schema shape on SQLite (Docker-free): the migration creates all domain tables + the
 /// expected indexes (incl. the unique <c>IX_BatchDefinitions_Source_Name</c>), and a migrate-then-dispatch
 /// cycle works on the SAME pooled factory (a pooled context returns clean after
 /// <c>MigrateAsync</c>). PostgreSQL parity lives in <c>PostgresJobStoreParityTests</c>
@@ -20,7 +20,7 @@ namespace UKBatch.Storage.EntityFrameworkCore.Tests.Core;
 public sealed class MigrationSchemaTests
 {
     [Fact]
-    public async Task SqliteMigration_CreatesAllFourTables()
+    public async Task SqliteMigration_CreatesAllDomainTables()
     {
         await using var harness = await SqliteStoreHarness.CreateAsync();
         await using var db = await harness.NewContextAsync();
@@ -29,7 +29,7 @@ public sealed class MigrationSchemaTests
             .SqlQueryRaw<string>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .ToListAsync();
 
-        tables.Should().Contain(new[] { "JobExecutions", "BatchDefinitions", "ApprovalGates", "BatchRuns" });
+        tables.Should().Contain(new[] { "JobExecutions", "BatchDefinitions", "ApprovalGates", "BatchRuns", "ScheduleStates" });
     }
 
     [Fact]

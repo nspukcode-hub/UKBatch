@@ -13,6 +13,13 @@ internal sealed class BatchDefinitionEntity
     public string Name { get; set; } = default!;
     public BatchSource Source { get; set; }                 // string conversion
     public string? Schedule { get; set; }
+
+    /// <summary>
+    /// Per-batch missed-fire catch-up window, stored as nullable ticks to avoid provider-specific
+    /// TimeSpan/interval column ambiguity. The mapper converts to/from <c>TimeSpan?</c>. Null = no
+    /// catch-up.
+    /// </summary>
+    public long? ScheduleCatchUpWindowTicks { get; set; }
     public IReadOnlyList<BatchStep> Steps { get; set; } = default!;          // JSON column
     public BatchFailurePolicy FailurePolicy { get; set; }   // string conversion
     public IReadOnlyList<BatchStep> OnFailureSteps { get; set; } = default!; // JSON column (default [])

@@ -205,7 +205,14 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             _transport,
             ResolveThisServiceName(),
             _clock,
-            _serviceProvider.GetRequiredService<ILogger<BatchExecutor>>());
+            _serviceProvider.GetRequiredService<ILogger<BatchExecutor>>(),
+            // Advance the resume cursor after each completed step, identical to the resume path. This is
+            // additive: dispatch / completion / signal behavior is unchanged (the cursor is a separate
+            // field). It is what makes a crash mid-run recoverable — without it CurrentStepIndex stays
+            // null and recovery's ResumeForward would restart from the beginning, re-running a completed
+            // step (e.g. a payment). On the in-memory store the write is harmless and lost on restart,
+            // which is the documented in-memory durability boundary.
+            onStepCompleted: (nextIndex, ct) => _batchRunStore.UpdateCursorAsync(batchId, nextIndex, ct));
 
         // Per-run cancellation: link the host-stopping token with a fresh source so an administrative
         // cancel (via IBatchRunCanceller) trips ONLY this run; the host token still cancels every run on
@@ -224,16 +231,35 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             // of RunAsync but leaves NO JobExecution row, so without this the row aggregate would
             // report the run Completed (green) even though the batch ended in failure.
             JobStatus? runtimeTerminal = null;
+            // Distinguishes a graceful host shutdown from an administrative cancel — see the OCE catch.
+            var hostShuttingDown = false;
             try
             {
                 await executor.RunAsync(def, batchId, initialParameters ?? JobParameters.Empty, triggeredBy, runToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException ex)
             {
-                // Host stop / batch cancellation — a clean teardown, not a failure. Must precede the
-                // general Exception catch (subtype) and logs at Warning, not Error.
-                runtimeTerminal = JobStatus.Cancelled;
-                _logger.LogWarning(ex, "Batch {BatchId} (definition {DefId}) cancelled.", batchId, batchDefinitionId);
+                // The run token tripped. The parent host-stopping token distinguishes WHY: cancelling
+                // the parent cancels every run's linked token at once, while an administrative cancel
+                // (IBatchRunCanceller) trips only this run's child source and never propagates up. So:
+                //   - host shutdown (parent cancelled) → leave the run in-flight (do not finalize). The
+                //     resume cursor already points at the last completed step, so recovery continues
+                //     from exactly the right place on the next start. A run that races a shutdown
+                //     survives; re-cancel after restart if genuinely unwanted.
+                //   - administrative cancel (parent NOT cancelled) → a deliberate kill; record Cancelled.
+                // Must precede the general Exception catch (subtype) and logs at Warning, not Error.
+                if (_hostStopping.IsCancellationRequested)
+                {
+                    hostShuttingDown = true;
+                    _logger.LogInformation(ex,
+                        "Batch {BatchId} (definition {DefId}) interrupted by host shutdown; left in-flight for durable resume.",
+                        batchId, batchDefinitionId);
+                }
+                else
+                {
+                    runtimeTerminal = JobStatus.Cancelled;
+                    _logger.LogWarning(ex, "Batch {BatchId} (definition {DefId}) cancelled.", batchId, batchDefinitionId);
+                }
             }
             catch (Exception ex)
             {
@@ -246,7 +272,15 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
                 // is the data-layer source of truth for the run's terminal status (a gate-failed run
                 // leaves no execution row, so a pure roll-up would read Completed). Independent of the
                 // SignalR signal below.
-                await CompleteRunRecordAsync(batchId, runtimeTerminal).ConfigureAwait(false);
+                //
+                // SKIPPED on graceful host shutdown: the run stays in-progress (Status null) so the next
+                // host's recovery sees it as in-flight and resumes it, rather than reading a terminal
+                // Cancelled record and skipping it. Everything else in this finally still runs — the CTS
+                // belongs to this closure and must be disposed even when the run is left in-flight.
+                if (!hostShuttingDown)
+                {
+                    await CompleteRunRecordAsync(batchId, runtimeTerminal).ConfigureAwait(false);
+                }
 
                 // De-register + dispose THIS run's cancel source. The registry only ever calls Cancel();
                 // ownership of disposal is here. Remove first (so a late Cancel misses the lookup), then
@@ -257,7 +291,8 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
                 // Signal the hub fan-out that the batch run has finished. The payload carries
                 // (BatchRunId, BatchDefinitionId, BatchName) so the hub fan-out can populate
                 // BatchCompletionSummary.BatchDefinitionId without an IBatchCatalogService roundtrip.
-                // RuntimeTerminalStatus carries the closure's verdict (null on clean completion).
+                // RuntimeTerminalStatus carries the closure's verdict (null on clean completion AND on
+                // host shutdown — the in-process run is over on this node; the durable Status stays null).
                 // The hub queries the store ONCE per signal to compute the aggregate shard counts. This
                 // path is unchanged from before the run-store existed — the two terminal side-effects are
                 // independent.
@@ -350,9 +385,16 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             var executions = await _jobStore.QueryAsync(
                 new JobQuery { BatchId = batchId, Limit = int.MaxValue, Offset = 0 }, CancellationToken.None).ConfigureAwait(false);
 
-            var succeeded = executions.Count(e => e.Status == JobStatus.Completed);
-            var failed = executions.Count(e => e.Status == JobStatus.Failed);
-            var cancelled = executions.Count(e => e.Status == JobStatus.Cancelled);
+            // Status tallies count the LATEST attempt per batch step, so a step re-run by a resume
+            // contributes only its final outcome and an earlier interrupted attempt (tombstoned to Failed
+            // by the orphan reaper) is not double-counted. For a run that was never resumed every step has
+            // exactly one row, so this collapse is the identity function and the counts are bit-identical
+            // to a flat count. Total keeps the flat row count — an honest "how many rows exist" audit
+            // number that includes the dead orphan, which genuinely happened.
+            var latestPerStep = LatestAttemptPerStep(executions);
+            var succeeded = latestPerStep.Count(e => e.Status == JobStatus.Completed);
+            var failed = latestPerStep.Count(e => e.Status == JobStatus.Failed);
+            var cancelled = latestPerStep.Count(e => e.Status == JobStatus.Cancelled);
 
             var rowAggregate = cancelled > 0 ? JobStatus.Cancelled
                              : failed > 0 ? JobStatus.Failed
@@ -377,6 +419,28 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             _logger.LogWarning(ex, "Could not finalize batch run record {BatchId}.", batchId);
         }
     }
+
+    /// <summary>
+    /// Collapses a run's execution rows to the latest attempt of each batch step, so a step re-run by a
+    /// resume contributes only its final outcome and an earlier interrupted attempt (later tombstoned to
+    /// Failed by the orphan reaper) is not double-counted. For a run that was never resumed every step has
+    /// exactly one row, so this returns the input set unchanged — the non-resume aggregate is bit-identical
+    /// to a flat count. Rows with a null step id (defensive; batch rows always carry one) are kept as
+    /// distinct singletons keyed by execution id, so a hypothetical null never collapses two unrelated rows.
+    /// </summary>
+    /// <remarks>
+    /// "Latest" orders by <see cref="JobExecution.EnqueuedAtUtc"/> descending, tiebroken by
+    /// <see cref="JobExecution.ExecutionId"/> descending. Execution ids are UUIDv7 "N" hex (time-ordered),
+    /// so the re-run (enqueued later) wins, and the id tiebreak is the deterministic backstop when two
+    /// share a timestamp.
+    /// </remarks>
+    private static List<JobExecution> LatestAttemptPerStep(IReadOnlyList<JobExecution> rows)
+        => rows
+            .GroupBy(e => e.BatchStepId ?? ("\0exec:" + e.ExecutionId))
+            .Select(g => g.OrderByDescending(e => e.EnqueuedAtUtc)
+                          .ThenByDescending(e => e.ExecutionId, StringComparer.Ordinal)
+                          .First())
+            .ToList();
 
     /// <summary>
     /// Counts the steps of a definition for the run record's <c>StepCount</c>: each Job step, each
@@ -414,6 +478,151 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
         {
             await _jobStore.UpdateStatusAsync(executionId, JobStatus.Cancelling, "user cancelled", CancellationToken.None).ConfigureAwait(false);
         }
+    }
+
+    /// <inheritdoc/>
+    public async Task ResumeBatchAsync(string batchId, ResumePolicy policy, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+
+        var run = await _batchRunStore.GetAsync(batchId, cancellationToken).ConfigureAwait(false)
+            ?? throw new BatchRunNotFoundException($"Batch run {batchId} not found.") { BatchId = batchId };
+
+        // Already terminal → nothing to resume (idempotent: a duplicate recovery call is a no-op).
+        if (run.Status is not null)
+        {
+            return;
+        }
+
+        // Resolve the definition by the run's DEFINITION id (creation-time topology). Code-defined
+        // registry first, then the store, mirroring TriggerBatchAsync's resolution order.
+        var def = _batchLookup.TryGetById(run.BatchDefinitionId)
+            ?? await _batchDefinitionStore.GetAsync(run.BatchDefinitionId, cancellationToken).ConfigureAwait(false)
+            ?? throw new BatchDefinitionNotFoundException(
+                $"Definition {run.BatchDefinitionId} for run {batchId} not found; cannot resume.")
+            { BatchDefinitionId = run.BatchDefinitionId };
+
+        // Definition-drift tripwire: the cursor was recorded against the run's creation-time topology.
+        // If the definition's step count changed since (a step was added/removed), a forward replay could
+        // skip or re-run the wrong step. For the automatic ResumeForward path, degrade to a full restart
+        // (safer than a mis-aligned skip); for an explicit operator override, honor the intent but warn.
+        // This detects add/remove, not reorder; reordering steps across a restart is an accepted limitation.
+        var resolvedPolicy = policy;
+        if (run.StepCount != CountDefinitionSteps(def))
+        {
+            if (policy == ResumePolicy.ResumeForward)
+            {
+                _logger.LogWarning(
+                    "Batch run {BatchId}: definition {DefId} step count changed since the run started ({Old} -> {New}); resuming with RestartAll instead of ResumeForward to avoid a mis-aligned skip.",
+                    batchId, def.Id, run.StepCount, CountDefinitionSteps(def));
+                resolvedPolicy = ResumePolicy.RestartAll;
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Batch run {BatchId}: definition {DefId} step count changed since the run started ({Old} -> {New}); honoring the explicit resume policy regardless.",
+                    batchId, def.Id, run.StepCount, CountDefinitionSteps(def));
+            }
+        }
+
+        var orderedTopLevelCount = def.Steps.Count;
+        var startStepIndex = Math.Clamp(resolvedPolicy.ResolveStartIndex(run.CurrentStepIndex), 0, orderedTopLevelCount);
+
+        // Cursor already at/after the end → the run actually finished every step (the crash happened after
+        // the last step but before completion was recorded); just finalize the record without dispatching.
+        if (startStepIndex >= orderedTopLevelCount)
+        {
+            await CompleteRunRecordAsync(batchId, runtimeTerminal: null).ConfigureAwait(false);
+            return;
+        }
+
+        var executor = new BatchExecutor(
+            this,
+            _serviceProvider.GetRequiredService<IApprovalGateCoordinator>(),
+            _serviceProvider.GetRequiredService<IJobExecutionAwaiter>(),
+            _transport,
+            ResolveThisServiceName(),
+            _clock,
+            _serviceProvider.GetRequiredService<ILogger<BatchExecutor>>(),
+            onStepCompleted: (nextIndex, ct) => _batchRunStore.UpdateCursorAsync(batchId, nextIndex, ct),
+            // Bind the resume idempotency probes (null on the trigger path). The gate probe honors a gate
+            // already decided before the crash; the shadow probe skips a cross-service step that already
+            // terminated. Without these, resume re-opens approved gates and repeats completed remote work.
+            resumeGateProbe: _serviceProvider.GetRequiredService<IResumeGateProbe>(),
+            resumeShadowProbe: _serviceProvider.GetRequiredService<IResumeShadowProbe>());
+
+        // Per-run cancellation, identical to TriggerBatchAsync: link the host-stopping token so an
+        // administrative cancel trips only this run; the host token still cancels every run on shutdown.
+        var runCts = CancellationTokenSource.CreateLinkedTokenSource(_hostStopping);
+        _batchRunRegistry.Register(batchId, runCts);
+        var runToken = runCts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            JobStatus? runtimeTerminal = null;
+            // Same host-shutdown discrimination as TriggerBatchAsync: a second deploy during a long
+            // approval window must leave the resumed run in-flight (not Cancelled), so it resumes again
+            // on the next start. This makes resume re-entrant across consecutive restarts.
+            var hostShuttingDown = false;
+            try
+            {
+                await executor.RunAsync(
+                    def, batchId, ResumeParameters(run), triggeredBy: run.TriggeredBy, runToken, startStepIndex).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException ex)
+            {
+                // Parent host-stopping token cancelled → graceful shutdown → leave in-flight; otherwise an
+                // administrative cancel → record Cancelled. See TriggerBatchAsync for the full rationale.
+                if (_hostStopping.IsCancellationRequested)
+                {
+                    hostShuttingDown = true;
+                    _logger.LogInformation(ex,
+                        "Resumed batch {BatchId} (definition {DefId}) interrupted by host shutdown; left in-flight for durable resume.",
+                        batchId, def.Id);
+                }
+                else
+                {
+                    runtimeTerminal = JobStatus.Cancelled;
+                    _logger.LogWarning(ex, "Resumed batch {BatchId} (definition {DefId}) cancelled.", batchId, def.Id);
+                }
+            }
+            catch (Exception ex)
+            {
+                runtimeTerminal = JobStatus.Failed;
+                _logger.LogError(ex, "Resumed batch {BatchId} (definition {DefId}) failed.", batchId, def.Id);
+            }
+            finally
+            {
+                // Skip the terminal finalize ONLY on host shutdown — the run stays in-flight for the next
+                // host's recovery. The CTS/registry teardown and the completion signal still run in all cases.
+                if (!hostShuttingDown)
+                {
+                    await CompleteRunRecordAsync(batchId, runtimeTerminal).ConfigureAwait(false);
+                }
+                _batchRunRegistry.Remove(batchId);
+                runCts.Dispose();
+                _batchCompletionSignal.Signal(new BatchCompletionSignalPayload
+                {
+                    BatchRunId = batchId,
+                    BatchDefinitionId = def.Id,
+                    BatchName = def.Name,
+                    RuntimeTerminalStatus = runtimeTerminal,
+                });
+            }
+        }, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Initial parameters supplied to a resumed run. The original trigger parameters are not persisted on
+    /// the run row in this release, so a resume re-supplies <see cref="JobParameters.Empty"/> — the same
+    /// default a parameterless trigger uses. A run triggered with non-empty initial parameters therefore
+    /// resumes without them; this is a documented limitation, and this named seam is where a future
+    /// persisted-parameter payload will be read.
+    /// </summary>
+    private static JobParameters ResumeParameters(BatchRun run)
+    {
+        _ = run;   // reserved: a future release reads a persisted initial-parameter payload off the run row.
+        return JobParameters.Empty;
     }
 
     // ===== IJobRunnerInternal =====

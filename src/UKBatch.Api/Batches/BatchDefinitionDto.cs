@@ -21,6 +21,9 @@ public sealed record class BatchDefinitionDto
     /// <summary>Optional cron expression when the batch is scheduler-armed.</summary>
     public string? Schedule { get; init; }
 
+    /// <summary>Optional per-batch window for catching up a single missed scheduled fire on restart (EF storage only).</summary>
+    public TimeSpan? ScheduleCatchUpWindow { get; init; }
+
     /// <summary>Steps in execution order (Abstractions type used directly).</summary>
     public required IReadOnlyList<BatchStep> Steps { get; init; }
 
@@ -55,6 +58,7 @@ public sealed record class BatchDefinitionDto
             Name = def.Name,
             Source = def.Source,
             Schedule = def.Schedule,
+            ScheduleCatchUpWindow = def.ScheduleCatchUpWindow,
             Steps = def.Steps,
             FailurePolicy = def.FailurePolicy,
             OnFailureSteps = def.OnFailureSteps,

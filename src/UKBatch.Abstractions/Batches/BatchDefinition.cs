@@ -20,6 +20,17 @@ public sealed record class BatchDefinition
     public string? Schedule { get; init; }
 
     /// <summary>
+    /// Per-batch window for catching up a single scheduled fire that was missed while the process was
+    /// down. <c>null</c> or <see cref="System.TimeSpan.Zero"/> means no catch-up — a missed fire is
+    /// simply skipped (the default). When set, on restart the most recent occurrence missed within this
+    /// window is replayed exactly once (coalesced — only the latest missed occurrence, never a burst),
+    /// and an occurrence is never fired twice. Requires the EF storage adapter to persist the last-fire
+    /// watermark; with in-memory storage it has no effect. Ignored when <see cref="Schedule"/> is
+    /// <c>null</c>.
+    /// </summary>
+    public TimeSpan? ScheduleCatchUpWindow { get; init; }
+
+    /// <summary>
     /// Ordered list of steps. Empty is valid only at creation time (a placeholder); invalid for execution
     /// — the runtime fails the launch with <see cref="InvalidOperationException"/> if a batch has no steps.
     /// </summary>

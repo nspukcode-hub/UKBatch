@@ -67,6 +67,21 @@ internal sealed class EfBatchRunStore : IBatchRunStore
     }
 
     /// <inheritdoc/>
+    public async Task UpdateCursorAsync(string batchId, int nextStepIndex, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+        await using var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var entity = await db.BatchRuns
+            .FirstOrDefaultAsync(e => e.BatchId == batchId, cancellationToken).ConfigureAwait(false);   // TRACKED
+        if (entity is null)
+        {
+            return;   // absent run — no-op, mirrors CompleteAsync
+        }
+        entity.CurrentStepIndex = nextStepIndex;
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
     public async Task<BatchRun?> GetAsync(string batchId, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(batchId);

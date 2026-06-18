@@ -23,8 +23,8 @@ namespace UKBatch.Abstractions.Models;
 /// runs (the dashboard polls on navigate; live run-status flips still arrive over the existing
 /// SignalR batch-completion path, independent of this store).</para>
 /// <para><b>Forward compatibility:</b> later releases extend this record with OPTIONAL
-/// (non-<c>required</c>, defaulted) fields only — a durable-resume cursor will arrive as an optional
-/// field so existing producers keep compiling unchanged.</para>
+/// (non-<c>required</c>, defaulted) fields only — the durable-resume cursor
+/// (<see cref="CurrentStepIndex"/>) arrived this way, so existing producers keep compiling unchanged.</para>
 /// </remarks>
 public sealed record class BatchRun
 {
@@ -52,6 +52,21 @@ public sealed record class BatchRun
 
     /// <summary>UTC time the run reached a terminal status; <c>null</c> while still in progress.</summary>
     public DateTimeOffset? CompletedAtUtc { get; init; }
+
+    /// <summary>
+    /// Resume cursor: the zero-based index of the NEXT step to run, into the ordered step sequence
+    /// (the same sequence the executor walks — Job / ParallelGroup / ApprovalGate steps in
+    /// <see cref="Batches.BatchStep.Order"/> order). Advances by one each time a step completes
+    /// successfully. <c>null</c> means "no cursor recorded" — a run created before durable resume
+    /// existed, or an in-memory run (cursors are only meaningful on a persistent store). A value equal
+    /// to the run's ordered-step count means every step finished.
+    /// </summary>
+    /// <remarks>
+    /// This is a RUN-scoped progress marker against the run's creation-time topology, NOT a definition
+    /// pointer. It is additive (non-<c>required</c>, default <c>null</c>): producers that never set it
+    /// keep compiling, and a roll-up over <see cref="JobExecution"/> rows is unaffected.
+    /// </remarks>
+    public int? CurrentStepIndex { get; init; }
 
     /// <summary>
     /// Number of steps in the definition (Job steps + nested ParallelGroup children + ApprovalGate steps +

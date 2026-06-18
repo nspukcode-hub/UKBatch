@@ -275,6 +275,79 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
             "a present timeout duration satisfies the consistency rule for every action");
     }
 
+    // ── schedule catch-up window rules (client-only; the server does not reject a negative window
+    // the same way — the model coerces non-positive to null — so the wizard surfaces it up front, like
+    // the parameter-key rules below. These paths are excluded from the WAF parity matrix above) ─────
+
+    [Fact]
+    public void Validate_NegativeCatchUpWindow_FlagsWindowPath()
+    {
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Schedule = "0 0 * * * *",
+            CatchUpWindowValue = -5,
+            Steps = { JobDraft("s1", "Echo") },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().ContainKey("Schedule.CatchUpWindow",
+            "a negative catch-up window can't express a real duration — surface it before submit");
+    }
+
+    [Fact]
+    public void Validate_CatchUpWindowWithoutSchedule_FlagsNoEffect()
+    {
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Schedule = null,
+            CatchUpWindowValue = 10,
+            Steps = { JobDraft("s1", "Echo") },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().ContainKey("Schedule.CatchUpWindow",
+            "a catch-up window with no schedule has no runtime effect — the wizard notes it");
+    }
+
+    [Fact]
+    public void Validate_CatchUpWindowWithSchedule_IsValid()
+    {
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Schedule = "0 0 * * * *",
+            CatchUpWindowValue = 6,
+            CatchUpWindowUnit = CatchUpWindowUnit.Hours,
+            Steps = { JobDraft("s1", "Echo") },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().NotContainKey("Schedule.CatchUpWindow",
+            "a positive window paired with a schedule is the intended, valid configuration");
+    }
+
+    [Fact]
+    public void Validate_NoCatchUpWindow_IsValid()
+    {
+        // The common default: a scheduled batch with no catch-up window must not raise a spurious error.
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Schedule = "0 0 * * * *",
+            CatchUpWindowValue = null,
+            Steps = { JobDraft("s1", "Echo") },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().NotContainKey("Schedule.CatchUpWindow");
+    }
+
     // ── parameter-key rules (client-only safety net; the server validator does
     // not inspect parameter keys, but the conversion silently drops/collapses them, so the
     // wizard tells the operator what would happen) ─────────────────────────────────

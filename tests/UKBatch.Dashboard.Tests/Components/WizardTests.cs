@@ -527,6 +527,124 @@ public sealed class WizardTests : TestContext
  "a 400 on OnFailureSteps[i] path MUST jump to the FailurePolicy wizard step");
     }
 
+    // ── schedule catch-up window renders on the Schedule step + flows into the create request ──
+
+    [Fact]
+    public async Task ScheduleStep_CatchUpWindow_EntersAndFlowsIntoCreateRequest()
+    {
+        var (client, _) = WireDeps();
+        var createdDto = new BatchDefinitionDto
+        {
+            Id = "cu-id",
+            Name = "cu-batch",
+            Source = BatchSource.Dashboard,
+            Version = 1,
+            Steps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "s1", Order = 0, StepType = BatchStepType.Job,
+                    Job = new JobStepData { JobName = "JobA" },
+                },
+            },
+            FailurePolicy = BatchFailurePolicy.StopOnFailure,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+        };
+        CreateBatchRequest? captured = null;
+        client.CreateBatchAsync(Arg.Do<CreateBatchRequest>(r => captured = r), Arg.Any<CancellationToken>())
+            .Returns(createdDto);
+
+        var cut = RenderCreate();
+        cut.WaitForState(() => cut.Find("input#batch-name") is not null);
+
+        // Step 1 — name → Steps.
+        cut.Find("input#batch-name").Input("cu-batch");
+        ClickByText(cut, "Next");
+
+        // Step 2 — add a Job step and pick JobA.
+        cut.WaitForState(() => cut.FindAll("button.btn--secondary.btn--sm").Any());
+        var jobAdd = cut.FindAll("button.btn--secondary.btn--sm")
+            .First(b => b.TextContent.Contains("Job", StringComparison.OrdinalIgnoreCase)
+                     && !b.TextContent.Contains("Parallel", StringComparison.OrdinalIgnoreCase)
+                     && !b.TextContent.Contains("Approval", StringComparison.OrdinalIgnoreCase));
+        jobAdd.Click();
+        cut.WaitForState(() => cut.FindAll("select.form-field__select").Any());
+        SelectJobFromCatalog(cut, "JobA");
+
+        // Steps → FailurePolicy → Schedule.
+        ClickByText(cut, "Next");
+        ClickByText(cut, "Next");
+
+        // The catch-up field renders on the Schedule step.
+        cut.WaitForState(() => cut.FindAll("input#catchup-value").Any());
+        var catchUp = cut.Find("input#catchup-value");
+        catchUp.HasAttribute("disabled").Should().BeTrue(
+            "the catch-up field is disabled until a cron schedule is entered");
+
+        // Enter a cron expression — the catch-up field must enable.
+        var cron = cut.FindAll("input.form-field__input.mono").First();
+        cron.Input("0 0 * * * *");
+        cut.WaitForState(() => !cut.Find("input#catchup-value").HasAttribute("disabled"));
+
+        // Enter the catch-up magnitude and pick the Hours unit. `@onchange` ⇒ Change, not Input.
+        cut.Find("input#catchup-value").Change("6");
+        var unitSelect = cut.FindAll("select.form-field__select")
+            .First(s => s.InnerHtml.Contains("Minutes", StringComparison.Ordinal)
+                     && s.InnerHtml.Contains("Hours", StringComparison.Ordinal));
+        unitSelect.Change(CatchUpWindowUnit.Hours.ToString());
+
+        // Schedule → Review → Submit.
+        ClickByText(cut, "Next");
+        cut.WaitForState(() => cut.FindAll("button").Any(b => b.TextContent.Contains("Create batch", StringComparison.OrdinalIgnoreCase)));
+        var submit = cut.FindAll("button").First(b => b.TextContent.Contains("Create batch", StringComparison.OrdinalIgnoreCase));
+        await submit.ClickAsync(new Microsoft.AspNetCore.Components.Web.MouseEventArgs());
+
+        captured.Should().NotBeNull();
+        captured!.Schedule.Should().Be("0 0 * * * *");
+        captured.ScheduleCatchUpWindow.Should().Be(TimeSpan.FromHours(6),
+            "the entered 6-hour catch-up window must flow through the Schedule step into the create request");
+    }
+
+    // ── edit-mode load round-trips an existing catch-up window into the field ──
+
+    [Fact]
+    public void EditMode_LoadsExistingCatchUpWindow_PopulatesField()
+    {
+        var (client, _) = WireDeps();
+        var existing = new BatchDefinitionDto
+        {
+            Id = "cu-edit",
+            Name = "cu-edit-batch",
+            Source = BatchSource.Dashboard,
+            Version = 3,
+            Schedule = "0 0 * * * *",
+            ScheduleCatchUpWindow = TimeSpan.FromHours(6),
+            Steps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "s1", Order = 0, StepType = BatchStepType.Job,
+                    Job = new JobStepData { JobName = "JobA" },
+                },
+            },
+            FailurePolicy = BatchFailurePolicy.StopOnFailure,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+        };
+        client.GetBatchByIdAsync("cu-edit", Arg.Any<CancellationToken>()).Returns(existing);
+
+        var cut = RenderEdit("cu-edit");
+        cut.WaitForState(() => cut.Find("input#batch-name") is not null);
+
+        // Walk to the Schedule step.
+        ClickByText(cut, "Next");
+        ClickByText(cut, "Next");
+        ClickByText(cut, "Next");
+
+        cut.WaitForState(() => cut.FindAll("input#catchup-value").Any());
+        cut.Find("input#catchup-value").GetAttribute("value").Should().Be("6",
+            "edit-load must round-trip a persisted 6-hour window into the magnitude field");
+    }
+
     // ── duplicate parameter keys render the DAG preview without tearing down the circuit ──
 
     [Fact]

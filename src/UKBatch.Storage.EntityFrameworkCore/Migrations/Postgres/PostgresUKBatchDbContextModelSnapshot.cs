@@ -113,6 +113,9 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Postgres
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
 
+                    b.Property<long?>("ScheduleCatchUpWindowTicks")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -158,6 +161,9 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Postgres
 
                     b.Property<DateTimeOffset?>("CompletedAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("CurrentStepIndex")
+                        .HasColumnType("integer");
 
                     b.Property<int>("Failed")
                         .HasColumnType("integer");
@@ -269,6 +275,20 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Postgres
                     b.HasIndex("Status", "EnqueuedAtUtc");
 
                     b.ToTable("JobExecutions", (string)null);
+                });
+
+            modelBuilder.Entity("UKBatch.Storage.EntityFrameworkCore.Entities.ScheduleStateEntity", b =>
+                {
+                    b.Property<string>("BatchDefinitionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("LastFiredOccurrenceUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("BatchDefinitionId");
+
+                    b.ToTable("ScheduleStates", (string)null);
                 });
 #pragma warning restore 612, 618
         }
