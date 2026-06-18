@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.2-alpha] - 2026-06-18
+
+Durable recovery for batch workflows: an in-flight run resumes after a restart, and a scheduled batch can catch up a fire it missed while down. Both build on the persistent run store and require the EF storage adapter.
+
+### Added
+
+- **Durable batch resume.** A batch run interrupted by a host restart resumes from where it left off instead of being lost. The run records a step cursor (`BatchRun.CurrentStepIndex`); at startup the EF storage adapter re-launches each in-flight run under a resume policy — `ResumeForward` (skip already-completed steps, the default), `RestartAll`, or `RestartFrom(n)`. A completed step is not re-run, and a pending approval gate is re-attached so a later decision still resolves it. An additive migration (`AddBatchRunCursor`) adds the cursor column; existing tables are unchanged.
+- **Per-batch missed-fire scheduler catch-up.** A scheduled batch can opt in to replaying a fire it missed while the host was down, via `BatchDefinition.ScheduleCatchUpWindow` (set in code with `.CatchUpMissedWithin(...)`, in the REST body as `scheduleCatchUpWindow`, or on the dashboard wizard's Schedule step). On restart the scheduler replays only the most recent occurrence missed within the window — exactly once (coalesced, never a burst) — and a persisted last-fire watermark guarantees the same occurrence never fires twice. Leaving the window unset keeps the previous skip-on-downtime behaviour. An additive migration (`AddScheduleCatchUp`) adds the `ScheduleStates` watermark table and the per-batch window column.
+
+### Changed
+
+- **A graceful host shutdown no longer cancels an in-flight batch run.** The run is left in-flight and resumed on the next start (see durable resume above); an explicit administrative cancel still ends the run as Cancelled.
+
+### Known limitations
+
+- Durable resume and scheduler catch-up require the EF storage adapter (PostgreSQL or SQLite). With the default in-memory storage they are inactive — there is no durable store to record the cursor or the last-fire watermark.
+- Single-node: resume and catch-up act on the node that boots and do not coordinate across multiple instances sharing one database. Distributed/HA recovery is a later release.
+- Scheduler catch-up replays at most one occurrence per batch per restart (the latest missed within the window); a gap older than the window is left for the operator to run manually.
+
 ## [0.2.1-alpha] - 2026-06-15
 
 Run-store foundation and the visible features it unlocks: persistent run history, batch scheduling, and cancelling a stuck run.
