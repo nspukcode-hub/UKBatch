@@ -44,7 +44,7 @@ public sealed class DashboardPackageInvariants
         // REST jobs: ListJobsAsync, GetJobAsync, TriggerJobAsync (3)
         // REST batches: ListBatchesAsync, GetBatchByIdAsync, GetBatchByNameAsync, RunBatchByIdAsync,
         // GetBatchRunStatusAsync (5) + CreateBatchAsync, UpdateBatchAsync, DeleteBatchAsync (3)
-        // + QueryRunsAsync, CancelRunAsync (2) = 10
+        // + QueryRunsAsync, CancelRunAsync (2) + SetScheduleEnabledAsync (1) = 11
         // REST executions: GetExecutionAsync, QueryExecutionsAsync, CancelExecutionAsync (3)
         // REST approvals: ListApprovalsAsync, ApproveAsync, RejectAsync, ListBatchGatesAsync (4)
         // REST workers: GetWorkersAsync (1)
@@ -55,8 +55,8 @@ public sealed class DashboardPackageInvariants
             .Where(m => !m.IsSpecialName)
             .Where(m => m.DeclaringType == typeof(IUKBatchClient))
             .ToArray();
-        methods.Should().HaveCount(31,
-            "IUKBatchClient surface lock: 2 lifecycle + 21 REST (incl. CreateBatchAsync, UpdateBatchAsync, DeleteBatchAsync, QueryRunsAsync, CancelRunAsync, ListBatchGatesAsync, GetWorkersAsync) + 8 hub subs = 31 methods. " +
+        methods.Should().HaveCount(32,
+            "IUKBatchClient surface lock: 2 lifecycle + 22 REST (incl. CreateBatchAsync, UpdateBatchAsync, DeleteBatchAsync, QueryRunsAsync, CancelRunAsync, SetScheduleEnabledAsync, ListBatchGatesAsync, GetWorkersAsync) + 8 hub subs = 32 methods. " +
             $"Actual: {string.Join(", ", methods.Select(m => m.Name))}");
         methods.Select(m => m.Name).Should().Contain("GetWorkersAsync",
             "the dashboard Workers panel relies on the GetWorkersAsync REST surface.");
@@ -66,12 +66,14 @@ public sealed class DashboardPackageInvariants
             "the Executions Runs view and Batches/Detail recent runs read the run-store via QueryRunsAsync.");
         methods.Select(m => m.Name).Should().Contain("CancelRunAsync",
             "the run-detail Cancel run button trips an in-flight run via CancelRunAsync.");
+        methods.Select(m => m.Name).Should().Contain("SetScheduleEnabledAsync",
+            "the batch-detail Pause/Resume schedule toggle calls SetScheduleEnabledAsync.");
     }
 
     [Fact]
-    public void IUKBatchClient_TotalSurface_Is_38_Members()
+    public void IUKBatchClient_TotalSurface_Is_39_Members()
     {
-        // Combined: 2 properties + 5 events + 31 methods = 38 reflection members.
+        // Combined: 2 properties + 5 events + 32 methods = 39 reflection members.
         var t = typeof(IUKBatchClient);
         var propCount = t.GetProperties(BindingFlags.Instance | BindingFlags.Public).Length;
         var eventCount = t.GetEvents(BindingFlags.Instance | BindingFlags.Public).Length;
@@ -79,8 +81,8 @@ public sealed class DashboardPackageInvariants
             .Where(m => !m.IsSpecialName)
             .Where(m => m.DeclaringType == typeof(IUKBatchClient))
             .Count();
-        (propCount + eventCount + methodCount).Should().Be(38,
-            "IUKBatchClient surface: 2 props + 5 events + 31 methods = 38 members.");
+        (propCount + eventCount + methodCount).Should().Be(39,
+            "IUKBatchClient surface: 2 props + 5 events + 32 methods = 39 members.");
     }
 
     [Fact]

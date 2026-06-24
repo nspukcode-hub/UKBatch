@@ -218,12 +218,13 @@ public class BatchSchedulerTests
 
     private static BatchDefinition Def(
         string id, string name, string? schedule, BatchSource source = BatchSource.Code,
-        TimeSpan? catchUpWindow = null) => new()
+        TimeSpan? catchUpWindow = null, bool scheduleEnabled = true) => new()
     {
         Id = id,
         Name = name,
         Source = source,
         Schedule = schedule,
+        ScheduleEnabled = scheduleEnabled,
         ScheduleCatchUpWindow = catchUpWindow,
         Steps = Array.Empty<BatchStep>(),
         FailurePolicy = BatchFailurePolicy.StopOnFailure,
@@ -429,6 +430,112 @@ public class BatchSchedulerTests
             await Task.Delay(TimeSpan.FromMilliseconds(300));
             runner.CountFor("def-1").Should().Be(countAfterPrune,
                 "a de-scheduled batch is dropped from the heap and stops firing");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task PausedSchedule_AtStartup_DoesNotArm()
+    {
+        // ScheduleEnabled=false keeps the cron but suppresses arming on the start scan.
+        var clock = new FakeTimeProvider(T0);
+        var lookup = new FakeLookup(Def("def-1", "every-second", "* * * * * *", scheduleEnabled: false));
+        var (scheduler, runner, _, _) = Build(clock, lookup: lookup);
+        await scheduler.StartAsync(default);
+        try
+        {
+            clock.Advance(TimeSpan.FromSeconds(3));
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+            runner.CountFor("def-1").Should().Be(0, "a paused schedule never arms, even on a fresh start scan");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task PauseSchedule_ScheduleEnabledFalse_StopsFiring()
+    {
+        // Pause = keep the cron, flip ScheduleEnabled to false, rescan. The heap rebuild drops it — the same
+        // prune mechanism a de-scheduled batch uses, but the cron is preserved for a later resume.
+        var clock = new FakeTimeProvider(T0);
+        var store = new FakeStore();
+        store.Set(Def("def-1", "batch", "* * * * * *", BatchSource.Dashboard));
+        var (scheduler, runner, _, _) = Build(clock, store: store);
+        await scheduler.StartAsync(default);
+        try
+        {
+            clock.Advance(TimeSpan.FromSeconds(1));
+            (await Waits.ForAsync(() => runner.CountFor("def-1") >= 1, TimeSpan.FromSeconds(10))).Should().BeTrue();
+
+            store.Set(Def("def-1", "batch", "* * * * * *", BatchSource.Dashboard, scheduleEnabled: false));
+            await scheduler.NotifyDefinitionChangedAsync(CancellationToken.None);
+
+            var countAfterPause = runner.CountFor("def-1");
+            clock.Advance(TimeSpan.FromSeconds(3));
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+            runner.CountFor("def-1").Should().Be(countAfterPause,
+                "a paused schedule keeps its cron but stops firing");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ResumeSchedule_ScheduleEnabledFlippedTrue_FiresAgain()
+    {
+        // Resume = flip ScheduleEnabled back to true, rescan. The rebuild re-arms the next future occurrence
+        // (the rescan runs catchUp:false, so the paused period is not replayed).
+        var clock = new FakeTimeProvider(T0);
+        var store = new FakeStore();
+        store.Set(Def("def-1", "batch", "* * * * * *", BatchSource.Dashboard, scheduleEnabled: false));
+        var (scheduler, runner, _, _) = Build(clock, store: store);
+        await scheduler.StartAsync(default);
+        try
+        {
+            clock.Advance(TimeSpan.FromSeconds(2));
+            await Task.Delay(TimeSpan.FromMilliseconds(200));
+            runner.Triggered.Should().BeEmpty("a paused schedule does not arm at start");
+
+            store.Set(Def("def-1", "batch", "* * * * * *", BatchSource.Dashboard, scheduleEnabled: true));
+            await scheduler.NotifyDefinitionChangedAsync(CancellationToken.None);
+
+            clock.Advance(TimeSpan.FromSeconds(1));
+            var fired = await Waits.ForAsync(() => runner.CountFor("def-1") >= 1, TimeSpan.FromSeconds(10));
+            fired.Should().BeTrue("a resumed schedule re-arms via NotifyDefinitionChangedAsync without a restart");
+        }
+        finally
+        {
+            await scheduler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task PausedSchedule_WithCatchUpWindow_SuppressesCatchUpOnStartup()
+    {
+        // Critical interaction: a paused batch must NOT replay a missed occurrence even with a catch-up
+        // window and a fresh missed occurrence within it. The ScheduleEnabled gate returns before the
+        // catch-up branch is ever reached, so pausing suppresses catch-up too. (With ScheduleEnabled=true
+        // this exact setup DOES catch up — see CatchUp_MissedOccurrenceWithinWindow_FiresOnce…)
+        var clock = new FakeTimeProvider(Jan2Midnight.AddMinutes(30));
+        var state = new RecordingScheduleStateStore();
+        state.Seed("def-1", Jan1Midnight);   // the Jan-2 occurrence is missed and within a 2h window…
+        var lookup = new FakeLookup(Def("def-1", "daily", DailyMidnight, catchUpWindow: TimeSpan.FromHours(2), scheduleEnabled: false));
+        var (scheduler, runner, _, _) = Build(clock, lookup: lookup, scheduleState: state);
+
+        await scheduler.StartAsync(default);
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+            runner.CountFor("def-1").Should().Be(0,
+                "a paused schedule suppresses catch-up — the gate is reached before the catch-up branch");
+            state.Recorded.Should().BeEmpty("a paused batch fires nothing, so no watermark is written");
         }
         finally
         {

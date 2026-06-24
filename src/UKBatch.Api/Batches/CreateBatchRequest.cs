@@ -14,6 +14,9 @@ public sealed record class CreateBatchRequest
     /// <summary>Optional cron expression for scheduler-armed batches.</summary>
     public string? Schedule { get; init; }
 
+    /// <summary>Whether the schedule starts active; <c>false</c> creates the batch with its cron paused. Default <c>true</c>.</summary>
+    public bool ScheduleEnabled { get; init; } = true;
+
     /// <summary>
     /// Optional per-batch window for catching up a single missed scheduled fire on restart. Must be
     /// non-negative when set; ignored when <see cref="Schedule"/> is null. Requires the EF storage adapter.

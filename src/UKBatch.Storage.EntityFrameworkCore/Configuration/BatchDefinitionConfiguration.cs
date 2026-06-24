@@ -30,6 +30,7 @@ internal sealed class BatchDefinitionConfiguration : IEntityTypeConfiguration<Ba
         b.Property(e => e.Name).HasMaxLength(512).IsRequired();
         b.Property(e => e.Source).HasConversion<string>().HasMaxLength(32).IsRequired();
         b.Property(e => e.Schedule).HasMaxLength(256);
+        b.Property(e => e.ScheduleEnabled).HasDefaultValue(true);   // existing rows backfill to enabled
         b.Property(e => e.ScheduleCatchUpWindowTicks);   // nullable ticks; no special mapping needed
         b.Property(e => e.FailurePolicy).HasConversion<string>().HasMaxLength(32).IsRequired();
         b.Property(e => e.CreatedBy).HasMaxLength(256);

@@ -116,6 +116,11 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Postgres
                     b.Property<long?>("ScheduleCatchUpWindowTicks")
                         .HasColumnType("bigint");
 
+                    b.Property<bool>("ScheduleEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(32)

@@ -20,6 +20,14 @@ public sealed record class BatchDefinition
     public string? Schedule { get; init; }
 
     /// <summary>
+    /// Whether the <see cref="Schedule"/> is active. <c>true</c> (the default) arms the cron; <c>false</c>
+    /// suspends firing WITHOUT removing the cron expression, so an operator can pause and later resume the
+    /// schedule unchanged. Persisted, so a paused schedule stays paused across restarts. Ignored when
+    /// <see cref="Schedule"/> is <c>null</c> (a trigger-only batch never arms regardless of this flag).
+    /// </summary>
+    public bool ScheduleEnabled { get; init; } = true;
+
+    /// <summary>
     /// Per-batch window for catching up a single scheduled fire that was missed while the process was
     /// down. <c>null</c> or <see cref="System.TimeSpan.Zero"/> means no catch-up — a missed fire is
     /// simply skipped (the default). When set, on restart the most recent occurrence missed within this

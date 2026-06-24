@@ -73,6 +73,22 @@ public sealed class BatchWriteClientTests : IClassFixture<SampleRestApiFactory>
         fetched.Name.Should().Be(request.Name);
     }
 
+    [Fact]
+    public async Task SetScheduleEnabled_PauseThenResume_TogglesThroughRest()
+    {
+        await using var client = RestUKBatchClientFactory.BuildRestOnly(_factory);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var created = await client.CreateBatchAsync(
+            BuildCreateRequest(UniqueName("t02-sched")) with { Schedule = "0 0 * * * *" }, cts.Token);
+        created.ScheduleEnabled.Should().BeTrue("a new scheduled batch defaults to enabled");
+
+        await client.SetScheduleEnabledAsync(created.Id, enabled: false, cts.Token);
+        (await client.GetBatchByIdAsync(created.Id, cts.Token))!.ScheduleEnabled.Should().BeFalse("pause flows through REST");
+
+        await client.SetScheduleEnabledAsync(created.Id, enabled: true, cts.Token);
+        (await client.GetBatchByIdAsync(created.Id, cts.Token))!.ScheduleEnabled.Should().BeTrue("resume flows through REST");
+    }
+
     // ── duplicate-name 409 → BatchDefinitionDuplicateName ProblemType ──────
 
     [Fact]

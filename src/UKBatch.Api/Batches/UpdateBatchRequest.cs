@@ -18,6 +18,12 @@ public sealed record class UpdateBatchRequest
     public string? Schedule { get; init; }
 
     /// <summary>
+    /// Whether the schedule is active; <c>false</c> means paused. Round-tripped so a definition edit
+    /// preserves the pause state instead of silently re-enabling a paused schedule. Default <c>true</c>.
+    /// </summary>
+    public bool ScheduleEnabled { get; init; } = true;
+
+    /// <summary>
     /// Optional per-batch window for catching up a single missed scheduled fire on restart. Must be
     /// non-negative when set; ignored when <see cref="Schedule"/> is null. Requires the EF storage adapter.
     /// </summary>

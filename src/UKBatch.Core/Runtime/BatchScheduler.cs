@@ -222,8 +222,12 @@ internal sealed class BatchScheduler : IDisposable, IBatchScheduleNotifier
         out ScheduledBatchEntry entry)
     {
         entry = null!;
-        if (string.IsNullOrEmpty(def.Schedule))
+        if (string.IsNullOrEmpty(def.Schedule) || !def.ScheduleEnabled)
         {
+            // A paused schedule (ScheduleEnabled == false) keeps its cron but does not arm. Suppressing
+            // here — before the cron parse AND before the catch-up branch below — means a paused batch
+            // never enters the heap and never replays a missed occurrence. Resuming re-arms it on the
+            // next rescan. This is the same prune mechanism a de-scheduled (cron cleared) batch uses.
             return false;
         }
         CronExpression expr;

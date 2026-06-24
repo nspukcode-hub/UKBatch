@@ -255,8 +255,8 @@ else
             <label class="form-field__label">Cron expression</label>
             <input class="form-field__input mono" @bind="_model.Schedule" @bind:event="oninput" />
             <span class="form-field__hint">Leave empty for trigger-only. Cronos 6-field (seconds) supported. Validity is checked server-side.</span>
-            <span class="form-field__hint">Note: the schedule is stored with the definition but is NOT executed yet — batch cron scheduling
-                arrives in a future release. Until then, trigger batches manually or via the REST API.</span>
+            <span class="form-field__hint">When set, the schedule fires the batch on its cron expression. You can pause or resume the
+                schedule later from the batch detail page.</span>
         </div>
 
         <div class="form-field">

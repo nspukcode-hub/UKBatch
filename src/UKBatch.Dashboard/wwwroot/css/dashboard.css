@@ -1266,6 +1266,23 @@ code, .mono { font-family: var(--font-mono); }
 .status-badge--cancelled { background: color-mix(in srgb, var(--color-status-cancelled) 18%, transparent); color: var(--color-status-cancelled); }
 .status-badge--approval  { background: color-mix(in srgb, var(--color-status-approval)  18%, transparent); color: var(--color-status-approval); }
 
+/* Inline pill flagging whether a batch's stored cron is firing. Sits beside the cron expression. */
+.schedule-chip {
+    display: inline-flex;
+    align-items: center;
+    margin-left: var(--space-xs);
+    padding: var(--space-xxs) var(--space-xs);
+    border-radius: var(--radius-full);
+    font-family: var(--font-sans);
+    font-size: var(--font-label-md-size);
+    font-weight: var(--font-label-md-weight);
+    letter-spacing: var(--font-label-md-tracking);
+    line-height: 1;
+    text-transform: uppercase;
+}
+.schedule-chip--active { background: color-mix(in srgb, var(--color-status-completed) 18%, transparent); color: var(--color-status-completed); }
+.schedule-chip--paused { background: color-mix(in srgb, var(--color-status-pending)   18%, transparent); color: var(--color-status-pending); }
+
 /* Multi-segment progress bar (ProgressBar) */
 .progress-bar { display: flex; flex-direction: column; gap: var(--space-xxs); }
 .progress-bar__track {

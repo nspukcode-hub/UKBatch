@@ -43,6 +43,16 @@
     <VersionSuffix>alpha</VersionSuffix>
   </PropertyGroup>
 
+  <!-- Targeted NuGet audit suppression. CVE-2025-6965 (memory corruption in SQLite < 3.50.2) reaches the
+       build only transitively, via Microsoft.EntityFrameworkCore.Sqlite → SQLitePCLRaw.lib.e_sqlite3. No
+       patched version exists yet — every released version (<= 2.1.11, which is the latest) is flagged, so
+       there is nothing to bump to. The library runs no untrusted SQL: EF Core generates every query from a
+       fixed schema and no operator or end-user SQL is accepted, so the malicious-aggregate trigger is not
+       reachable. Remove this suppression once EF Core Sqlite ships a SQLitePCLRaw built on SQLite 3.50.2+. -->
+  <ItemGroup>
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-2m69-gcr7-jv3q" />
+  </ItemGroup>
+
   <ItemGroup Condition="'$(IsPackable)' == 'true'">
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Condition="Exists('$(MSBuildThisFileDirectory)README.md')" />
     <None Include="$(MSBuildThisFileDirectory)icon.png" Pack="true" PackagePath="\" Visible="false" />
