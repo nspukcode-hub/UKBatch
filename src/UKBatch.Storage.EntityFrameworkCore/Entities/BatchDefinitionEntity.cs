@@ -15,6 +15,13 @@ internal sealed class BatchDefinitionEntity
     public string? Schedule { get; set; }
 
     /// <summary>
+    /// Whether the schedule is active. <c>false</c> suspends firing without removing the cron expression.
+    /// Non-nullable with a DB default of <c>true</c> so rows created before this column existed read as
+    /// enabled.
+    /// </summary>
+    public bool ScheduleEnabled { get; set; } = true;
+
+    /// <summary>
     /// Per-batch missed-fire catch-up window, stored as nullable ticks to avoid provider-specific
     /// TimeSpan/interval column ambiguity. The mapper converts to/from <c>TimeSpan?</c>. Null = no
     /// catch-up.

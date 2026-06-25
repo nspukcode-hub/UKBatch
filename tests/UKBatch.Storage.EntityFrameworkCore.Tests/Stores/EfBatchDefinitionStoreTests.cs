@@ -104,6 +104,26 @@ public sealed class EfBatchDefinitionStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateThenUpdate_ScheduleEnabled_RoundTrips_AndIsEditable()
+    {
+        // ScheduleEnabled persists through create (default true) and toggles on update (pause), exercising
+        // the bool column default + the mapper's both-direction copy through CopyEditableFields.
+        var created = await _store.CreateAsync(
+            TestData.BatchDef("def-se", "daily", schedule: "0 0 0 * * *"),
+            CancellationToken.None);
+
+        var fetched = await _store.GetAsync("def-se", CancellationToken.None);
+        fetched!.ScheduleEnabled.Should().BeTrue("a new batch is schedule-enabled by default");
+
+        // Pause on update — the flag must persist as false.
+        var paused = created with { ScheduleEnabled = false };
+        await _store.UpdateAsync(paused, CancellationToken.None);
+
+        var afterPause = await _store.GetAsync("def-se", CancellationToken.None);
+        afterPause!.ScheduleEnabled.Should().BeFalse("pausing the schedule persists ScheduleEnabled=false");
+    }
+
+    [Fact]
     public async Task UpdateAsync_BumpsVersion_AndPersistsEditableFields()
     {
         var created = await _store.CreateAsync(TestData.BatchDef("def-1", "original"), CancellationToken.None);

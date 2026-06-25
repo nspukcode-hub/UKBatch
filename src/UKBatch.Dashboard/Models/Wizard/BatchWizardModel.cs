@@ -32,6 +32,13 @@ public sealed class BatchWizardModel
     public string? Schedule { get; set; }
 
     /// <summary>
+    /// Whether the schedule is active; <c>false</c> = paused (the cron is kept but not armed). Default
+    /// <c>true</c>. Round-tripped through create/edit so a wizard edit preserves the pause state set via the
+    /// Pause/Resume control on the batch detail page (the wizard has no checkbox for it).
+    /// </summary>
+    public bool ScheduleEnabled { get; set; } = true;
+
+    /// <summary>
     /// Magnitude of the schedule catch-up window, in <see cref="CatchUpWindowUnit"/> units;
     /// <c>null</c>/non-positive = no catch-up (a missed scheduled fire is skipped). Only meaningful
     /// when <see cref="Schedule"/> is set. Combined with <see cref="CatchUpWindowUnit"/> to produce
@@ -108,6 +115,7 @@ public sealed class BatchWizardModel
         Name = Name.Trim(),
         Source = Source,
         Schedule = string.IsNullOrWhiteSpace(Schedule) ? null : Schedule.Trim(),
+        ScheduleEnabled = ScheduleEnabled,
         ScheduleCatchUpWindow = ProjectedCatchUpWindow,
         Steps = Steps.Select((s, i) => s.ToBatchStep(i)).ToList(),
         FailurePolicy = FailurePolicy,
@@ -127,6 +135,7 @@ public sealed class BatchWizardModel
         Name = Name.Trim(),
         Source = Source,
         Schedule = string.IsNullOrWhiteSpace(Schedule) ? null : Schedule.Trim(),
+        ScheduleEnabled = ScheduleEnabled,
         ScheduleCatchUpWindow = ProjectedCatchUpWindow,
         Steps = Steps.Select((s, i) => s.ToBatchStep(i)).ToList(),
         FailurePolicy = FailurePolicy,
@@ -156,6 +165,7 @@ public sealed class BatchWizardModel
             Name = def.Name,
             Source = def.Source,   // preserve the loaded source (a hardcoded Dashboard would flip Api-source batches).
             Schedule = def.Schedule,
+            ScheduleEnabled = def.ScheduleEnabled,
             // Decompose the stored window into the magnitude + unit an operator would recognise, so an
             // edit preserves it instead of silently dropping the field.
             CatchUpWindowValue = catchUpValue,

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using UKBatch.Abstractions.Batches;
 using UKBatch.Abstractions.Jobs;
@@ -165,6 +166,7 @@ internal static class BatchesEndpoints
                     Name = body.Name,
                     Source = body.Source,
                     Schedule = body.Schedule,
+                    ScheduleEnabled = body.ScheduleEnabled,
                     ScheduleCatchUpWindow = body.ScheduleCatchUpWindow,
                     Steps = body.Steps,
                     FailurePolicy = body.FailurePolicy,
@@ -239,6 +241,7 @@ internal static class BatchesEndpoints
                     Name = body.Name,
                     Source = body.Source,
                     Schedule = body.Schedule,
+                    ScheduleEnabled = body.ScheduleEnabled,
                     ScheduleCatchUpWindow = body.ScheduleCatchUpWindow,
                     Steps = body.Steps,
                     FailurePolicy = body.FailurePolicy,
@@ -411,7 +414,119 @@ internal static class BatchesEndpoints
             })
             .WithUKBatchName(operationIdPrefix, "CancelBatchRun")
             .WithSummary("Cancels an in-flight batch RUN (the id returned from /run). Idempotent — returns 204 even if the run is unknown or already finished. Administrative override, independent of approval-gate roles.");
+
+        // POST /batches/by-id/{id}/pause — suspends the batch's schedule WITHOUT removing its cron, so the
+        // operator can resume it later unchanged. Definition-keyed (mirrors the by-id update/delete routes);
+        // distinct from the run-keyed /{batchRunId}/cancel which kills a single in-flight run. The manual
+        // /run trigger is unaffected by a pause.
+        batches.MapPost("/by-id/{id}/pause", async (
+                string id,
+                IBatchCatalogService catalog,
+                IBatchDefinitionStore store,
+                IBatchScheduleNotifier scheduleNotifier,
+                CancellationToken ct) =>
+            {
+                ArgumentException.ThrowIfNullOrEmpty(id);
+                // Resolve via the catalog so a Code-source id is SEEN (it lives in the registry, not the
+                // store) and rejected with 400 instead of a misleading 404. A Store-source definition the
+                // catalog returns is the same row the store holds (same Version), so the update below matches.
+                var def = await catalog.GetByIdAsync(id, ct).ConfigureAwait(false);
+                if (def is null)
+                {
+                    return BatchDefinitionNotFound(id);
+                }
+                if (def.Source == BatchSource.Code)
+                {
+                    return CodeSourceImmutable("paused");
+                }
+                if (!def.ScheduleEnabled)
+                {
+                    // Already paused — no state change, no version bump. Re-arm anyway (cheap, idempotent).
+                    _ = scheduleNotifier.NotifyDefinitionChangedAsync(CancellationToken.None);
+                    return Results.NoContent();
+                }
+                await store.UpdateAsync(def with { ScheduleEnabled = false }, ct).ConfigureAwait(false);
+                // Re-arm so the paused batch drops out of the scheduler heap. CancellationToken.None — the
+                // rescan must outlive this request.
+                _ = scheduleNotifier.NotifyDefinitionChangedAsync(CancellationToken.None);
+                return Results.NoContent();
+            })
+            .WithUKBatchName(operationIdPrefix, "PauseBatchSchedule")
+            .WithSummary("Pauses a Store-source batch's schedule (keeps the cron, stops firing). Idempotent. The manual /run trigger is unaffected. Code-source batches return 400; unknown id returns 404.");
+
+        // POST /batches/by-id/{id}/resume — re-activates a paused schedule. For a catch-up-enabled batch it
+        // also advances the last-fire watermark to now, so the deliberately-paused period is NOT replayed on
+        // a later restart. Advancing the monotonic watermark forward SUPPRESSES catch-up (marks "fired
+        // through now") — it never triggers a replay.
+        batches.MapPost("/by-id/{id}/resume", async (
+                string id,
+                IBatchCatalogService catalog,
+                IBatchDefinitionStore store,
+                IBatchScheduleNotifier scheduleNotifier,
+                IEnumerable<IScheduleStateStore> scheduleStates,
+                TimeProvider clock,
+                ILoggerFactory loggerFactory,
+                CancellationToken ct) =>
+            {
+                ArgumentException.ThrowIfNullOrEmpty(id);
+                // Resolve via the catalog so a Code-source id is rejected with 400 (it is not in the store).
+                var def = await catalog.GetByIdAsync(id, ct).ConfigureAwait(false);
+                if (def is null)
+                {
+                    return BatchDefinitionNotFound(id);
+                }
+                if (def.Source == BatchSource.Code)
+                {
+                    return CodeSourceImmutable("resumed");
+                }
+                if (def.ScheduleEnabled)
+                {
+                    // Already active — no state change, and no watermark advance (nothing was paused).
+                    _ = scheduleNotifier.NotifyDefinitionChangedAsync(CancellationToken.None);
+                    return Results.NoContent();
+                }
+                await store.UpdateAsync(def with { ScheduleEnabled = true }, ct).ConfigureAwait(false);
+                // For a catch-up-enabled batch, advance the watermark to now so a restart AFTER resume does
+                // not catch up the deliberately-paused gap. The store is monotonic/advance-only, so this can
+                // only mark "fired through now" — it never replays a past occurrence. Batches without a
+                // catch-up window have no watermark and are skipped (nothing to replay regardless).
+                if (def.ScheduleCatchUpWindow is { } && scheduleStates.FirstOrDefault() is { } scheduleState)
+                {
+                    try
+                    {
+                        await scheduleState.RecordFiredAsync(id, clock.GetUtcNow(), ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // The resume already committed; advancing the watermark is best-effort — it only
+                        // suppresses a later restart's catch-up of the paused gap. A transient schedule-store
+                        // fault must NOT fail a successful resume (mirrors the fire path, which also treats a
+                        // watermark write as non-fatal). Worst case a restart replays one occurrence from the
+                        // paused window — the pre-feature behaviour.
+                        loggerFactory.CreateLogger("UKBatch.Api.Batches").LogDebug(
+                            ex, "Resume succeeded for '{DefId}' but advancing the schedule watermark failed; the advance is best-effort.", id);
+                    }
+                }
+                _ = scheduleNotifier.NotifyDefinitionChangedAsync(CancellationToken.None);
+                return Results.NoContent();
+            })
+            .WithUKBatchName(operationIdPrefix, "ResumeBatchSchedule")
+            .WithSummary("Resumes a paused Store-source batch's schedule. Idempotent. For a catch-up-enabled batch it advances the last-fire watermark to now so the paused period is not replayed on a later restart. Code-source batches return 400; unknown id returns 404.");
     }
+
+    private static IResult CodeSourceImmutable(string verb) =>
+        Results.Problem(
+            type: ProblemDetailsConventions.ValidationFailed,
+            statusCode: StatusCodes.Status400BadRequest,
+            title: "Code-source batches are immutable",
+            detail: $"Code-source batch schedules cannot be {verb} via REST.");
+
+    private static IResult BatchDefinitionNotFound(string id) =>
+        Results.Problem(
+            type: ProblemDetailsConventions.BatchDefinitionNotFound,
+            statusCode: StatusCodes.Status404NotFound,
+            title: "Batch definition not found",
+            detail: $"No batch definition with id '{id}'.");
 
     private static IResult BatchNotFound(string detail) =>
         Results.Problem(

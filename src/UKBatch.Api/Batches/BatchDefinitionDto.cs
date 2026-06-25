@@ -21,6 +21,9 @@ public sealed record class BatchDefinitionDto
     /// <summary>Optional cron expression when the batch is scheduler-armed.</summary>
     public string? Schedule { get; init; }
 
+    /// <summary>Whether the schedule is active; <c>false</c> means paused (the cron is kept but not armed). Default <c>true</c>.</summary>
+    public bool ScheduleEnabled { get; init; } = true;
+
     /// <summary>Optional per-batch window for catching up a single missed scheduled fire on restart (EF storage only).</summary>
     public TimeSpan? ScheduleCatchUpWindow { get; init; }
 
@@ -58,6 +61,7 @@ public sealed record class BatchDefinitionDto
             Name = def.Name,
             Source = def.Source,
             Schedule = def.Schedule,
+            ScheduleEnabled = def.ScheduleEnabled,
             ScheduleCatchUpWindow = def.ScheduleCatchUpWindow,
             Steps = def.Steps,
             FailurePolicy = def.FailurePolicy,

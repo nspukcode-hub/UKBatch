@@ -313,6 +313,19 @@ internal sealed class RestUKBatchClient : IUKBatchClient
         await ThrowIfErrorAsync(res, ct).ConfigureAwait(false);
     }
 
+    public async Task SetScheduleEnabledAsync(string definitionId, bool enabled, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(definitionId);
+        // Pause/resume are dedicated POST actions (idempotent server-side, 204). An empty body — the id
+        // plus the verb (encoded in the route) are the only inputs. ThrowIfErrorAsync surfaces 404
+        // (unknown id) / 400 (code-source) as a UKBatchClientException.
+        var verb = enabled ? "resume" : "pause";
+        using var content = new StringContent(string.Empty);
+        using var res = await _http.PostAsync(
+            $"batches/by-id/{Uri.EscapeDataString(definitionId)}/{verb}", content, ct).ConfigureAwait(false);
+        await ThrowIfErrorAsync(res, ct).ConfigureAwait(false);
+    }
+
     // ── REST — Executions (3) ──────────────────────────────────────────────────────────
 
     public async Task<JobExecution?> GetExecutionAsync(string executionId, CancellationToken ct)

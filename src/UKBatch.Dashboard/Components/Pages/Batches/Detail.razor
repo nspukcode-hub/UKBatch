@@ -1,10 +1,12 @@
 @* Batch definition detail + run history (filtered by BatchDefinitionId). *@
 @page "/dashboard/{ServiceName}/batches/{BatchId}"
+@implements IAsyncDisposable
 @inject IUKBatchServiceRegistry Registry
 @inject IUKBatchClientFactory ClientFactory
 @inject IDashboardState State
 @inject INotificationService Notifications
 @inject NavigationManager Nav
+@inject Microsoft.Extensions.Options.IOptions<DashboardOptions> Options
 
 <PageTitle>@(_definition?.Name ?? "Batch") - UKBatch</PageTitle>
 
@@ -34,18 +36,43 @@ else
     <section class="surface-card">
         <div class="surface-card__header">
             <h2 class="surface-card__title">Definition</h2>
-            <button class="btn btn--primary" @onclick="RunAsync" disabled="@_runInFlight">
-                <span class="material-symbols-outlined">play_arrow</span>
-                @(_runInFlight ? "Triggering…" : "Run")
-            </button>
+            <div class="surface-card__actions">
+                @* Pausing a schedule stops its cron from firing without deleting the cron, and is
+                   independent of the manual Run trigger and of cancelling an in-flight run. Only a
+                   scheduled batch can be paused. *@
+                @if (_definition.Schedule is { Length: > 0 })
+                {
+                    <button class="btn btn--secondary" @onclick="ToggleScheduleAsync" disabled="@_scheduleToggleInFlight">
+                        <span class="material-symbols-outlined">@(_definition.ScheduleEnabled ? "pause" : "play_arrow")</span>
+                        @(_definition.ScheduleEnabled ? "Pause schedule" : "Resume schedule")
+                    </button>
+                }
+                <button class="btn btn--primary" @onclick="RunAsync" disabled="@_runInFlight">
+                    <span class="material-symbols-outlined">play_arrow</span>
+                    @(_runInFlight ? "Triggering…" : "Run")
+                </button>
+            </div>
         </div>
         <div class="surface-card__body">
             <dl class="definition-list">
                 <dt>Id</dt><dd class="mono">@_definition.Id</dd>
                 <dt>Source</dt><dd>@_definition.Source</dd>
-                @* Batch cron scheduling is not executed by the runtime yet — make that visible wherever
-                   a stored schedule is shown so operators don't wait for a fire that never comes. *@
-                <dt>Schedule</dt><dd class="mono">@(_definition.Schedule is { Length: > 0 } sched ? $"{sched} (not executed yet)" : "—")</dd>
+                @* A stored cron fires the batch on its schedule. The chip shows whether that firing is
+                   currently active or paused; pausing keeps the cron but stops it from firing. *@
+                <dt>Schedule</dt>
+                <dd class="mono">
+                    @if (_definition.Schedule is { Length: > 0 } sched)
+                    {
+                        @sched
+                        <span class="schedule-chip @(_definition.ScheduleEnabled ? "schedule-chip--active" : "schedule-chip--paused")">
+                            @(_definition.ScheduleEnabled ? "active" : "paused")
+                        </span>
+                    }
+                    else
+                    {
+                        @:—
+                    }
+                </dd>
                 <dt>Failure policy</dt><dd>@_definition.FailurePolicy</dd>
                 <dt>Steps</dt><dd>@_definition.Steps.Count</dd>
                 <dt>Created</dt><dd class="mono">@_definition.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC</dd>
@@ -185,6 +212,16 @@ else
     private BatchStep? _selectedStep;
     private bool _confirmDeleteOpen;
     private bool _deleteInFlight;
+    private bool _scheduleToggleInFlight;
+
+    // Live "Recent runs": a run of THIS definition that starts, changes state, or completes streams an
+    // execution event carrying our BatchDefinitionId. The run list is run-level (one row per BatchRun) while
+    // the hub stream is execution-level, so there is no clean per-event row patch — re-fetch the run page and
+    // replace _runs (this captures new runs, running→terminal transitions, and the updated counts). The
+    // refetch is debounced so a burst of execution events (the up-to-4× hub fan-out across a run's jobs)
+    // collapses into at most one round-trip per window.
+    private bool _allSubscribed;
+    private UiRefreshDebounce? _runsRefresh;
 
     protected override async Task OnInitializedAsync()
     {
@@ -197,9 +234,21 @@ else
         }
         State.CurrentService = descriptor;
 
+        // The debounce fires on a thread-pool continuation — the render callback MUST hop to the dispatcher.
+        _runsRefresh = new UiRefreshDebounce(RefreshRunsAsync, Options.Value.UiRefreshDebounce);
+
         try
         {
             _client = ClientFactory.GetClient(ServiceName);
+
+            // Subscribe FIRST, before the initial fetch, so a run that starts between the fetch and the
+            // subscription is not missed. The fire-hose group is the right scope here: BatchId is a
+            // DEFINITION id, and there is no per-definition hub group — the BatchDefinitionId filter on
+            // OnExecutionStateChangedAsync narrows the all-stream to this definition.
+            _client.ExecutionStateChanged += OnExecutionStateChangedAsync;
+            try { await _client.SubscribeAllAsync(CancellationToken.None); _allSubscribed = true; }
+            catch (Exception) { /* subscribe failure non-fatal — the REST snapshot still loads */ }
+
             _definition = await _client.GetBatchByIdAsync(BatchId, CancellationToken.None);
             if (_definition is null)
             {
@@ -211,11 +260,7 @@ else
             // a running run as null→Running, so there is no execution roll-up to second-guess and no approvals
             // cross-reference to patch the gate-paused case. A single page of the most recent 50 runs; the
             // Executions → Runs view offers server-side paging for definitions with deeper history.
-            var runsPage = await _client.QueryRunsAsync(BatchId, includeRunning: true, 0, 50, CancellationToken.None);
-            _runs = runsPage.Items
-                .Select(RunSummaryViewModel.FromBatchRun)
-                .OrderByDescending(r => r.StartedAtUtc)
-                .ToList();
+            await LoadRunsAsync();
         }
         catch (UKBatchClientException ex)
         {
@@ -229,6 +274,39 @@ else
         {
             _isLoading = false;
         }
+    }
+
+    // Reads the most-recent run page and replaces _runs (newest-first). Shared by the initial load and the
+    // live refetch so both stay in lock-step. Clamps _pageIndex onto the new last page: a refetch that shrinks
+    // the list must not strand the operator past the end, but an operator who paged forward keeps their page.
+    private async Task LoadRunsAsync()
+    {
+        if (_client is null) return;
+        var runsPage = await _client.QueryRunsAsync(BatchId, includeRunning: true, 0, 50, CancellationToken.None);
+        _runs = runsPage.Items
+            .Select(RunSummaryViewModel.FromBatchRun)
+            .OrderByDescending(r => r.StartedAtUtc)
+            .ToList();
+        var lastPage = _runs.Count <= 0 ? 0 : (_runs.Count - 1) / ClientPager.DefaultPageSize;
+        _pageIndex = Math.Clamp(_pageIndex, 0, lastPage);
+    }
+
+    // Live hub callback — runs OFF the render thread. A run of THIS definition that starts / changes state /
+    // completes streams an execution event carrying our BatchDefinitionId. Filter to this definition (the
+    // all-stream also carries unrelated executions), then debounce a run-page refetch.
+    private async Task OnExecutionStateChangedAsync(JobExecution exec)
+    {
+        if (!string.Equals(exec.BatchDefinitionId, BatchId, StringComparison.Ordinal)) return;
+        await _runsRefresh!.RequestAsync();
+    }
+
+    // Debounce callback — re-fetch the run page and re-render on the dispatcher. A REST hiccup keeps the last
+    // known runs (the next event will retry); the page already rendered fine, so swallow rather than surface.
+    private async Task RefreshRunsAsync()
+    {
+        try { await LoadRunsAsync(); }
+        catch (Exception) { /* keep last known runs — a subsequent event retries */ }
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task RunAsync()
@@ -252,6 +330,32 @@ else
         finally
         {
             _runInFlight = false;
+        }
+    }
+
+    private async Task ToggleScheduleAsync()
+    {
+        if (_client is null || _definition is null || _scheduleToggleInFlight) return;
+        _scheduleToggleInFlight = true;
+        var pausing = _definition.ScheduleEnabled;
+        try
+        {
+            await _client.SetScheduleEnabledAsync(_definition.Id, enabled: !pausing, CancellationToken.None);
+            // Re-read the definition so the refreshed Version and ScheduleEnabled drive the chip + button.
+            _definition = await _client.GetBatchByIdAsync(_definition.Id, CancellationToken.None) ?? _definition;
+            await Notifications.SuccessAsync(pausing ? "Schedule paused" : "Schedule resumed", _definition.Name);
+        }
+        catch (UKBatchClientException ex)
+        {
+            await Notifications.ErrorAsync(pausing ? "Pause failed" : "Resume failed", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            await Notifications.ErrorAsync("Unexpected failure", ex.Message);
+        }
+        finally
+        {
+            _scheduleToggleInFlight = false;
         }
     }
 
@@ -309,6 +413,25 @@ else
         {
             _deleteInFlight = false;
         }
+    }
+
+    // Symmetric teardown. The handler is detached whenever a client exists (it is attached before the
+    // subscribe attempt, so a subscribe that then failed still left a live handler to remove); the group is
+    // only left when the subscribe actually succeeded. Guarding on _client thus neither NREs on a
+    // dispose-before-init nor double-unsubscribes, and the debounce's own disposed-latch absorbs an in-flight
+    // refetch racing teardown.
+    public async ValueTask DisposeAsync()
+    {
+        if (_client is not null)
+        {
+            _client.ExecutionStateChanged -= OnExecutionStateChangedAsync;
+            if (_allSubscribed)
+            {
+                try { await _client.UnsubscribeAllAsync(CancellationToken.None); }
+                catch (Exception) { /* ignore */ }
+            }
+        }
+        if (_runsRefresh is not null) await _runsRefresh.DisposeAsync();
     }
 }
 

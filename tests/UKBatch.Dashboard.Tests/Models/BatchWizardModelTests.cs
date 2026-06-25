@@ -162,6 +162,35 @@ public sealed class BatchWizardModelTests
     }
 
     [Fact]
+    public void ScheduleEnabled_DefaultsTrue_OnNewModel()
+    {
+        new BatchWizardModel { Name = "b" }.ScheduleEnabled.Should().BeTrue(
+            "a new batch is schedule-enabled by default");
+    }
+
+    [Fact]
+    public void ScheduleEnabled_RoundTripsThroughCreateUpdateAndFromDefinition()
+    {
+        // Pause state must survive a wizard edit (mirrors the Source round-trip): the model carries
+        // ScheduleEnabled into both requests and hydrates it from a loaded definition, so editing a
+        // paused batch in the wizard does not silently re-enable its schedule.
+        new BatchWizardModel { Name = "b", Schedule = "0 0 * * * *", ScheduleEnabled = false }
+            .ToCreateRequest(createdBy: null).ScheduleEnabled.Should().BeFalse("create carries the paused flag");
+
+        new BatchWizardModel { Id = "id", Version = 1, Name = "b", Schedule = "0 0 * * * *", ScheduleEnabled = false }
+            .ToUpdateRequest().ScheduleEnabled.Should().BeFalse("a wizard edit preserves the paused flag");
+
+        var dto = new BatchDefinitionDto
+        {
+            Id = "id", Name = "b", Source = BatchSource.Dashboard, Version = 1,
+            Schedule = "0 0 * * * *", ScheduleEnabled = false,
+            Steps = [], FailurePolicy = BatchFailurePolicy.StopOnFailure,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+        };
+        BatchWizardModel.FromDefinition(dto).ScheduleEnabled.Should().BeFalse("edit-load hydrates the paused state");
+    }
+
+    [Fact]
     public void FromDefinition_ApprovalGateTimeout_RoundTripsIntoDraft()
     {
         // A persisted gate with a 30s timeout must hydrate the editable seconds field on edit-load, so
