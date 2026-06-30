@@ -56,6 +56,14 @@ public sealed class JobContext
     /// <summary>Identity that triggered this execution (user, <c>"scheduler"</c>, <c>"api"</c>, or worker name); <c>null</c> if unknown.</summary>
     public string? TriggeredBy { get; init; }
 
+    /// <summary>
+    /// Output sink for this execution. Values written via <see cref="JobOutputs.Set"/> are forwarded
+    /// into the parameters of later steps in the same batch, and returned to the orchestrator for a
+    /// cross-service step. Empty by default; a job that writes nothing changes no behavior. Thread-safe,
+    /// so it is safe to write from partition workers.
+    /// </summary>
+    public JobOutputs Outputs { get; init; } = new();
+
     // AsyncLocal owns the per-worker index. Encapsulated: there is no public mutable property
     // because a settable property would race across the N concurrent partition workers that share
     // this single JobContext instance. The default value 0 covers plain (non-partitioned) jobs and

@@ -143,6 +143,19 @@ public sealed class InMemoryJobStore : IJobStoreInternal
     }
 
     /// <inheritdoc/>
+    public Task UpdateOutputsAsync(string executionId, IReadOnlyDictionary<string, object?> outputs, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(executionId);
+        ArgumentNullException.ThrowIfNull(outputs);
+        var updated = _executions.AddOrUpdate(
+            executionId,
+            static id => throw new KeyNotFoundException($"Execution {id} not found"),
+            (_, existing) => existing with { Outputs = outputs });
+        _watchHub.Publish(updated);
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc/>
     public Task<JobExecution?> GetAsync(string executionId, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(executionId);

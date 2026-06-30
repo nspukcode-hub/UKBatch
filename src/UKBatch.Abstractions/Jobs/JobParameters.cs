@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 
 namespace UKBatch.Abstractions.Jobs;
 
@@ -6,9 +7,21 @@ namespace UKBatch.Abstractions.Jobs;
 /// Typed, read-only accessor over a job's parameter dictionary. Values are user-supplied and
 /// MUST be JSON-serializable for cross-service transport.
 /// </summary>
+/// <remarks>
+/// Reads are JSON-aware. A value produced locally is read back as its original CLR type (the fast
+/// path, unchanged behavior). A value that crossed a service boundary, or was rehydrated from a
+/// durable store on resume, arrives as a <see cref="JsonElement"/>; the typed readers then deserialize
+/// it into the requested type. So <c>TryGet&lt;int&gt;</c> and <c>TryGet&lt;MyDto&gt;</c> work identically
+/// for local and cross-service values.
+/// </remarks>
 public sealed class JobParameters
 {
     private static readonly Dictionary<string, object?> _emptyDict = new(0);
+
+    private static readonly JsonSerializerOptions _jsonReadOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
 
     /// <summary>Empty parameter set.</summary>
     public static JobParameters Empty { get; } = new(_emptyDict, noCopy: true);
@@ -53,24 +66,34 @@ public sealed class JobParameters
     }
 
     /// <summary>
-    /// Returns the value cast to <typeparamref name="T"/>, or <paramref name="defaultValue"/>
-    /// if the key is missing or the value is <c>null</c>.
+    /// Returns the value as <typeparamref name="T"/>, or <paramref name="defaultValue"/> if the key is
+    /// missing or the value is <c>null</c>. A <see cref="JsonElement"/> value (cross-service / resumed)
+    /// is deserialized into <typeparamref name="T"/>; a genuinely incompatible CLR value still throws
+    /// <see cref="InvalidCastException"/> as before.
     /// </summary>
     public T? GetOrDefault<T>(string key, T? defaultValue = default)
     {
         ArgumentNullException.ThrowIfNull(key);
         if (Values.TryGetValue(key, out var raw) && raw is not null)
         {
+            if (raw is T typed)
+            {
+                return typed;
+            }
+            if (raw is JsonElement element)
+            {
+                return element.Deserialize<T>(_jsonReadOptions) ?? defaultValue;
+            }
             return (T)raw;
         }
         return defaultValue;
     }
 
     /// <summary>
-    /// Returns the value cast to <typeparamref name="T"/>.
+    /// Returns the value as <typeparamref name="T"/>.
     /// </summary>
     /// <exception cref="KeyNotFoundException">No entry for <paramref name="key"/>.</exception>
-    /// <exception cref="InvalidCastException">The value cannot be converted to <typeparamref name="T"/>.</exception>
+    /// <exception cref="InvalidCastException">The value is null, or cannot be converted to <typeparamref name="T"/>.</exception>
     public T GetRequired<T>(string key)
     {
         ArgumentNullException.ThrowIfNull(key);
@@ -82,21 +105,57 @@ public sealed class JobParameters
         {
             throw new InvalidCastException($"Required job parameter '{key}' is null but '{typeof(T).Name}' was requested.");
         }
+        if (raw is T typed)
+        {
+            return typed;
+        }
+        if (raw is JsonElement element)
+        {
+            return element.Deserialize<T>(_jsonReadOptions)
+                ?? throw new InvalidCastException($"Required job parameter '{key}' deserialized to null for '{typeof(T).Name}'.");
+        }
         return (T)raw;
     }
 
     /// <summary>
     /// Attempts a non-throwing typed read. Returns <c>true</c> if the key exists and the value is
-    /// non-null and assignable to <typeparamref name="T"/>; otherwise <c>false</c> with
-    /// <paramref name="value"/> set to <see langword="default"/>.
+    /// non-null and either assignable to <typeparamref name="T"/> or a <see cref="JsonElement"/> that
+    /// deserializes into <typeparamref name="T"/>; otherwise <c>false</c> with <paramref name="value"/>
+    /// set to <see langword="default"/>.
     /// </summary>
     public bool TryGet<T>(string key, [MaybeNullWhen(false)] out T value)
     {
         ArgumentNullException.ThrowIfNull(key);
-        if (Values.TryGetValue(key, out var raw) && raw is T typed)
+        if (Values.TryGetValue(key, out var raw))
         {
-            value = typed;
-            return true;
+            if (raw is T typed)
+            {
+                value = typed;
+                return true;
+            }
+            if (raw is JsonElement element && TryDeserialize(element, out value))
+            {
+                return true;
+            }
+        }
+        value = default;
+        return false;
+    }
+
+    private static bool TryDeserialize<T>(JsonElement element, [MaybeNullWhen(false)] out T value)
+    {
+        try
+        {
+            var deserialized = element.Deserialize<T>(_jsonReadOptions);
+            if (deserialized is not null)
+            {
+                value = deserialized;
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+            // Value is a JsonElement but not convertible to T — treat as a missing typed read.
         }
         value = default;
         return false;

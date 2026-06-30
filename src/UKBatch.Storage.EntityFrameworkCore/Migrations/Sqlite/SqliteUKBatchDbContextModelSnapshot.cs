@@ -169,6 +169,9 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Sqlite
                     b.Property<int>("Failed")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ForwardedState")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("StartedAtUtc")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -240,6 +243,9 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Sqlite
 
                     b.Property<int>("MaxRetries")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("Outputs")
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("Parameters")
                         .IsRequired()

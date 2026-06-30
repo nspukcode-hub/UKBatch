@@ -166,6 +166,17 @@ internal sealed class JobWorker
         {
             await DispatchToImplementationAsync(req, ctx, scopedProvider, linkedCts.Token).ConfigureAwait(false);
 
+            // Capture any outputs the job recorded, BEFORE the terminal status flip, so a reader that
+            // observes Completed (notably the cross-service worker re-fetch) already sees them. Guarded
+            // by IsEmpty: a job that produced nothing keeps the exact write sequence as before.
+            if (!ctx.Outputs.IsEmpty)
+            {
+                await _writer.UpdateOutputsAsync(
+                    req.ExecutionId,
+                    ctx.Outputs.Snapshot(),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
             // Step 7: SUCCESS.
             await _writer.UpdateProgressAsync(
                 req.ExecutionId,

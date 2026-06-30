@@ -70,6 +70,24 @@ public sealed class InMemoryBatchRunStore : IBatchRunStore
     }
 
     /// <inheritdoc/>
+    public Task UpdateForwardedStateAsync(string batchId, IReadOnlyDictionary<string, object?> state, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+        ArgumentNullException.ThrowIfNull(state);
+        // No-op when the run row is absent, mirroring UpdateCursorAsync. Compare-and-swap until the
+        // update sticks or the row vanishes.
+        while (_runs.TryGetValue(batchId, out var existing))
+        {
+            var updated = existing with { ForwardedState = state };
+            if (_runs.TryUpdate(batchId, updated, existing))
+            {
+                break;
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc/>
     public Task<BatchRun?> GetAsync(string batchId, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(batchId);

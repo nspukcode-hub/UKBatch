@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -195,6 +196,13 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
                 Succeeded = 0,
                 Failed = 0,
                 Cancelled = 0,
+                // Persist the batch-initial parameters up front so a crash BEFORE the first step completes
+                // still resumes with them. Each completed step then overwrites this with the full forwarded
+                // state (initial parameters + accumulated outputs).
+                ForwardedState = new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    [ForwardedStateKeys.InitialParameters] = (initialParameters ?? JobParameters.Empty).Values,
+                },
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -206,13 +214,24 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             ResolveThisServiceName(),
             _clock,
             _serviceProvider.GetRequiredService<ILogger<BatchExecutor>>(),
-            // Advance the resume cursor after each completed step, identical to the resume path. This is
-            // additive: dispatch / completion / signal behavior is unchanged (the cursor is a separate
-            // field). It is what makes a crash mid-run recoverable — without it CurrentStepIndex stays
-            // null and recovery's ResumeForward would restart from the beginning, re-running a completed
-            // step (e.g. a payment). On the in-memory store the write is harmless and lost on restart,
-            // which is the documented in-memory durability boundary.
-            onStepCompleted: (nextIndex, ct) => _batchRunStore.UpdateCursorAsync(batchId, nextIndex, ct));
+            // After each completed step, persist BOTH the run's forwarded state (batch-initial parameters +
+            // accumulated outputs) AND the resume cursor, identical to the resume path. This is additive:
+            // dispatch / completion / signal behavior is unchanged (separate fields). The cursor is what
+            // makes a crash mid-run recoverable — without it CurrentStepIndex stays null and recovery's
+            // ResumeForward would restart from the beginning, re-running a completed step (e.g. a payment);
+            // without the forwarded state a resume would lose earlier steps' outputs.
+            //
+            // Order matters: forwarded state is written FIRST, cursor SECOND, in two separate transactions.
+            // A crash between them can then only leave forwarded-state ahead of the cursor, so the just-
+            // completed step re-runs on resume (the documented ResumeForward worst case) and re-produces its
+            // output. The reverse order could advance the cursor past a step whose output was not yet
+            // persisted, silently dropping a forwarded value. On the in-memory store these writes are
+            // harmless and lost on restart, the documented in-memory durability boundary.
+            onStepCompleted: async (nextIndex, forwardedState, ct) =>
+            {
+                await _batchRunStore.UpdateForwardedStateAsync(batchId, forwardedState, ct).ConfigureAwait(false);
+                await _batchRunStore.UpdateCursorAsync(batchId, nextIndex, ct).ConfigureAwait(false);
+            });
 
         // Per-run cancellation: link the host-stopping token with a fresh source so an administrative
         // cancel (via IBatchRunCanceller) trips ONLY this run; the host token still cancels every run on
@@ -544,7 +563,13 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             ResolveThisServiceName(),
             _clock,
             _serviceProvider.GetRequiredService<ILogger<BatchExecutor>>(),
-            onStepCompleted: (nextIndex, ct) => _batchRunStore.UpdateCursorAsync(batchId, nextIndex, ct),
+            // Forwarded state first, cursor second (see TriggerBatchAsync for the crash-window rationale):
+            // a crash between the two writes re-runs the just-completed step rather than dropping its output.
+            onStepCompleted: async (nextIndex, forwardedState, ct) =>
+            {
+                await _batchRunStore.UpdateForwardedStateAsync(batchId, forwardedState, ct).ConfigureAwait(false);
+                await _batchRunStore.UpdateCursorAsync(batchId, nextIndex, ct).ConfigureAwait(false);
+            },
             // Bind the resume idempotency probes (null on the trigger path). The gate probe honors a gate
             // already decided before the crash; the shadow probe skips a cross-service step that already
             // terminated. Without these, resume re-opens approved gates and repeats completed remote work.
@@ -567,7 +592,8 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             try
             {
                 await executor.RunAsync(
-                    def, batchId, ResumeParameters(run), triggeredBy: run.TriggeredBy, runToken, startStepIndex).ConfigureAwait(false);
+                    def, batchId, ResumeParameters(run), triggeredBy: run.TriggeredBy, runToken, startStepIndex,
+                    ResumeForwardedOutputs(run)).ConfigureAwait(false);
             }
             catch (OperationCanceledException ex)
             {
@@ -613,17 +639,46 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
     }
 
     /// <summary>
-    /// Initial parameters supplied to a resumed run. The original trigger parameters are not persisted on
-    /// the run row in this release, so a resume re-supplies <see cref="JobParameters.Empty"/> — the same
-    /// default a parameterless trigger uses. A run triggered with non-empty initial parameters therefore
-    /// resumes without them; this is a documented limitation, and this named seam is where a future
-    /// persisted-parameter payload will be read.
+    /// Initial parameters supplied to a resumed run, rehydrated from the persisted forwarded state. Falls
+    /// back to <see cref="JobParameters.Empty"/> for a run created before forwarded state existed or on a
+    /// store that does not persist it.
     /// </summary>
     private static JobParameters ResumeParameters(BatchRun run)
     {
-        _ = run;   // reserved: a future release reads a persisted initial-parameter payload off the run row.
+        if (run.ForwardedState is { Count: > 0 } state
+            && state.TryGetValue(ForwardedStateKeys.InitialParameters, out var raw)
+            && AsDict(raw) is { } initial)
+        {
+            return new JobParameters(initial);
+        }
         return JobParameters.Empty;
     }
+
+    /// <summary>
+    /// Accumulated step outputs to seed the forwarding accumulator on resume, rehydrated from the persisted
+    /// forwarded state; <c>null</c> when none was recorded.
+    /// </summary>
+    private static Dictionary<string, object?>? ResumeForwardedOutputs(BatchRun run)
+    {
+        if (run.ForwardedState is { Count: > 0 } state
+            && state.TryGetValue(ForwardedStateKeys.ForwardedOutputs, out var raw))
+        {
+            return AsDict(raw);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Coerces a forwarded-state value into a dictionary. It is a live dictionary in-process, but a
+    /// <see cref="JsonElement"/> after a round-trip through a JSON-backed store; both are handled.
+    /// </summary>
+    private static Dictionary<string, object?>? AsDict(object? raw)
+        => raw switch
+        {
+            IReadOnlyDictionary<string, object?> dict => new Dictionary<string, object?>(dict, StringComparer.Ordinal),
+            JsonElement { ValueKind: JsonValueKind.Object } element => element.Deserialize<Dictionary<string, object?>>(),
+            _ => null,
+        };
 
     // ===== IJobRunnerInternal =====
 

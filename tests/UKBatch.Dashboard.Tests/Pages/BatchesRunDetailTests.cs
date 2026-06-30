@@ -750,4 +750,136 @@ public sealed class BatchesRunDetailTests : TestContext
             cut.Markup.Should().Contain($"Executions ({61})");
         });
     }
+
+    // ── run forwarded state (read-only) ─────────────────────────────────────────────────────
+    // The run carries its forwarded state on the persisted BatchRun row, fetched via QueryRunsAsync once the
+    // definition id is known (from an execution row). These tests wire that path end to end.
+
+    private const string FwdDefId = "def-fwd";
+
+    private static BatchDefinitionDto MinimalDefinition(string defId) => new()
+    {
+        Id = defId,
+        Name = "FwdBatch",
+        Source = BatchSource.Dashboard,
+        Steps = Array.Empty<BatchStep>(),
+        FailurePolicy = BatchFailurePolicy.StopOnFailure,
+        CreatedAtUtc = DateTimeOffset.UtcNow,
+        Version = 1,
+    };
+
+    private static BatchRun RunWithForwardedState(string batchRunId, string defId,
+        IReadOnlyDictionary<string, object?>? forwardedState) => new()
+    {
+        BatchId = batchRunId,
+        BatchDefinitionId = defId,
+        BatchName = "FwdBatch",
+        Status = JobStatus.Completed,
+        StartedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+        CompletedAtUtc = DateTimeOffset.UtcNow,
+        StepCount = 2,
+        Total = 2,
+        Succeeded = 2,
+        Failed = 0,
+        Cancelled = 0,
+        ForwardedState = forwardedState,
+    };
+
+    // Wires a run whose execution row carries a BatchDefinitionId (so the definition + run both lazy-load),
+    // with the supplied run page returned from QueryRunsAsync.
+    private IRenderedComponent<RunDetail> RenderRunWithRunStore(
+        string batchRunId, BatchRun? run, out IUKBatchClient client)
+    {
+        var svc = PageTestHelpers.Descriptor("svc");
+        var registry = PageTestHelpers.RegistryWith(svc);
+        client = PageTestHelpers.BuildClient();
+
+        client.GetBatchRunStatusAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new PageEnvelope<JobExecution>
+            {
+                Items = new[] { Exec("e1", batchRunId, JobStatus.Completed) with { BatchDefinitionId = FwdDefId } },
+                TotalCount = 1,
+                Offset = 0,
+                Limit = 500,
+            });
+        client.GetBatchByIdAsync(FwdDefId, Arg.Any<CancellationToken>()).Returns(MinimalDefinition(FwdDefId));
+        client.QueryRunsAsync(Arg.Any<string?>(), Arg.Any<bool>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new PageEnvelope<BatchRun>
+            {
+                Items = run is null ? Array.Empty<BatchRun>() : new[] { run },
+                TotalCount = run is null ? 0 : 1,
+                Offset = 0,
+                Limit = 50,
+            });
+
+        Services.AddSingleton(registry);
+        Services.AddSingleton(PageTestHelpers.FactoryFor(svc.Name, client));
+        Services.AddSingleton(PageTestHelpers.NewState());
+        Services.AddSingleton(PageTestHelpers.NewOptions());
+
+        return RenderComponent<RunDetail>(p => p
+            .Add(d => d.ServiceName, svc.Name)
+            .Add(d => d.BatchRunId, batchRunId));
+    }
+
+    [Fact]
+    public void Render_RunWithForwardedState_ShowsBothPanels()
+    {
+        var forwarded = new Dictionary<string, object?>
+        {
+            ["ukbatch.initialParameters"] = new Dictionary<string, object?> { ["region"] = "eu-west" },
+            ["ukbatch.forwardedOutputs"] = new Dictionary<string, object?> { ["orderId"] = "8264" },
+        };
+        var cut = RenderRunWithRunStore("br-fwd", RunWithForwardedState("br-fwd", FwdDefId, forwarded), out _);
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain("Initial parameters").And.Contain("region").And.Contain("eu-west");
+            cut.Markup.Should().Contain("Forwarded outputs").And.Contain("orderId").And.Contain("8264");
+        });
+    }
+
+    [Fact]
+    public void Render_RunWithForwardedState_FromJsonColumnShape_ShowsPanels()
+    {
+        // Over the wire (and from a JSON column) the ForwardedState values are JsonElement, not typed
+        // dictionaries. This exercises the JsonElement branch of RunDetail.AsDictionary end to end —
+        // the typed-dictionary bunit fixture above would pass even if that branch were broken.
+        using var doc = System.Text.Json.JsonDocument.Parse(
+            """{ "ukbatch.initialParameters": { "region": "eu-west" }, "ukbatch.forwardedOutputs": { "orderId": "8264" } }""");
+        var forwarded = new Dictionary<string, object?>
+        {
+            ["ukbatch.initialParameters"] = doc.RootElement.GetProperty("ukbatch.initialParameters"),
+            ["ukbatch.forwardedOutputs"] = doc.RootElement.GetProperty("ukbatch.forwardedOutputs"),
+        };
+        var cut = RenderRunWithRunStore("br-fwd", RunWithForwardedState("br-fwd", FwdDefId, forwarded), out _);
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain("Initial parameters").And.Contain("region").And.Contain("eu-west");
+            cut.Markup.Should().Contain("Forwarded outputs").And.Contain("orderId").And.Contain("8264");
+        });
+    }
+
+    [Fact]
+    public void Render_RunWithoutForwardedState_OmitsPanels()
+    {
+        // Additive / zero-regression: a run that forwarded nothing renders no forwarded-state cards.
+        var cut = RenderRunWithRunStore("br-fwd", RunWithForwardedState("br-fwd", FwdDefId, null), out _);
+
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Executions"));
+        cut.Markup.Should().NotContain("Initial parameters");
+        cut.Markup.Should().NotContain("Forwarded outputs");
+    }
+
+    [Fact]
+    public void Render_RunNotInRecentWindow_OmitsPanels_NoThrow()
+    {
+        // No matching run on the first page of recent runs: the panels stay hidden, the page still renders.
+        var cut = RenderRunWithRunStore("br-fwd", run: null, out _);
+
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Executions"));
+        cut.Markup.Should().NotContain("Initial parameters");
+        cut.Markup.Should().NotContain("Forwarded outputs");
+    }
 }

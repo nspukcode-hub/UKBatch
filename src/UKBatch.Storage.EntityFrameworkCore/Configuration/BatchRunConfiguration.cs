@@ -7,14 +7,20 @@ namespace UKBatch.Storage.EntityFrameworkCore.Configuration;
 
 /// <summary>
 /// EF mapping for <see cref="BatchRunEntity"/>: PK, length caps, nullable enum→string status, the SQLite
-/// ISO-8601 <see cref="System.DateTimeOffset"/> converters, and the two run-history indexes. No JSON
-/// column — every column is a scalar.
+/// ISO-8601 <see cref="System.DateTimeOffset"/> converters, the two run-history indexes, and the JSON
+/// <c>ForwardedState</c> column (durable forwarded parameters + outputs for resume). Provider-specific
+/// column types are injected so ONE config serves both providers.
 /// </summary>
 internal sealed class BatchRunConfiguration : IEntityTypeConfiguration<BatchRunEntity>
 {
+    private readonly string _jsonType;
     private readonly bool _isSqlite;
 
-    public BatchRunConfiguration(bool isSqlite) => _isSqlite = isSqlite;
+    public BatchRunConfiguration(string jsonType, bool isSqlite)
+    {
+        _jsonType = jsonType;
+        _isSqlite = isSqlite;
+    }
 
     public void Configure(EntityTypeBuilder<BatchRunEntity> b)
     {
@@ -26,6 +32,9 @@ internal sealed class BatchRunConfiguration : IEntityTypeConfiguration<BatchRunE
         b.Property(e => e.Status).HasConversion<string>().HasMaxLength(32);   // nullable enum→string; null column allowed
         b.Property(e => e.TriggeredBy).HasMaxLength(256);
         b.Property(e => e.CurrentStepIndex);                                  // nullable int resume cursor; no index needed
+
+        var (conv, cmp) = JsonColumn.ForDictionary();
+        b.Property(e => e.ForwardedState).HasConversion(conv, cmp).HasColumnType(_jsonType).IsRequired(false);
 
         if (_isSqlite)
         {

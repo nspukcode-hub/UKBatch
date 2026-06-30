@@ -81,4 +81,17 @@ public sealed record class JobExecution
 
     /// <summary>Worker name that picked up the job (worker mode); <c>null</c> for in-process execution.</summary>
     public string? WorkerName { get; init; }
+
+    /// <summary>
+    /// Output values the job recorded via <see cref="Jobs.JobContext.Outputs"/>, forwarded to later
+    /// steps in the same batch. <c>null</c> when the job produced no output (the common case) or for
+    /// executions persisted before this field existed. Values are JSON-serializable.
+    /// </summary>
+    /// <remarks>
+    /// <b>Storage adapter contract:</b> persistent adapters (EF Core, future Redis) MUST round-trip
+    /// this field. Like <see cref="Parameters"/>, an <c>object?</c> value read back from a JSON column
+    /// is a <see cref="System.Text.Json.JsonElement"/>; consumers read it through the JSON-aware
+    /// <see cref="Jobs.JobParameters"/> typed readers.
+    /// </remarks>
+    public IReadOnlyDictionary<string, object?>? Outputs { get; init; }
 }

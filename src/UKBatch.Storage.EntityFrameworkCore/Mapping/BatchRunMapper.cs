@@ -24,6 +24,7 @@ internal static class BatchRunMapper
             Succeeded = model.Succeeded,
             Failed = model.Failed,
             Cancelled = model.Cancelled,
+            ForwardedState = model.ForwardedState,
         };
     }
 
@@ -45,6 +46,7 @@ internal static class BatchRunMapper
             Succeeded = e.Succeeded,
             Failed = e.Failed,
             Cancelled = e.Cancelled,
+            ForwardedState = e.ForwardedState,
         };
     }
 }

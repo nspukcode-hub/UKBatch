@@ -172,6 +172,23 @@ internal sealed class EfJobStore : IJobStoreInternal
         _watchHub.Publish(JobExecutionMapper.ToModel(entity));
     }
 
+    /// <inheritdoc/>
+    public async Task UpdateOutputsAsync(string executionId, IReadOnlyDictionary<string, object?> outputs, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(executionId);
+        ArgumentNullException.ThrowIfNull(outputs);
+        await using var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var entity = await db.JobExecutions
+            .FirstOrDefaultAsync(e => e.ExecutionId == executionId, cancellationToken).ConfigureAwait(false);
+        if (entity is null)
+        {
+            throw new KeyNotFoundException($"Execution {executionId} not found");
+        }
+        entity.Outputs = outputs;
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);   // COMMIT
+        _watchHub.Publish(JobExecutionMapper.ToModel(entity));                // AFTER commit
+    }
+
     // ===== IJobExecutionReader =====
 
     /// <inheritdoc/>

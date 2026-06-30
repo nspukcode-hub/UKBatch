@@ -103,6 +103,11 @@
     </section>
 }
 
+@* Run-scoped forwarded state (read-only). Each panel renders nothing when its source is null/empty, so a
+   run that forwarded nothing (or whose row isn't in the recent-runs window) shows no extra cards. *@
+<KeyValuePanel Title="Initial parameters" Items="@_forwardedInitialParameters" KeyHeader="Parameter" ValueHeader="Value" />
+<KeyValuePanel Title="Forwarded outputs" Items="@_forwardedOutputs" KeyHeader="Output" ValueHeader="Value" />
+
 @if (_isLoading)
 {
     <div class="page-loader">
@@ -177,6 +182,21 @@ else
     private BatchDefinitionDto? _definition;
     private bool _definitionLoaded;            // single-shot definition fetch guard
     private bool _definitionFetchFailed;       // bound retries when defId 404s persistently
+
+    // ── run-scoped forwarded state (read-only) ──
+    // The persisted run row carries the batch-initial parameters and accumulated step outputs under
+    // reserved ukbatch.* keys. It rides the same run-store list this page already has a client method for
+    // (QueryRunsAsync, filtered by definition id), fetched once the definition id is known — there is no
+    // single-run-by-id endpoint, so this is a best-effort lookup within the most recent page of runs.
+    private IReadOnlyDictionary<string, object?>? _forwardedInitialParameters;
+    private IReadOnlyDictionary<string, object?>? _forwardedOutputs;
+    private bool _runLoaded;                    // single-shot run fetch guard (matches the definition guard)
+    private bool _runFetchFailed;              // bound retries so the 4× fan-out doesn't re-query on every event
+
+    // Reserved keys under BatchRun.ForwardedState (see UKBatch.Core ForwardedStateKeys). Referenced as
+    // literals here so the dashboard does not need friend access to the internal Core constants.
+    private const string ForwardedInitialParametersKey = "ukbatch.initialParameters";
+    private const string ForwardedOutputsKey = "ukbatch.forwardedOutputs";
     private IReadOnlyDictionary<string, JobStatus> _statusByStepId =
         new Dictionary<string, JobStatus>(StringComparer.Ordinal);
     // Approval-gate live status: gates are NOT jobs (no JobExecution row), so their state comes from the
@@ -245,6 +265,7 @@ else
             if (defId is { Length: > 0 })
             {
                 await TryLoadDefinitionAsync(defId);
+                await TryLoadRunAsync(defId);
             }
         }
         catch (UKBatchClientException)
@@ -272,6 +293,7 @@ else
         if (!_definitionLoaded && !_definitionFetchFailed && exec.BatchDefinitionId is { Length: > 0 } defId)
         {
             await TryLoadDefinitionAsync(defId);
+            await TryLoadRunAsync(defId);
         }
 
         var idx = _executionRows.FindIndex(r => r.ExecutionId == exec.ExecutionId);
@@ -349,6 +371,57 @@ else
         {
             _definitionLoaded = false;       // un-pin so a subsequent retry is possible
             _definitionFetchFailed = true;   // bound retries (single attempt for this run)
+        }
+    }
+
+    // Best-effort, single-shot fetch of THIS run's persisted row to read its forwarded state. Reuses the
+    // run-store list (no single-run endpoint exists) filtered by definition id, then finds the run by id.
+    // The single-shot + failed guards mirror the definition fetch so the up-to-4× hub fan-out does not
+    // re-query on every event.
+    private async Task TryLoadRunAsync(string defId)
+    {
+        if (_runLoaded || _runFetchFailed || _client is null) return;
+        _runLoaded = true; // set BEFORE the await — re-entrancy guard (events fire 4× via fan-out)
+        try
+        {
+            var runs = await _client.QueryRunsAsync(defId, includeRunning: true, 0, 50, CancellationToken.None);
+            var run = runs?.Items.FirstOrDefault(r => string.Equals(r.BatchId, BatchRunId, StringComparison.Ordinal));
+            if (run is null)
+            {
+                // Not on the first page of recent runs — leave the panel hidden rather than retry forever.
+                _runFetchFailed = true;
+                return;
+            }
+            if (run.ForwardedState is { Count: > 0 } state)
+            {
+                _forwardedInitialParameters = AsDictionary(state, ForwardedInitialParametersKey);
+                _forwardedOutputs = AsDictionary(state, ForwardedOutputsKey);
+            }
+        }
+        catch (Exception)
+        {
+            _runLoaded = false;     // un-pin so a subsequent retry is possible
+            _runFetchFailed = true; // bound retries (single attempt for this run)
+        }
+    }
+
+    // Reads one reserved ForwardedState key as a dictionary. The value is itself a dictionary, but read back
+    // from a JSON column it is a JsonElement (object), so normalise both shapes to a flat key/value map.
+    private static IReadOnlyDictionary<string, object?>? AsDictionary(
+        IReadOnlyDictionary<string, object?> state, string key)
+    {
+        if (!state.TryGetValue(key, out var raw) || raw is null) return null;
+        switch (raw)
+        {
+            case IReadOnlyDictionary<string, object?> typed:
+                return typed.Count > 0 ? typed : null;
+            case System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.Object } element:
+                var map = new Dictionary<string, object?>(StringComparer.Ordinal);
+                foreach (var prop in element.EnumerateObject())
+                    map[prop.Name] = prop.Value;
+                return map.Count > 0 ? map : null;
+            default:
+                return null;
         }
     }
 

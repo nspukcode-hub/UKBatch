@@ -66,6 +66,20 @@ public interface IBatchRunStore
     Task UpdateCursorAsync(string batchId, int nextStepIndex, CancellationToken cancellationToken)
         => Task.CompletedTask;   // default no-op: forward-compat for external stores
 
+    /// <summary>
+    /// Persists the run's forwarded state (<see cref="BatchRun.ForwardedState"/>) — the batch-initial
+    /// parameters and accumulated step outputs under reserved <c>ukbatch.*</c> keys — so a host restart
+    /// can rehydrate them on resume. Called on the persistent path alongside the cursor advance. A no-op
+    /// when the run id is absent (mirrors <see cref="UpdateCursorAsync"/>).
+    /// </summary>
+    /// <remarks>
+    /// Last-write-wins; not deduped (a single run owner advances it). The default no-op lets a store that
+    /// cannot persist it degrade to "resume re-supplies empty parameters" (the pre-feature behavior). The
+    /// default in-memory store overrides this so outputs are observable in-process for tests.
+    /// </remarks>
+    Task UpdateForwardedStateAsync(string batchId, IReadOnlyDictionary<string, object?> state, CancellationToken cancellationToken)
+        => Task.CompletedTask;   // default no-op: forward-compat for external stores
+
     /// <summary>Returns the run by id, or <c>null</c> if absent.</summary>
     Task<BatchRun?> GetAsync(string batchId, CancellationToken cancellationToken);
 
