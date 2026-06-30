@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.Time.Testing;
 using UKBatch.Abstractions.Models;
@@ -187,6 +188,111 @@ public abstract class BatchRunStoreParityTestBase : IAsyncLifetime
         var act = async () => await Store.UpdateCursorAsync("ghost", 1, CancellationToken.None);
 
         await act.Should().NotThrowAsync("a cursor write on a missing row must be a no-op on every provider");
+        (await Store.GetAsync("ghost", CancellationToken.None)).Should().BeNull("the absent id must not be inserted");
+    }
+
+    // ===== update forwarded state: durable resume payload round-trip =====
+
+    /// <summary>
+    /// Normalizes a SCALAR forwarded-state value to its string form regardless of provider representation
+    /// (CLR value on in-memory, <see cref="JsonElement"/> on EF) — the documented JSON-equality axis.
+    /// </summary>
+    private static string? StateString(BatchRun run, string key)
+    {
+        if (run.ForwardedState is null || !run.ForwardedState.TryGetValue(key, out var v) || v is null)
+        {
+            return null;
+        }
+        return v is JsonElement je ? je.ToString() : v.ToString();
+    }
+
+    /// <summary>
+    /// Coerces a NESTED forwarded-state value (itself a dictionary) into a normalized
+    /// <c>key -&gt; string</c> map regardless of provider: it is a live dictionary in-memory but a JSON object
+    /// on EF. This is the same shape the runtime reads forwarded state back as, so the assertion compares the
+    /// product's actual equality axis rather than a provider-specific representation.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string?> NestedState(BatchRun run, string key)
+    {
+        run.ForwardedState.Should().NotBeNull();
+        run.ForwardedState!.TryGetValue(key, out var raw).Should().BeTrue($"forwarded state must contain '{key}'");
+        return raw switch
+        {
+            IReadOnlyDictionary<string, object?> dict =>
+                dict.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString(), StringComparer.Ordinal),
+            JsonElement { ValueKind: JsonValueKind.Object } element =>
+                element.EnumerateObject().ToDictionary(
+                    p => p.Name,
+                    p => p.Value.ValueKind == JsonValueKind.Null ? null : p.Value.ToString(),
+                    StringComparer.Ordinal),
+            _ => throw new InvalidOperationException($"unexpected nested forwarded-state shape: {raw?.GetType().Name ?? "null"}"),
+        };
+    }
+
+    [Fact]
+    public async Task FreshlyCreated_ForwardedState_DefaultsToNull_NoSpuriousWrite()
+    {
+        await SeedAsync(TestData.BatchRun("r1", stepCount: 2));
+
+        var fetched = (await Store.GetAsync("r1", CancellationToken.None))!;
+        fetched.ForwardedState.Should().BeNull("a freshly created run has no forwarded state recorded yet");
+    }
+
+    [Fact]
+    public async Task UpdateForwardedStateAsync_RoundTripsVerbatim_AndPreservesOtherFields()
+    {
+        // The resume payload (batch-initial parameters + accumulated outputs under reserved keys) must
+        // survive the round-trip on every provider, and a forwarded-state write must not disturb the
+        // create-time fields or terminate the run. Compared by NORMALIZED string form (object? → JsonElement
+        // on EF). A nested dictionary value comes back as a JSON object on EF, so we compare its serialized
+        // text rather than CLR identity.
+        await SeedAsync(TestData.BatchRun("r1", batchDefinitionId: "def-A", batchName: "Invoices", stepCount: 3));
+
+        var state = new Dictionary<string, object?>
+        {
+            ["ukbatch.initialParameters"] = new Dictionary<string, object?> { ["region"] = "EU" },
+            ["ukbatch.forwardedOutputs"] = new Dictionary<string, object?> { ["orderId"] = 5 },
+        };
+
+        await Store.UpdateForwardedStateAsync("r1", state, CancellationToken.None);
+
+        var fetched = (await Store.GetAsync("r1", CancellationToken.None))!;
+        fetched.ForwardedState.Should().NotBeNull();
+        fetched.ForwardedState!.Should().ContainKey("ukbatch.initialParameters");
+        fetched.ForwardedState!.Should().ContainKey("ukbatch.forwardedOutputs");
+        // The reserved-key values are nested dictionaries; compare their normalized entries (provider-agnostic).
+        NestedState(fetched, "ukbatch.initialParameters")["region"].Should().Be("EU");
+        NestedState(fetched, "ukbatch.forwardedOutputs")["orderId"].Should().Be("5");
+
+        // Create-time fields untouched; the run is still in progress.
+        fetched.Status.Should().BeNull("writing forwarded state must not terminate the run");
+        fetched.BatchDefinitionId.Should().Be("def-A");
+        fetched.BatchName.Should().Be("Invoices");
+        fetched.StepCount.Should().Be(3);
+        fetched.CurrentStepIndex.Should().BeNull("a forwarded-state write must not disturb the cursor");
+    }
+
+    [Fact]
+    public async Task UpdateForwardedStateAsync_OverwritesPrevious_LastWriteWins()
+    {
+        await SeedAsync(TestData.BatchRun("r1", stepCount: 3));
+
+        await Store.UpdateForwardedStateAsync(
+            "r1", new Dictionary<string, object?> { ["k"] = "first" }, CancellationToken.None);
+        await Store.UpdateForwardedStateAsync(
+            "r1", new Dictionary<string, object?> { ["k"] = "second" }, CancellationToken.None);
+
+        var fetched = (await Store.GetAsync("r1", CancellationToken.None))!;
+        StateString(fetched, "k").Should().Be("second", "the latest forwarded-state write wins");
+    }
+
+    [Fact]
+    public async Task UpdateForwardedStateAsync_AbsentId_IsNoOp_DoesNotThrow()
+    {
+        var act = async () => await Store.UpdateForwardedStateAsync(
+            "ghost", new Dictionary<string, object?> { ["k"] = 1 }, CancellationToken.None);
+
+        await act.Should().NotThrowAsync("a forwarded-state write on a missing row must be a no-op on every provider");
         (await Store.GetAsync("ghost", CancellationToken.None)).Should().BeNull("the absent id must not be inserted");
     }
 

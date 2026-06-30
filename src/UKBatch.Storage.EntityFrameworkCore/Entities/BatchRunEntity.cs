@@ -3,9 +3,10 @@ using UKBatch.Abstractions.Models;
 namespace UKBatch.Storage.EntityFrameworkCore.Entities;
 
 /// <summary>
-/// Mutable, EF-owned persistence shape for <see cref="BatchRun"/>. No JSON column — every field is a
-/// scalar. <see cref="Status"/> stores as a nullable string (enum→string). No concurrency token: a run
-/// is created once and completed once.
+/// Mutable, EF-owned persistence shape for <see cref="BatchRun"/>. One JSON column
+/// (<see cref="ForwardedState"/>); the rest are scalars. <see cref="Status"/> stores as a nullable string
+/// (enum→string). No concurrency token: a run is created once and completed once (plus per-step cursor /
+/// forwarded-state updates by a single run owner).
 /// </summary>
 internal sealed class BatchRunEntity
 {
@@ -22,4 +23,5 @@ internal sealed class BatchRunEntity
     public int Succeeded { get; set; }
     public int Failed { get; set; }
     public int Cancelled { get; set; }
+    public IReadOnlyDictionary<string, object?>? ForwardedState { get; set; }   // JSON column (nullable; durable resume payload)
 }

@@ -1409,3 +1409,16 @@ code, .mono { font-family: var(--font-mono); }
 /* Live execution row accents (LiveExecutionRow); the running row background is defined earlier. */
 .data-table__cell--muted { color: var(--color-text-tertiary); font-style: italic; }
 .data-table__row--running td:first-child { border-left: 3px solid var(--color-status-running); }
+
+/* Read-only key/value panel (KeyValuePanel) — job outputs and run forwarded state. The value cell wraps a
+   <pre> so a JSON object value keeps its structure; the key column stays narrow so the value gets the room. */
+.key-value-panel__value { width: 100%; }
+.key-value-panel td.mono { width: 1%; white-space: nowrap; vertical-align: top; color: var(--color-text-secondary); }
+.key-value-panel__pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--font-mono);
+    font-size: var(--font-mono-sm-size);
+    color: var(--color-text-primary);
+}

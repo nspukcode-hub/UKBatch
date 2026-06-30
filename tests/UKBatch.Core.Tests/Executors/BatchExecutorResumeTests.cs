@@ -42,7 +42,7 @@ public class BatchExecutorResumeTests
             => throw new InvalidOperationException("intentional step failure");
     }
 
-    private static BatchExecutor BuildExecutor(IHost host, Func<int, CancellationToken, Task>? onStepCompleted)
+    private static BatchExecutor BuildExecutor(IHost host, Func<int, IReadOnlyDictionary<string, object?>, CancellationToken, Task>? onStepCompleted)
         => new(
             host.Services.GetRequiredService<IJobRunnerInternal>(),
             host.Services.GetRequiredService<IApprovalGateCoordinator>(),
@@ -118,7 +118,7 @@ public class BatchExecutorResumeTests
         try
         {
             var cursorWrites = new ConcurrentQueue<int>();
-            var executor = BuildExecutor(host, (next, _) =>
+            var executor = BuildExecutor(host, (next, _, _) =>
             {
                 cursorWrites.Enqueue(next);
                 return Task.CompletedTask;
@@ -157,7 +157,7 @@ public class BatchExecutorResumeTests
             var def = lookup.TryGetByName("resume.failcursor.three")!;
 
             var cursorWrites = new ConcurrentQueue<int>();
-            var executor = BuildExecutor(host, (next, _) =>
+            var executor = BuildExecutor(host, (next, _, _) =>
             {
                 cursorWrites.Enqueue(next);
                 return Task.CompletedTask;

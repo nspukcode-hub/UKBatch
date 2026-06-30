@@ -37,6 +37,7 @@ internal sealed class JobExecutionConfiguration : IEntityTypeConfiguration<JobEx
 
         var (conv, cmp) = JsonColumn.ForDictionary();
         b.Property(e => e.Parameters).HasConversion(conv, cmp).HasColumnType(_jsonType).IsRequired();
+        b.Property(e => e.Outputs).HasConversion(conv, cmp).HasColumnType(_jsonType).IsRequired(false);   // job-produced outputs (nullable)
 
         if (_isSqlite)
         {

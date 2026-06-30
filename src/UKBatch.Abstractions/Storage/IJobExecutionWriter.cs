@@ -23,4 +23,14 @@ public interface IJobExecutionWriter
 
     /// <summary>Persists a progress snapshot from the runtime's <see cref="Jobs.IJobProgress"/>.</summary>
     Task UpdateProgressAsync(string executionId, long processed, long failed, long? total, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Persists the output values a job recorded (<see cref="Models.JobExecution.Outputs"/>). Called on
+    /// the success path before the terminal status flip, only when the job produced output. The default
+    /// no-op lets a store that does not persist outputs degrade to "no forwarding" (the pre-feature
+    /// behavior), mirroring <see cref="IBatchRunStore.UpdateForwardedStateAsync"/>; the shipped
+    /// InMemory / EF stores override it (and throw if the execution id is absent, like the other writers).
+    /// </summary>
+    Task UpdateOutputsAsync(string executionId, IReadOnlyDictionary<string, object?> outputs, CancellationToken cancellationToken)
+        => Task.CompletedTask;   // default no-op: forward-compat for external stores
 }

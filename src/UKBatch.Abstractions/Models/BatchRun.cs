@@ -85,6 +85,15 @@ public sealed record class BatchRun
 
     /// <summary>Executions that finished <see cref="JobStatus.Cancelled"/>; <c>0</c> while running.</summary>
     public required int Cancelled { get; init; }
+
+    /// <summary>
+    /// Run-scoped state carried across a durable resume: the batch-initial parameters and the
+    /// accumulated step outputs, held under reserved <c>ukbatch.*</c> keys. <c>null</c> for runs created
+    /// before this field existed, in-memory runs, or stores that do not persist it. Additive
+    /// (non-<c>required</c>, default <c>null</c>), so existing producers keep compiling. Values are
+    /// JSON-serializable; an adapter MUST round-trip this field verbatim.
+    /// </summary>
+    public IReadOnlyDictionary<string, object?>? ForwardedState { get; init; }
 }
 
 /// <summary>

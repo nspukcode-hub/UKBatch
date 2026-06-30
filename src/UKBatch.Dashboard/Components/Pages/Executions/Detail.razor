@@ -111,6 +111,9 @@ else
             </div>
         </section>
     }
+
+    @* Output values the job recorded, forwarded to later steps. Renders nothing when none were recorded. *@
+    <KeyValuePanel Title="Outputs" Items="@_execution.Outputs" KeyHeader="Output" ValueHeader="Value" />
 }
 
 <ConfirmDialog IsVisible="@_confirmCancelOpen"

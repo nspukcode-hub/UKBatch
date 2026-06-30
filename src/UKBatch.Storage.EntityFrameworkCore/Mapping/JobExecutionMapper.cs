@@ -32,6 +32,7 @@ internal static class JobExecutionMapper
             Total = model.Total,
             TriggeredBy = model.TriggeredBy,
             WorkerName = model.WorkerName,
+            Outputs = model.Outputs,
         };
     }
 
@@ -58,6 +59,7 @@ internal static class JobExecutionMapper
             Total = entity.Total,
             TriggeredBy = entity.TriggeredBy,
             WorkerName = entity.WorkerName,
+            Outputs = entity.Outputs,
         };
     }
 }

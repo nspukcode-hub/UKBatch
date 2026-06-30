@@ -53,6 +53,7 @@ public class InMemoryJobStoreFallbackPathTests
 
         public Task RecordAttemptAsync(string executionId, int attemptNumber, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task UpdateProgressAsync(string executionId, long processed, long failed, long? total, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task UpdateOutputsAsync(string executionId, IReadOnlyDictionary<string, object?> outputs, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<JobExecution?> GetAsync(string executionId, CancellationToken cancellationToken)
             => Task.FromResult(_executions.TryGetValue(executionId, out var ex) ? ex : null);
         public Task<IReadOnlyList<JobExecution>> QueryAsync(JobQuery query, CancellationToken cancellationToken)

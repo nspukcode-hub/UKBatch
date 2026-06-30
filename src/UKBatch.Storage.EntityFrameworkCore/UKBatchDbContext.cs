@@ -71,8 +71,7 @@ public class UKBatchDbContext : DbContext
         modelBuilder.ApplyConfiguration(new JobExecutionConfiguration(jsonType, isSqlite));
         modelBuilder.ApplyConfiguration(new BatchDefinitionConfiguration(jsonType, isSqlite));
         modelBuilder.ApplyConfiguration(new ApprovalGateConfiguration(jsonType, isSqlite));
-        // BatchRuns has no JSON column, so its configuration takes only the provider flag.
-        modelBuilder.ApplyConfiguration(new BatchRunConfiguration(isSqlite));
+        modelBuilder.ApplyConfiguration(new BatchRunConfiguration(jsonType, isSqlite));
         // ScheduleStates has no JSON column either — only the provider flag (for the SQLite date converter).
         modelBuilder.ApplyConfiguration(new ScheduleStateConfiguration(isSqlite));
     }

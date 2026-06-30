@@ -60,6 +60,10 @@ internal sealed class CrossServiceStepInvoker
     /// <param name="batchId">Run id of the executing batch.</param>
     /// <param name="step">The Job step; its <see cref="JobStepData.TargetService"/> MUST be set.</param>
     /// <param name="initial">Initial batch parameters, merged with the step's static parameters.</param>
+    /// <param name="accumulatedOutputs">
+    /// Snapshot of prior steps' outputs, merged into the worker's parameters beneath the step's own static
+    /// parameters and above the batch-initial set, so a remote step sees forwarded values.
+    /// </param>
     /// <param name="triggeredBy">Identity recorded on the shadow row, if any.</param>
     /// <param name="throwOnFailure">
     /// When <c>true</c> (sequential caller), a Failed/Cancelled terminal status as well as a transport
@@ -80,6 +84,7 @@ internal sealed class CrossServiceStepInvoker
         string batchId,
         BatchStep step,
         JobParameters initial,
+        IReadOnlyDictionary<string, object?>? accumulatedOutputs,
         string? triggeredBy,
         bool throwOnFailure,
         CancellationToken transportCancellationToken)
@@ -129,7 +134,7 @@ internal sealed class CrossServiceStepInvoker
             TargetService = job.TargetService,
             BatchId = batchId,
             BatchStepId = step.StepId,
-            Parameters = ParallelGroupRunner.MergeParameters(initial, job.Parameters).Values,
+            Parameters = ParallelGroupRunner.MergeParameters(initial, accumulatedOutputs, job.Parameters).Values,
             Headers = new Dictionary<string, string>(StringComparer.Ordinal),
             EnqueuedAtUtc = _timeProvider.GetUtcNow(),
             AttemptNumber = 1,

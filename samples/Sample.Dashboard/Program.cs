@@ -11,6 +11,7 @@ string[] WildcardRoles = { ApprovalGateConfig.AnyAuthenticatedUser };
 var builder = WebApplication.CreateBuilder(args);
 const string InvoicePipelineName = "invoice-pipeline";
 const string WildcardApprovalPipelineName = "wildcard-approval-pipeline";
+const string OrderPipelineName = "order-pipeline";
 
 // Embedded mode: same host hosts both the REST API surface AND the Blazor
 // Dashboard. Dashboard talks to the local Api via HTTP/SignalR loopback. Architecturally
@@ -28,6 +29,9 @@ builder.AddUKBatchAspNetCore(b =>
     b.AddJob<ArchiveJob>();
     b.AddJob<RollbackJob>();
     b.AddPartitionedJob<BulkArchiveJob, string>();
+    b.AddJob<PrepareOrderJob>();
+    b.AddJob<ProcessInvoiceJob>();
+    b.AddJob<FinalizeOrderJob>();
     b.AddBatch(InvoicePipelineName, batch => batch
         .RunJob<InvoiceGenerationJob>()
         .ThenInParallel(p => p
@@ -43,6 +47,17 @@ builder.AddUKBatchAspNetCore(b =>
             onTimeout: ApprovalTimeoutAction.Hold)
         .OnFailure(f => f.RunJob<RollbackJob>())
         .FailurePolicy(BatchFailurePolicy.Compensate));
+
+    // Step-output forwarding demo: each step records output via context.Outputs.Set(...), and the next
+    // step reads it from its parameters. PrepareOrder produces orderId (scalar) + order (object);
+    // ProcessInvoice reads both and produces invoiceId; FinalizeOrder reads orderId + invoiceId — proving
+    // outputs accumulate forward across the whole run. Watch the console logs, or open the run in the
+    // dashboard: each execution's "Outputs" panel and the run's "Forwarded outputs" panel show the values.
+    b.AddBatch(OrderPipelineName, batch => batch
+        .RunJob<PrepareOrderJob>()
+        .ThenRunJob<ProcessInvoiceJob>()
+        .ThenRunJob<FinalizeOrderJob>()
+        .FailurePolicy(BatchFailurePolicy.StopOnFailure));
 
     // Wildcard approval pipeline — exercises [ApprovalGateConfig.AnyAuthenticatedUser] sentinel.
     b.AddBatch(WildcardApprovalPipelineName, batch => batch

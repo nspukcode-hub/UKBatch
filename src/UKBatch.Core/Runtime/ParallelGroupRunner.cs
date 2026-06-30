@@ -18,23 +18,37 @@ namespace UKBatch.Runtime;
 /// <para>Cancellation: a shared linked CTS lets WaitAny / WaitMajority cancel their siblings.</para>
 /// <para>The signature threads <see cref="ITransport"/> + <c>thisServiceName</c> +
 /// <see cref="TimeProvider"/> through the cross-service child path. The local-child path is
-/// BYTE-FOR-BYTE preserved from the in-process executor.</para>
+/// BYTE-FOR-BYTE preserved from the in-process executor apart from output forwarding.</para>
+/// <para>Output forwarding: children all receive the SAME accumulated-output snapshot captured at group
+/// entry (they do NOT observe one another's output — concurrent children have no defined order). After
+/// the join, the outputs of the join-satisfying children are folded together in <see cref="BatchStep.Order"/>
+/// ascending (last writer wins) and returned, so a later sequential step sees them deterministically.</para>
 /// </remarks>
 internal static class ParallelGroupRunner
 {
-    /// <summary>Executes a parallel-group step and joins per <see cref="ParallelGroupData.JoinPolicy"/>.</summary>
+    /// <summary>The terminal status and produced outputs of one parallel child.</summary>
+    private readonly record struct ChildResult(int Order, JobStatus Status, IReadOnlyDictionary<string, object?>? Outputs);
+
+    /// <summary>
+    /// Executes a parallel-group step and joins per <see cref="ParallelGroupData.JoinPolicy"/>. Returns the
+    /// merged outputs of the join-satisfying children (empty when none produced output), for the caller to
+    /// fold into the run's accumulated outputs.
+    /// </summary>
     /// <remarks>
+    /// <paramref name="accumulatedOutputs"/> is the snapshot of prior steps' outputs, merged into every
+    /// child's parameters (under the batch-initial set, beneath the child's own static parameters).
     /// <paramref name="resumeShadowProbe"/> is the OPTIONAL cross-service resume idempotency probe,
     /// threaded into the shared <see cref="CrossServiceStepInvoker"/> so a cross-service CHILD that already
     /// terminated before a crash is not re-dispatched on resume. <c>null</c> on the trigger path keeps the
     /// child dispatch byte-for-byte (the trailing-optional accommodation: an optional parameter cannot
     /// precede the existing non-defaulted <paramref name="cancellationToken"/>).
     /// </remarks>
-    public static async Task RunAsync(
+    public static async Task<IReadOnlyDictionary<string, object?>> RunAsync(
         BatchDefinition def,
         string batchId,
         BatchStep groupStep,
         JobParameters initial,
+        IReadOnlyDictionary<string, object?>? accumulatedOutputs,
         string? triggeredBy,
         IJobRunnerInternal runner,
         IJobExecutionAwaiter awaiter,
@@ -71,7 +85,7 @@ internal static class ParallelGroupRunner
 
                 if (string.IsNullOrWhiteSpace(child.Job.TargetService))
                 {
-                    // === LOCAL CHILD PATH (preserve byte-for-byte) ===
+                    // === LOCAL CHILD PATH ===
                     // A null, empty, or whitespace TargetService means "run here", consistent with the
                     // sequential executor and the trigger-time pre-flight.
                     var childExecId = IdGenerator.NewExecutionId();
@@ -80,7 +94,7 @@ internal static class ParallelGroupRunner
                     {
                         await runner.TriggerInternalAsync(
                             child.Job.JobName,
-                            MergeParameters(initial, child.Job.Parameters),
+                            MergeParameters(initial, accumulatedOutputs, child.Job.Parameters),
                             triggeredBy,
                             batchId,
                             child.StepId,
@@ -97,16 +111,18 @@ internal static class ParallelGroupRunner
                         throw;
                     }
                     var terminal = await childWait.ConfigureAwait(false);
-                    return terminal.Status;
+                    return new ChildResult(child.Order, terminal.Status, terminal.Outputs);
                 }
                 else
                 {
                     // === CROSS-SERVICE CHILD PATH ===
                     // Parallel semantics: a timeout/exception ends the shadow row Failed and returns Failed
                     // so the join policy decides; cancellation rethrows; the terminal status is returned raw
-                    // (a Cancelled child stays observable to the join).
-                    return await crossServiceInvoker.InvokeAsync(
-                        def, batchId, child, initial, triggeredBy, throwOnFailure: false, groupCts.Token).ConfigureAwait(false);
+                    // (a Cancelled child stays observable to the join). Output return for a cross-service
+                    // child arrives in a later slice; today the child contributes no forwarded output.
+                    var status = await crossServiceInvoker.InvokeAsync(
+                        def, batchId, child, initial, accumulatedOutputs, triggeredBy, throwOnFailure: false, groupCts.Token).ConfigureAwait(false);
+                    return new ChildResult(child.Order, status, null);
                 }
             }, groupCts.Token))
             .ToArray();
@@ -114,12 +130,15 @@ internal static class ParallelGroupRunner
         switch (group.JoinPolicy)
         {
             case ParallelJoinPolicy.WaitAll:
+            {
                 await Task.WhenAll(childTasks).ConfigureAwait(false);
-                if (childTasks.Any(t => t.Result is JobStatus.Failed or JobStatus.Cancelled))
+                var results = childTasks.Select(t => t.Result).ToList();
+                if (results.Any(r => r.Status is JobStatus.Failed or JobStatus.Cancelled))
                 {
                     throw new BatchStepFailureException("Parallel WaitAll group: one or more children failed/cancelled");
                 }
-                break;
+                return FoldByOrder(results);
+            }
 
             case ParallelJoinPolicy.WaitAny:
             {
@@ -128,11 +147,11 @@ internal static class ParallelGroupRunner
                 {
                     var winner = await Task.WhenAny(remaining).ConfigureAwait(false);
                     remaining.Remove(winner);
-                    var status = await winner.ConfigureAwait(false);
-                    if (status == JobStatus.Completed)
+                    var result = await winner.ConfigureAwait(false);
+                    if (result.Status == JobStatus.Completed)
                     {
                         groupCts.Cancel();
-                        return;
+                        return FoldByOrder([result]);
                     }
                 }
                 throw new BatchStepFailureException("Parallel WaitAny group: all children failed");
@@ -144,15 +163,17 @@ internal static class ParallelGroupRunner
                 var quorum = (n / 2) + 1;
                 var successes = 0;
                 var failures = 0;
+                var winners = new List<ChildResult>();
                 var pending = childTasks.ToList();
                 while (pending.Count > 0)
                 {
                     var winner = await Task.WhenAny(pending).ConfigureAwait(false);
                     pending.Remove(winner);
-                    var status = await winner.ConfigureAwait(false);
-                    if (status == JobStatus.Completed)
+                    var result = await winner.ConfigureAwait(false);
+                    if (result.Status == JobStatus.Completed)
                     {
                         successes++;
+                        winners.Add(result);
                     }
                     else
                     {
@@ -161,7 +182,7 @@ internal static class ParallelGroupRunner
                     if (successes >= quorum)
                     {
                         groupCts.Cancel();
-                        return;
+                        return FoldByOrder(winners);
                     }
                     if (failures > n - quorum)
                     {
@@ -179,20 +200,59 @@ internal static class ParallelGroupRunner
     }
 
     /// <summary>
-    /// Merges initial batch parameters with the static per-step parameters; step keys win.
-    /// Defensive copy on the merge result (this is NOT a trusted callsite).
+    /// Folds the outputs of the given children into one dictionary, applied in <see cref="ChildResult.Order"/>
+    /// ascending so the highest-Order child wins a key collision — a deterministic last-writer-wins for steps
+    /// that run after the group.
     /// </summary>
-    internal static JobParameters MergeParameters(JobParameters initial, IReadOnlyDictionary<string, object?>? stepParameters)
+    private static Dictionary<string, object?> FoldByOrder(IEnumerable<ChildResult> results)
+    {
+        var merged = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var result in results.OrderBy(r => r.Order))
+        {
+            if (result.Outputs is { Count: > 0 } outputs)
+            {
+                foreach (var (k, v) in outputs)
+                {
+                    merged[k] = v;
+                }
+            }
+        }
+        return merged;
+    }
+
+    /// <summary>
+    /// Merges, in precedence order, the initial batch parameters, the accumulated prior-step outputs, and
+    /// the static per-step parameters; later sources win (so a step's own static parameter beats a
+    /// forwarded output, which beats a batch-initial value). Returns the SAME <paramref name="initial"/>
+    /// reference when both extra sources are empty (the no-forwarding fast path). Defensive copy on the
+    /// merge result (this is NOT a trusted callsite).
+    /// </summary>
+    internal static JobParameters MergeParameters(
+        JobParameters initial,
+        IReadOnlyDictionary<string, object?>? accumulatedOutputs,
+        IReadOnlyDictionary<string, object?>? stepParameters)
     {
         ArgumentNullException.ThrowIfNull(initial);
-        if (stepParameters is null || stepParameters.Count == 0)
+        var hasAccumulated = accumulatedOutputs is { Count: > 0 };
+        var hasStep = stepParameters is { Count: > 0 };
+        if (!hasAccumulated && !hasStep)
         {
             return initial;
         }
         var merged = new Dictionary<string, object?>(initial.Values, StringComparer.Ordinal);
-        foreach (var (k, v) in stepParameters)
+        if (hasAccumulated)
         {
-            merged[k] = v;
+            foreach (var (k, v) in accumulatedOutputs!)
+            {
+                merged[k] = v;
+            }
+        }
+        if (hasStep)
+        {
+            foreach (var (k, v) in stepParameters!)
+            {
+                merged[k] = v;
+            }
         }
         return new JobParameters(merged);
     }

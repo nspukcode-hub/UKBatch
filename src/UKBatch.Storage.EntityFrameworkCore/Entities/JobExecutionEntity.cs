@@ -27,4 +27,5 @@ internal sealed class JobExecutionEntity
     public long? Total { get; set; }
     public string? TriggeredBy { get; set; }
     public string? WorkerName { get; set; }
+    public IReadOnlyDictionary<string, object?>? Outputs { get; set; }   // JSON column (nullable; MUST round-trip)
 }

@@ -106,6 +106,57 @@ public sealed class ExecutionsDetailTests : TestContext
     }
 
     [Fact]
+    public void Render_Snapshot_WithOutputs_ShowsOutputsPanel()
+    {
+        var svc = PageTestHelpers.Descriptor("svc");
+        var registry = PageTestHelpers.RegistryWith(svc);
+        var client = PageTestHelpers.BuildClient();
+        var exec = Snapshot("execA", JobStatus.Completed) with
+        {
+            Outputs = new Dictionary<string, object?> { ["orderId"] = "8264" },
+        };
+        client.GetExecutionAsync("execA", Arg.Any<CancellationToken>()).Returns(Task.FromResult<JobExecution?>(exec));
+
+        Services.AddSingleton(registry);
+        Services.AddSingleton(PageTestHelpers.FactoryFor(svc.Name, client));
+        Services.AddSingleton(PageTestHelpers.NewState());
+        Services.AddSingleton(PageTestHelpers.NewNotifications());
+
+        var cut = RenderComponent<Detail>(p => p
+            .Add(d => d.ServiceName, svc.Name)
+            .Add(d => d.Id, "execA"));
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain("Outputs");
+            cut.Markup.Should().Contain("orderId").And.Contain("8264");
+        });
+    }
+
+    [Fact]
+    public void Render_Snapshot_WithoutOutputs_OmitsOutputsPanel()
+    {
+        // Additive / zero-regression: an execution with no outputs renders no Outputs card.
+        var svc = PageTestHelpers.Descriptor("svc");
+        var registry = PageTestHelpers.RegistryWith(svc);
+        var client = PageTestHelpers.BuildClient();
+        client.GetExecutionAsync("execA", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<JobExecution?>(Snapshot("execA", JobStatus.Completed)));
+
+        Services.AddSingleton(registry);
+        Services.AddSingleton(PageTestHelpers.FactoryFor(svc.Name, client));
+        Services.AddSingleton(PageTestHelpers.NewState());
+        Services.AddSingleton(PageTestHelpers.NewNotifications());
+
+        var cut = RenderComponent<Detail>(p => p
+            .Add(d => d.ServiceName, svc.Name)
+            .Add(d => d.Id, "execA"));
+
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Snapshot"));
+        cut.Markup.Should().NotContain("Outputs", "no Outputs card when the execution recorded none");
+    }
+
+    [Fact]
     public void Render_NotFound_ShowsEmptyState()
     {
         var svc = PageTestHelpers.Descriptor("svc");

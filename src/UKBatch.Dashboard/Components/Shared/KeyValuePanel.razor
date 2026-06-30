@@ -1,0 +1,57 @@
+@* Read-only key/value panel — renders a persisted dictionary (job outputs, run forwarded state) as a
+   two-column table inside a surface card. Renders nothing when the dictionary is null or empty, so a page
+   embedding it stays unchanged for executions/runs that carry no such data. *@
+
+@if (Items is { Count: > 0 } items)
+{
+    <section class="surface-card">
+        <div class="surface-card__header">
+            <h2 class="surface-card__title">@Title</h2>
+        </div>
+        <div class="surface-card__body">
+            <table class="data-table key-value-panel">
+                <thead>
+                    <tr>
+                        <th class="data-table__header">@KeyHeader</th>
+                        <th class="data-table__header">@ValueHeader</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var kvp in items)
+                    {
+                        <tr class="data-table__row" @key="kvp.Key">
+                            <td class="data-table__cell mono">@kvp.Key</td>
+                            <td class="data-table__cell key-value-panel__value">
+                                @{
+                                    var display = DictionaryDisplay.Format(kvp.Value);
+                                }
+                                @if (string.IsNullOrEmpty(display))
+                                {
+                                    <span class="data-table__cell--muted">—</span>
+                                }
+                                else
+                                {
+                                    <pre class="key-value-panel__pre"><code>@display</code></pre>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@code {
+    /// <summary>The dictionary to render. When null or empty the component renders nothing.</summary>
+    [Parameter, EditorRequired] public IReadOnlyDictionary<string, object?>? Items { get; set; }
+
+    /// <summary>Card heading.</summary>
+    [Parameter, EditorRequired] public string Title { get; set; } = default!;
+
+    /// <summary>Header text for the key column.</summary>
+    [Parameter] public string KeyHeader { get; set; } = "Key";
+
+    /// <summary>Header text for the value column.</summary>
+    [Parameter] public string ValueHeader { get; set; } = "Value";
+}

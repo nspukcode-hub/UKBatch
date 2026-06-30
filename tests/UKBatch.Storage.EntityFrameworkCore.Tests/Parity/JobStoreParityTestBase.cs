@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.Time.Testing;
+using UKBatch.Abstractions.Jobs;
 using UKBatch.Abstractions.Models;
 using UKBatch.Abstractions.Storage;
 using UKBatch.Storage.EntityFrameworkCore.Tests.Infrastructure;
@@ -138,6 +139,89 @@ public abstract class JobStoreParityTestBase : IAsyncLifetime
     public async Task Get_Missing_ReturnsNull()
     {
         (await Store.GetAsync("nope", CancellationToken.None)).Should().BeNull();
+    }
+
+    // ===== step-output forwarding: Outputs round-trip =====
+
+    /// <summary>
+    /// Normalizes an <c>Outputs</c> value to its string form regardless of provider representation (CLR value
+    /// on InMemory, <see cref="JsonElement"/> on EF) — the same equality axis as <see cref="ParamString"/>.
+    /// </summary>
+    private static string? OutputString(JobExecution e, string key)
+    {
+        if (e.Outputs is null || !e.Outputs.TryGetValue(key, out var v) || v is null)
+        {
+            return null;
+        }
+        return v is JsonElement je ? je.ToString() : v.ToString();
+    }
+
+    [Fact]
+    public async Task FreshlyInserted_Outputs_DefaultsToNull_NoSpuriousWrite()
+    {
+        // A record that never had outputs recorded must read back with Outputs null on every provider — the
+        // JSON column is not eagerly materialized into an empty dictionary.
+        await SeedAsync(TestData.Execution("no-outputs"));
+
+        var fetched = (await Store.GetAsync("no-outputs", CancellationToken.None))!;
+        fetched.Outputs.Should().BeNull("an execution with no recorded output has a null Outputs column");
+    }
+
+    [Fact]
+    public async Task UpdateOutputs_ThenGet_RoundTripsVerbatim()
+    {
+        // The forwarded output values a job records must survive the round-trip on every provider. Compared
+        // by NORMALIZED string form because object? values come back as JsonElement on EF.
+        await SeedAsync(TestData.Execution("e1", status: JobStatus.Running));
+
+        await Store.UpdateOutputsAsync(
+            "e1",
+            new Dictionary<string, object?> { ["orderId"] = 5, ["region"] = "EU" },
+            CancellationToken.None);
+
+        var fetched = (await Store.GetAsync("e1", CancellationToken.None))!;
+        fetched.Outputs.Should().NotBeNull();
+        fetched.Outputs!.Should().HaveCount(2);
+        OutputString(fetched, "orderId").Should().Be("5");
+        OutputString(fetched, "region").Should().Be("EU");
+    }
+
+    [Fact]
+    public async Task UpdateOutputs_JsonAwareRead_RecoversTypedValues()
+    {
+        // The whole point of forwarding: a persisted output reads back as its typed value through the
+        // JSON-aware JobParameters accessor, identically on InMemory (boxed) and EF (JsonElement).
+        await SeedAsync(TestData.Execution("typed", status: JobStatus.Running));
+
+        await Store.UpdateOutputsAsync(
+            "typed",
+            new Dictionary<string, object?> { ["orderId"] = 42, ["region"] = "US", ["flag"] = true },
+            CancellationToken.None);
+
+        var fetched = (await Store.GetAsync("typed", CancellationToken.None))!;
+        var outputs = new JobParameters(fetched.Outputs!);
+        outputs.GetRequired<int>("orderId").Should().Be(42);
+        outputs.GetRequired<string>("region").Should().Be("US");
+        outputs.GetRequired<bool>("flag").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task UpdateOutputs_ExplicitNullValue_KeySurvivesWithNullValue()
+    {
+        // An explicit-null output value is meaningful and must survive with its key, mirroring the Parameters
+        // explicit-null contract.
+        await SeedAsync(TestData.Execution("nullout", status: JobStatus.Running));
+
+        await Store.UpdateOutputsAsync(
+            "nullout",
+            new Dictionary<string, object?> { ["maybe"] = null, ["region"] = "EU" },
+            CancellationToken.None);
+
+        var fetched = (await Store.GetAsync("nullout", CancellationToken.None))!;
+        fetched.Outputs!.Should().HaveCount(2, "the explicit-null key must not be dropped on persist");
+        fetched.Outputs!.ContainsKey("maybe").Should().BeTrue("an explicit null value keeps its key");
+        OutputString(fetched, "maybe").Should().BeNull("the persisted value round-trips as null");
+        OutputString(fetched, "region").Should().Be("EU");
     }
 
     // ===== query: filters =====

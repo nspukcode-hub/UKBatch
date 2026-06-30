@@ -32,7 +32,7 @@ internal sealed class BatchExecutor
     private readonly CrossServiceStepInvoker _crossServiceInvoker;
     private readonly IResumeShadowProbe? _resumeShadowProbe;
     private readonly IResumeGateProbe? _resumeGateProbe;
-    private readonly Func<int, CancellationToken, Task>? _onStepCompleted;
+    private readonly Func<int, IReadOnlyDictionary<string, object?>, CancellationToken, Task>? _onStepCompleted;
     private readonly ILogger<BatchExecutor> _logger;
 
     /// <summary>Constructs the executor.</summary>
@@ -47,9 +47,10 @@ internal sealed class BatchExecutor
     /// <param name="timeProvider">Clock for <see cref="JobMessage.EnqueuedAtUtc"/>.</param>
     /// <param name="logger">Diagnostic logger.</param>
     /// <param name="onStepCompleted">
-    /// Optional resume-cursor seam, invoked with the next-to-run step index after each step succeeds.
-    /// <c>null</c> on the normal trigger path (no cursor is recorded); bound by the resume entry point
-    /// to persist progress so a host restart can continue from the recorded point.
+    /// Optional resume seam, invoked after each step succeeds with the next-to-run step index AND the run's
+    /// forwarded state (batch-initial parameters + accumulated outputs) to persist. <c>null</c> on paths
+    /// that record no progress; bound by the trigger and resume entry points so a host restart can continue
+    /// from the recorded point with forwarded values intact.
     /// </param>
     /// <param name="resumeGateProbe">
     /// Optional resume idempotency probe for approval gates. <c>null</c> on the trigger path (no prior
@@ -70,7 +71,7 @@ internal sealed class BatchExecutor
         string? thisServiceName,
         TimeProvider timeProvider,
         ILogger<BatchExecutor> logger,
-        Func<int, CancellationToken, Task>? onStepCompleted = null,
+        Func<int, IReadOnlyDictionary<string, object?>, CancellationToken, Task>? onStepCompleted = null,
         IResumeGateProbe? resumeGateProbe = null,
         IResumeShadowProbe? resumeShadowProbe = null)
     {
@@ -109,13 +110,18 @@ internal sealed class BatchExecutor
     /// from the beginning — the byte-for-byte trigger path. A resume passes the recorded cursor so
     /// already-completed steps are skipped.
     /// </param>
+    /// <param name="resumeOutputs">
+    /// Optional accumulated outputs to seed the forwarding accumulator on resume, so steps after the
+    /// resume point still see earlier steps' outputs. <c>null</c> on the trigger path (empty accumulator).
+    /// </param>
     public async Task RunAsync(
         BatchDefinition def,
         string batchId,
         JobParameters initial,
         string? triggeredBy,
         CancellationToken cancellationToken,
-        int startStepIndex = 0)
+        int startStepIndex = 0,
+        IReadOnlyDictionary<string, object?>? resumeOutputs = null)
     {
         ArgumentNullException.ThrowIfNull(def);
         ArgumentException.ThrowIfNullOrEmpty(batchId);
@@ -130,13 +136,25 @@ internal sealed class BatchExecutor
 
         var orderedSteps = def.Steps.OrderBy(s => s.Order).ToList();
         Exception? firstFailure = null;
+        // Run-scoped accumulator of step outputs, forwarded into later steps' parameters. Seeded empty
+        // on the trigger path; a resume rehydrates it from the persisted forwarded state.
+        var accumulatedOutputs = resumeOutputs is { Count: > 0 }
+            ? new Dictionary<string, object?>(resumeOutputs, StringComparer.Ordinal)
+            : new Dictionary<string, object?>(StringComparer.Ordinal);
 
         for (var i = startStepIndex; i < orderedSteps.Count; i++)
         {
             var step = orderedSteps[i];
             try
             {
-                await RunStepAsync(def, batchId, step, initial, triggeredBy, cancellationToken).ConfigureAwait(false);
+                var stepOutputs = await RunStepAsync(def, batchId, step, initial, accumulatedOutputs, triggeredBy, cancellationToken).ConfigureAwait(false);
+                if (stepOutputs is { Count: > 0 })
+                {
+                    foreach (var (k, v) in stepOutputs)
+                    {
+                        accumulatedOutputs[k] = v;
+                    }
+                }
 
                 // Persist the resume cursor AFTER the step succeeds (next-to-run = i + 1). Skipped
                 // entirely on the trigger path (seam unbound) — zero added work, identical exception
@@ -144,7 +162,7 @@ internal sealed class BatchExecutor
                 // genuinely completed step; a failed step throws above and never advances the cursor.
                 if (_onStepCompleted is not null)
                 {
-                    await _onStepCompleted(i + 1, cancellationToken).ConfigureAwait(false);
+                    await _onStepCompleted(i + 1, BuildForwardedState(initial, accumulatedOutputs), cancellationToken).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -157,7 +175,7 @@ internal sealed class BatchExecutor
             catch (BatchStepFailureException stepFailure)
             {
                 var compensation = RouteStepFailureAsync(
-                    def, batchId, step, stepFailure, initial, triggeredBy, cancellationToken,
+                    def, batchId, step, stepFailure, initial, accumulatedOutputs, triggeredBy, cancellationToken,
                     ref firstFailure, out var continueLoop);
                 if (compensation is not null)
                 {
@@ -178,7 +196,7 @@ internal sealed class BatchExecutor
                 // policy switch has a single descriptive failure type while preserving the original cause.
                 var wrapped = new BatchStepFailureException($"Step {step.StepId} failed: {ex.Message}", ex);
                 var compensation = RouteStepFailureAsync(
-                    def, batchId, step, wrapped, initial, triggeredBy, cancellationToken,
+                    def, batchId, step, wrapped, initial, accumulatedOutputs, triggeredBy, cancellationToken,
                     ref firstFailure, out var continueLoop);
                 if (compensation is not null)
                 {
@@ -208,6 +226,7 @@ internal sealed class BatchExecutor
         BatchStep step,
         BatchStepFailureException failure,
         JobParameters initial,
+        IReadOnlyDictionary<string, object?> accumulatedOutputs,
         string? triggeredBy,
         CancellationToken cancellationToken,
         ref Exception? firstFailure,
@@ -234,18 +253,19 @@ internal sealed class BatchExecutor
                 {
                     return null;
                 }
-                return RunCompensationAsync(def, batchId, initial, triggeredBy, cancellationToken);
+                return RunCompensationAsync(def, batchId, initial, accumulatedOutputs, triggeredBy, cancellationToken);
 
             default:
                 return null;
         }
     }
 
-    private async Task RunStepAsync(
+    private async Task<IReadOnlyDictionary<string, object?>?> RunStepAsync(
         BatchDefinition def,
         string batchId,
         BatchStep step,
         JobParameters initial,
+        IReadOnlyDictionary<string, object?> accumulatedOutputs,
         string? triggeredBy,
         CancellationToken cancellationToken)
     {
@@ -260,7 +280,7 @@ internal sealed class BatchExecutor
 
                 if (string.IsNullOrWhiteSpace(step.Job.TargetService))
                 {
-                    // === LOCAL PATH (preserve byte-for-byte) ===
+                    // === LOCAL PATH ===
                     // A null, empty, or whitespace TargetService means "run here" — guarding against
                     // whitespace as well as null keeps this consistent with the trigger-time pre-flight.
                     var execId = IdGenerator.NewExecutionId();
@@ -269,7 +289,7 @@ internal sealed class BatchExecutor
                     {
                         await _runner.TriggerInternalAsync(
                             step.Job.JobName,
-                            ParallelGroupRunner.MergeParameters(initial, step.Job.Parameters),
+                            ParallelGroupRunner.MergeParameters(initial, accumulatedOutputs, step.Job.Parameters),
                             triggeredBy,
                             batchId,
                             step.StepId,
@@ -290,26 +310,29 @@ internal sealed class BatchExecutor
                     {
                         throw new BatchStepFailureException($"Step {step.StepId} terminated as {terminal.Status}: {terminal.LastError}");
                     }
+                    // Forward this step's outputs into the run accumulator.
+                    return terminal.Outputs;
                 }
                 else
                 {
                     // === CROSS-SERVICE PATH ===
                     // Sequential semantics: a Failed/Cancelled terminal status, a transport timeout, or a
                     // transport exception throw BatchStepFailureException so the per-step failure routing applies.
+                    // The remote step receives forwarded outputs as parameters; returning its produced output
+                    // arrives in a later slice (the worker reply does not carry it yet).
                     await _crossServiceInvoker.InvokeAsync(
-                        def, batchId, step, initial, triggeredBy, throwOnFailure: true, cancellationToken).ConfigureAwait(false);
+                        def, batchId, step, initial, accumulatedOutputs, triggeredBy, throwOnFailure: true, cancellationToken).ConfigureAwait(false);
+                    return null;
                 }
-                break;
             }
 
             case BatchStepType.ParallelGroup:
-                await ParallelGroupRunner.RunAsync(
-                    def, batchId, step, initial, triggeredBy,
+                return await ParallelGroupRunner.RunAsync(
+                    def, batchId, step, initial, accumulatedOutputs, triggeredBy,
                     _runner, _awaiter,
                     _transport, _thisServiceName, _timeProvider,
                     cancellationToken,
                     _resumeShadowProbe).ConfigureAwait(false);
-                break;
 
             case BatchStepType.ApprovalGate:
             {
@@ -333,7 +356,7 @@ internal sealed class BatchExecutor
                         {
                             case ApprovalRecordOutcome.Approved:
                             case ApprovalRecordOutcome.AutoApproved:
-                                break;   // already approved → skip the gate, proceed to the next step
+                                return null;   // already approved → skip the gate, proceed to the next step
                             case ApprovalRecordOutcome.Rejected:
                             case ApprovalRecordOutcome.TimedOutFail:
                             case ApprovalRecordOutcome.Dismissed:
@@ -345,9 +368,8 @@ internal sealed class BatchExecutor
                                 // Interrupted / Cancelled are crash-orphan markers (reaper-set or torn down),
                                 // NOT human decisions. Re-OPEN the gate so a real decision can still be made.
                                 await _approvalCoordinator.AwaitApprovalAsync(batchId, step.StepId, step.Approval, def.Name, def.Id, cancellationToken).ConfigureAwait(false);
-                                break;
+                                return null;
                         }
-                        break;
                     }
 
                     // No decided record, but a PENDING gate from a prior attempt may exist (a crash or
@@ -361,17 +383,17 @@ internal sealed class BatchExecutor
                     {
                         await _approvalCoordinator.ReattachApprovalAsync(
                             existingId, batchId, step.StepId, step.Approval, def.Name, def.Id, cancellationToken).ConfigureAwait(false);
-                        break;
+                        return null;
                     }
                 }
 
                 await _approvalCoordinator.AwaitApprovalAsync(batchId, step.StepId, step.Approval, def.Name, def.Id, cancellationToken).ConfigureAwait(false);
-                break;
+                return null;
             }
 
             default:
                 _logger.LogWarning("Unknown BatchStepType {Type} on step {StepId}; treating as no-op (forward-compat).", step.StepType, step.StepId);
-                break;
+                return null;
         }
     }
 
@@ -379,6 +401,7 @@ internal sealed class BatchExecutor
         BatchDefinition def,
         string batchId,
         JobParameters initial,
+        IReadOnlyDictionary<string, object?> accumulatedOutputs,
         string? triggeredBy,
         CancellationToken cancellationToken)
     {
@@ -386,7 +409,9 @@ internal sealed class BatchExecutor
         {
             try
             {
-                await RunStepAsync(def, batchId, step, initial, triggeredBy, cancellationToken).ConfigureAwait(false);
+                // Compensation steps receive forwarded outputs as parameters; their own output is not
+                // folded forward (no subsequent normal step follows compensation).
+                await RunStepAsync(def, batchId, step, initial, accumulatedOutputs, triggeredBy, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -395,4 +420,17 @@ internal sealed class BatchExecutor
             }
         }
     }
+
+    /// <summary>
+    /// Builds the run's forwarded-state payload persisted after each step: the batch-initial parameters
+    /// and a snapshot of the accumulated outputs, under reserved <c>ukbatch.*</c> keys, so a resume can
+    /// rehydrate both.
+    /// </summary>
+    private static Dictionary<string, object?> BuildForwardedState(
+        JobParameters initial, IReadOnlyDictionary<string, object?> accumulated)
+        => new(StringComparer.Ordinal)
+        {
+            [ForwardedStateKeys.InitialParameters] = initial.Values,
+            [ForwardedStateKeys.ForwardedOutputs] = new Dictionary<string, object?>(accumulated, StringComparer.Ordinal),
+        };
 }
