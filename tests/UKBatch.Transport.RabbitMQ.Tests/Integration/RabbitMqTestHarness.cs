@@ -76,6 +76,20 @@ internal static class RabbitMqTestHarness
     }
 
     /// <summary>
+    /// Records a single output value so an RPC caller can assert the reply carries the produced value back
+    /// across the live broker. Registered per-test via the <c>configureJobs</c> hook (kept out of the default
+    /// worker registration so it does not affect the other transport tests).
+    /// </summary>
+    internal sealed class OutputProducingJob : IJob
+    {
+        public Task ExecuteAsync(JobContext context, CancellationToken cancellationToken)
+        {
+            context.Outputs.Set("k", "v");
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>
     /// An <see cref="IJobExecutionAwaiter"/> whose <c>WaitForTerminalAsync</c> throws a non-OCE — injected
     /// to simulate an UNEXPECTED failure in steps 4–9 of the pump AFTER the dedupe <c>TryAdd</c> succeeded
     /// (the path: must evict the dedupe key + dead-letter so redelivery re-runs).

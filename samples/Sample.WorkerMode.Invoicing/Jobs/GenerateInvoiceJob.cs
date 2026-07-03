@@ -3,16 +3,16 @@ using UKBatch.Abstractions.Jobs;
 namespace Sample.WorkerMode.Invoicing.Jobs;
 
 /// <summary>
-/// Cross-service job invoked by the server's batch step 1 over the RabbitMQ broker. "Generates an
-/// invoice" (no-op log + short sleep) and returns a Completed status to the orchestrator via the
-/// request/reply (direct-reply-to) path.
+/// Cross-service job invoked by the server's batch step 1 over the RabbitMQ broker. Generates an invoice
+/// and forwards its details to the next step: the produced <c>invoiceId</c> (scalar) and <c>invoice</c>
+/// (object) are returned to the orchestrator on the reply and merged into the shipping step's parameters,
+/// so the shipping worker reads the real invoice rather than a placeholder.
 /// </summary>
 /// <remarks>
-/// STATELESS on purpose — Step Output Forwarding (cross-step parameter propagation) is a v0.2 concern,
-/// so this job reads NO inbound parameters and produces NO output for the next step. The batch step's
-/// <c>OnService("invoicing")</c> routes to this worker by service name; the job NAME is
-/// <c>"GenerateInvoice"</c> (the <see cref="JobAttribute.Name"/> below), which the server's batch
-/// definition references as the step's <c>JobName</c>.
+/// The batch step's <c>OnService("invoicing")</c> routes to this worker by service name; the job NAME is
+/// <c>"GenerateInvoice"</c> (the <see cref="JobAttribute.Name"/> below), which the server's batch definition
+/// references as the step's <c>JobName</c>. <see cref="Invoice"/> is defined identically on the shipping
+/// worker so the object round-trips as JSON across the service boundary (cross-service objects need a shared shape).
 /// </remarks>
 [Job(Name = "GenerateInvoice")]
 public sealed class GenerateInvoiceJob : IJob
@@ -47,7 +47,16 @@ public sealed class GenerateInvoiceJob : IJob
         // synchronous wait-for-result semantics over the broker.
         await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
 
+        // Produce this step's outputs. They ride the reply back to the orchestrator (only on success) and
+        // are forwarded into the next step's parameters. A scalar (invoiceId) and an object (invoice) both
+        // cross the service boundary as JSON — set them AFTER the fail check so a failed step forwards nothing.
+        var invoiceId = $"INV-{Random.Shared.Next(10000, 99999)}";
+        var invoice = new Invoice(invoiceId, "Acme Corporation", 1499.90m);
+        context.Outputs.Set("invoiceId", invoiceId);
+        context.Outputs.Set("invoice", invoice);
+
         _logger.LogInformation(
-            "GenerateInvoiceJob (invoicing worker): completed — returning Completed status to the server via direct-reply-to.");
+            "GenerateInvoiceJob (invoicing worker): completed — produced invoiceId={InvoiceId} for {Customer} (amount {Amount:C}); returning it to the server via direct-reply-to.",
+            invoiceId, invoice.Customer, invoice.Amount);
     }
 }

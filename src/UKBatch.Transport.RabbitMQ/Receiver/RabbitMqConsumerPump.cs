@@ -268,7 +268,11 @@ internal sealed class RabbitMqConsumerPump : IHostedService, IDisposable
         {
             ExecutionId = terminal.ExecutionId,
             Status = terminal.Status,
-            ReturnValues = null, // v0.1 — job runtime does not surface return values; v0.2 hook.
+            // Return the job's produced outputs to the orchestrator. terminal.Outputs relies on the store
+            // invariant "outputs written before the terminal flip + retained" (InMemory/EF both hold it); a
+            // future adapter that violates it must re-fetch the row like the HTTP receiver does. Completed-gate
+            // matches the orchestrator fold gate and keeps the wire honest (a failed job forwards nothing).
+            ReturnValues = terminal.Status == JobStatus.Completed ? terminal.Outputs : null,
             ErrorMessage = terminal.LastError,
             Headers = null,
             CompletedAtUtc = terminal.CompletedAtUtc ?? DateTimeOffset.UtcNow,

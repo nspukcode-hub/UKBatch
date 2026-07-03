@@ -51,8 +51,8 @@ builder.AddUKBatchAspNetCore(b =>
     // Step-output forwarding demo: each step records output via context.Outputs.Set(...), and the next
     // step reads it from its parameters. PrepareOrder produces orderId (scalar) + order (object);
     // ProcessInvoice reads both and produces invoiceId; FinalizeOrder reads orderId + invoiceId — proving
-    // outputs accumulate forward across the whole run. Watch the console logs, or open the run in the
-    // dashboard: each execution's "Outputs" panel and the run's "Forwarded outputs" panel show the values.
+    // outputs accumulate forward across the whole run. Watch the console logs, or open each execution in
+    // the dashboard: its "Input parameters" panel shows what it received, its "Outputs" what it produced.
     b.AddBatch(OrderPipelineName, batch => batch
         .RunJob<PrepareOrderJob>()
         .ThenRunJob<ProcessInvoiceJob>()

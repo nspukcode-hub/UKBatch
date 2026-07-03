@@ -29,7 +29,9 @@ public sealed class HttpTransportPublishTests : IClassFixture<WorkerFactory>
         TargetService = targetService,
         BatchId = null,
         BatchStepId = null,
-        Parameters = new Dictionary<string, object?>(),
+        // InvoiceProcessing reads a required orderId; supply it so the published job runs to completion
+        // (the envelope asserts pass either way, but the fixture should exercise the success path).
+        Parameters = new Dictionary<string, object?> { ["orderId"] = 42 },
         Headers = new Dictionary<string, string>(),
         EnqueuedAtUtc = DateTimeOffset.UtcNow,
         AttemptNumber = 1,

@@ -134,6 +134,37 @@ public sealed class ExecutionsDetailTests : TestContext
     }
 
     [Fact]
+    public void Render_Snapshot_WithParameters_ShowsInputParametersPanel()
+    {
+        // The consumer side of step-output forwarding: a step's Input parameters (batch-initial + values
+        // forwarded from earlier steps + its own static parameters) render on its execution detail, so a
+        // downstream step shows the values an upstream step produced.
+        var svc = PageTestHelpers.Descriptor("svc");
+        var registry = PageTestHelpers.RegistryWith(svc);
+        var client = PageTestHelpers.BuildClient();
+        var exec = Snapshot("execA", JobStatus.Completed) with
+        {
+            Parameters = new Dictionary<string, object?> { ["invoiceId"] = "INV-42" },
+        };
+        client.GetExecutionAsync("execA", Arg.Any<CancellationToken>()).Returns(Task.FromResult<JobExecution?>(exec));
+
+        Services.AddSingleton(registry);
+        Services.AddSingleton(PageTestHelpers.FactoryFor(svc.Name, client));
+        Services.AddSingleton(PageTestHelpers.NewState());
+        Services.AddSingleton(PageTestHelpers.NewNotifications());
+
+        var cut = RenderComponent<Detail>(p => p
+            .Add(d => d.ServiceName, svc.Name)
+            .Add(d => d.Id, "execA"));
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain("Input parameters");
+            cut.Markup.Should().Contain("invoiceId").And.Contain("INV-42");
+        });
+    }
+
+    [Fact]
     public void Render_Snapshot_WithoutOutputs_OmitsOutputsPanel()
     {
         // Additive / zero-regression: an execution with no outputs renders no Outputs card.

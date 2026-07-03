@@ -54,7 +54,9 @@ internal sealed class CrossServiceStepInvoker
         => new(transport, runner, thisServiceName, timeProvider, resumeShadowProbe);
 
     /// <summary>
-    /// Dispatches one cross-service Job step and returns its terminal <see cref="JobStatus"/>.
+    /// Dispatches one cross-service Job step and returns its terminal <see cref="JobStatus"/> together with
+    /// the outputs the remote worker produced (for a Completed dispatch), so the caller can fold them into
+    /// the run's accumulated outputs.
     /// </summary>
     /// <param name="def">The owning batch definition (its id tags the shadow row).</param>
     /// <param name="batchId">Run id of the executing batch.</param>
@@ -68,18 +70,19 @@ internal sealed class CrossServiceStepInvoker
     /// <param name="throwOnFailure">
     /// When <c>true</c> (sequential caller), a Failed/Cancelled terminal status as well as a transport
     /// timeout or exception throw <see cref="BatchStepFailureException"/>. When <c>false</c>
-    /// (parallel-group child), a timeout or exception ends the shadow row Failed and RETURNS
-    /// <see cref="JobStatus.Failed"/> so the join policy decides, and the terminal status is returned
-    /// raw — including a possible <see cref="JobStatus.Cancelled"/> — because the join policy must be
-    /// able to observe a cancelled child. The worker-Cancelled→Failed normalization is owned by the
-    /// runner's end-record path, so it is deliberately not duplicated here.
+    /// (parallel-group child), a timeout or exception ends the shadow row Failed and returns a
+    /// <see cref="CrossServiceStepResult"/> with <see cref="JobStatus.Failed"/> so the join policy decides,
+    /// and the terminal status is returned raw — including a possible <see cref="JobStatus.Cancelled"/> —
+    /// because the join policy must be able to observe a cancelled child. Outputs ride the result ONLY for a
+    /// Completed dispatch. The worker-Cancelled→Failed normalization is owned by the runner's end-record
+    /// path, so it is deliberately not duplicated here.
     /// </param>
     /// <param name="transportCancellationToken">
     /// Cancellation for the start-record and the transport call. When it is cancelled the shadow row
     /// is always ended Failed and the <see cref="OperationCanceledException"/> rethrows regardless of
     /// <paramref name="throwOnFailure"/> — cancellation must bubble.
     /// </param>
-    public async Task<JobStatus> InvokeAsync(
+    public async Task<CrossServiceStepResult> InvokeAsync(
         BatchDefinition def,
         string batchId,
         BatchStep step,
@@ -121,7 +124,9 @@ internal sealed class CrossServiceStepInvoker
                 .TryGetCompletedStatusAsync(batchId, step.StepId, transportCancellationToken).ConfigureAwait(false);
             if (priorCompleted is { } prior)
             {
-                return prior;   // always JobStatus.Completed; skip re-dispatch
+                // Skip re-dispatch and forward the outputs the completed step persisted, so a downstream
+                // step still sees them even when the crash landed before the run's forwarded state was saved.
+                return new CrossServiceStepResult(prior.Status, prior.Outputs);
             }
         }
 
@@ -187,7 +192,7 @@ internal sealed class CrossServiceStepInvoker
                 throw new BatchStepFailureException(
                     $"Step {step.StepId} (cross-service '{job.TargetService}') timed out after {timeout}: {tex.Message}");
             }
-            return JobStatus.Failed;   // Parallel join treats this as a child failure.
+            return new CrossServiceStepResult(JobStatus.Failed, null);   // Parallel join treats this as a child failure.
         }
         catch (OperationCanceledException) when (transportCancellationToken.IsCancellationRequested)
         {
@@ -209,7 +214,7 @@ internal sealed class CrossServiceStepInvoker
                 throw new BatchStepFailureException(
                     $"Step {step.StepId} (cross-service '{job.TargetService}') failed: {ex.Message}");
             }
-            return JobStatus.Failed;
+            return new CrossServiceStepResult(JobStatus.Failed, null);
         }
 
         // Persist the worker's terminal status (Completed/Failed/Cancelled) BEFORE any throw — the row
@@ -222,9 +227,15 @@ internal sealed class CrossServiceStepInvoker
                 $"Step {step.StepId} (cross-service '{job.TargetService}') terminated as {result.Status}: {result.ErrorMessage}");
         }
 
-        // Return the terminal status raw. The parallel join must be able to observe a Cancelled child;
-        // the worker-Cancelled->Failed normalization lives in the runner's end-record path.
-        return result.Status;
+        // Return the terminal status raw (the parallel join must be able to observe a Cancelled child;
+        // the worker-Cancelled->Failed normalization lives in the runner's end-record path) together with
+        // the worker's produced outputs — but ONLY for a Completed dispatch: a Failed/Cancelled reply
+        // forwards nothing regardless of what it carried. The same Completed-only rule is applied by its
+        // siblings — the wire receivers when they build the reply, the runner's end-record when it persists
+        // the shadow row, and the resume-skip exit above (via the probe's Completed filter) — change the
+        // forwarding policy in all of them together or live and resumed runs diverge.
+        return new CrossServiceStepResult(
+            result.Status, result.Status == JobStatus.Completed ? result.ReturnValues : null);
     }
 
     /// <summary>

@@ -58,15 +58,16 @@ Open <http://localhost:5060/dashboard> to watch the batch run live.
 
 Watch the two app terminals while the batch runs:
 
-* **Step 1** `PrepareOrderJob` — orchestrator terminal logs `generated orderId=…`
-* **Step 2** `InvoiceProcessing` — **worker** terminal logs `received cross-service invocation from source=orchestrator over RabbitMQ`
-* **Step 3** `FinalizeOrderJob` — orchestrator terminal logs `cross-service step completed over RabbitMQ; finalizing`
+* **Step 1** `PrepareOrderJob` — orchestrator terminal logs `generated orderId=… and forwarded it`
+* **Step 2** `InvoiceProcessing` — **worker** terminal logs `processing orderId=… from source=orchestrator over RabbitMQ`
+* **Step 3** `FinalizeOrderJob` — orchestrator terminal logs `cross-service step completed over RabbitMQ and returned invoiceId=…; finalizing`
 
 The dashboard's batch detail page annotates step 2 with `TargetService=billing-worker`.
 
-> The orchestrator logs a synthetic `orderId` in step 1; it is **not** forwarded to the worker
-> (Step Output Forwarding / cross-step parameter propagation is a v0.2 concern). The worker job is
-> intentionally stateless — it logs the invocation source, not an order id.
+> The three steps demonstrate **step-output forwarding across the broker**: step 1 records the `orderId`
+> via `context.Outputs.Set(...)`, the worker receives it as a parameter (`GetRequired<int>("orderId")`),
+> produces an `invoiceId` output that rides the direct-reply-to reply back, and step 3 reads that
+> `invoiceId` from its parameters — a full local → cross-service → local data round-trip.
 
 ## Inspecting the broker (management UI)
 

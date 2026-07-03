@@ -3,9 +3,9 @@ using UKBatch.Abstractions.Jobs;
 namespace Sample.CrossServiceHttp.Orchestrator.Jobs;
 
 /// <summary>
-/// Step 1 of the cross-service demo batch. Runs locally on the orchestrator process.
-/// Generates a synthetic order id and writes it into the batch parameters via runtime
-/// telemetry — in production this would typically validate / enrich the request payload.
+/// Step 1 of the cross-service demo batch. Runs locally on the orchestrator process. Generates a synthetic
+/// order id and forwards it via <see cref="JobContext.Outputs"/> — the next step (InvoiceProcessing, on the
+/// billing worker across the HTTP transport) receives it as a parameter and processes the real value.
 /// </summary>
 public sealed class PrepareOrderJob : IJob
 {
@@ -20,8 +20,9 @@ public sealed class PrepareOrderJob : IJob
     {
         ArgumentNullException.ThrowIfNull(context);
         var orderId = Random.Shared.Next(1000, 9999);
+        context.Outputs.Set("orderId", orderId);
         _logger.LogInformation(
-            "PrepareOrderJob (orchestrator side): generated orderId={OrderId}. Next step crosses HTTP transport to billing-worker.",
+            "PrepareOrderJob (orchestrator side): generated orderId={OrderId} and forwarded it. Next step crosses HTTP transport to billing-worker.",
             orderId);
         await Task.Delay(TimeSpan.FromMilliseconds(200), cancellationToken).ConfigureAwait(false);
     }

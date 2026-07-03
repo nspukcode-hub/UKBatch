@@ -3,19 +3,22 @@
 #
 # Two demos, run back-to-back:
 #
-#   1) worker-mode-demo (simple) — two sequential cross-service Job steps:
-#        step 1: GenerateInvoice on the "invoicing" worker,
-#        step 2: ShipOrder     on the "shipping"  worker.
+#   1) worker-mode-demo (simple) — three sequential cross-service Job steps, data forwarded down the chain:
+#        step 1: GenerateInvoice  on the "invoicing"    worker (produces invoiceId + invoice),
+#        step 2: ShipOrder        on the "shipping"     worker (reads them, produces trackingNumber),
+#        step 3: SendNotification on the "notification" worker (reads the forwarded invoiceId + trackingNumber).
 #
-#   2) approval-parallel-demo — parallel fan-out -> approval gate -> notify, ALL three
+#   2) approval-parallel-demo — parallel fan-out -> approval gate -> ship (forwarded), ALL three
 #      workers, all cross-service:
-#        step 1: ParallelGroup (joinPolicy:"WaitAll") — GenerateInvoice@invoicing + ShipOrder@shipping
-#                run concurrently (watch the two DAG nodes go blue -> green together),
+#        step 1: ParallelGroup (joinPolicy:"WaitAll") — GenerateInvoice@invoicing + SendNotification@notification
+#                run concurrently (watch the two DAG nodes go blue -> green together); GenerateInvoice's
+#                invoiceId output folds out of the group into the run,
 #        step 2: ApprovalGate (allowedRoles:["ops"], no timeout + onTimeout:"Fail" — waits
 #                indefinitely; AutoApprove/Hold without a timeout duration are rejected by
 #                definition validation, and onTimeout is a required member so it must be sent) —
 #                pauses the run AFTER the two parallel jobs complete, until an "ops" caller grants it,
-#        step 3: SendNotification on the "notification" worker.
+#        step 3: ShipOrder on the "shipping" worker — reads the invoiceId forwarded from step 1's
+#                parallel GenerateInvoice (cross-service parallel-fold forwarding through the gate).
 #      The approval gate needs an authenticated "ops" caller. The server must run with
 #      UKBATCH_DEV_AUTH=true (docker-compose sets it) so it can be granted via curl with the role header
 #      (X-Dev-User + X-Dev-Roles: ops). The browser dashboard approve button cannot inject that header,
@@ -48,7 +51,7 @@ BASE="${BASE:-http://localhost:5070/api}"
 #   | joinPolicy: "WaitAll" | onTimeout: "Fail".
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 create_batch() {
-  local name="$1" body="$2" http
+  local name="$1" body="$2" http id=""
   echo "==> Creating batch definition '${name}' at ${BASE}/batches"
   http=$(curl -sS -o /tmp/ukbatch-seed-create.json -w '%{http_code}' \
     -X POST "${BASE}/batches" \
@@ -57,7 +60,32 @@ create_batch() {
   echo "    HTTP ${http}"
   cat /tmp/ukbatch-seed-create.json; echo
   if [ "${http}" = "409" ]; then
-    echo "    (definition already exists — reusing it for the trigger below)"
+    # A definition with this name already exists — possibly an OLD demo shape from an earlier seed
+    # whose steps no longer match the current worker jobs (the jobs read forwarded parameters, so a
+    # stale topology would fail at run time). Replace it so the trigger below runs the documented shape.
+    echo "    (definition already exists — replacing it with the current demo shape)"
+    curl -sS "${BASE}/batches/by-name/${name}" -o /tmp/ukbatch-seed-existing.json
+    if command -v jq >/dev/null 2>&1; then
+      id=$(jq -r '.id // empty' /tmp/ukbatch-seed-existing.json)
+    else
+      id=$(grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' /tmp/ukbatch-seed-existing.json \
+        | head -n1 | sed 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    fi
+    if [ -z "${id}" ]; then
+      echo "!! 409 but could not read the stored definition's id by name '${name}'. Aborting." >&2
+      exit 1
+    fi
+    curl -sS -o /dev/null -X DELETE "${BASE}/batches/by-id/${id}"
+    http=$(curl -sS -o /tmp/ukbatch-seed-create.json -w '%{http_code}' \
+      -X POST "${BASE}/batches" \
+      -H 'Content-Type: application/json' \
+      -d "${body}")
+    echo "    HTTP ${http} (recreated)"
+    cat /tmp/ukbatch-seed-create.json; echo
+    if [ "${http}" != "201" ]; then
+      echo "!! Recreate after replacing the stale definition failed (expected 201). Aborting." >&2
+      exit 1
+    fi
   elif [ "${http}" != "201" ]; then
     echo "!! Create failed (expected 201 Created or 409 Conflict). Aborting." >&2
     exit 1
@@ -105,6 +133,12 @@ seed_simple_demo() {
         "order": 1,
         "stepType": "Job",
         "job": { "jobName": "ShipOrder", "targetService": "shipping" }
+      },
+      {
+        "stepId": "step-3-notify",
+        "order": 2,
+        "stepType": "Job",
+        "job": { "jobName": "SendNotification", "targetService": "notification" }
       }
     ]
   }'
@@ -139,10 +173,10 @@ seed_approval_parallel_demo() {
               "job": { "jobName": "GenerateInvoice", "targetService": "invoicing" }
             },
             {
-              "stepId": "step-1b-ship",
+              "stepId": "step-1b-notify",
               "order": 1,
               "stepType": "Job",
-              "job": { "jobName": "ShipOrder", "targetService": "shipping" }
+              "job": { "jobName": "SendNotification", "targetService": "notification" }
             }
           ]
         }
@@ -153,23 +187,23 @@ seed_approval_parallel_demo() {
         "stepType": "ApprovalGate",
         "approval": {
           "title": "Release the cross-service run",
-          "description": "The invoice + ship steps have completed; grant to fire the final notify.",
+          "description": "The invoice + notify steps have completed; grant to fire the final ship.",
           "allowedRoles": ["ops"],
           "onTimeout": "Fail"
         }
       },
       {
-        "stepId": "step-3-notify",
+        "stepId": "step-3-ship",
         "order": 2,
         "stepType": "Job",
-        "job": { "jobName": "SendNotification", "targetService": "notification" }
+        "job": { "jobName": "ShipOrder", "targetService": "shipping" }
       }
     ]
   }'
   trigger_batch "${name}"
 
   echo
-  echo "==> approval-parallel-demo triggered. The two parallel jobs (invoice + ship) run FIRST, then"
+  echo "==> approval-parallel-demo triggered. The two parallel jobs (invoice + notify) run FIRST, then"
   echo "    the run PAUSES at the approval gate."
   echo "    Watch it live: http://localhost:5070/dashboard/self/batches (open the run; once the two"
   echo "    parallel nodes go green, the approval node is amber/awaiting). It will NOT proceed to the"
@@ -200,9 +234,9 @@ seed_approval_parallel_demo() {
     echo "      -H 'X-Dev-Roles: ops' \\"
     echo "      -d '{}'"
     echo
-    echo "    The two parallel nodes (invoice + ship) already ran BLUE -> GREEN before the gate; after"
-    echo "    granting, step 3 (notify) runs. The browser approve button can't inject the role header,"
-    echo "    so curl is the approval path here."
+    echo "    The two parallel nodes (invoice + notify) already ran BLUE -> GREEN before the gate; after"
+    echo "    granting, step 3 (ship) runs — reading the invoiceId forwarded from the parallel invoice step."
+    echo "    The browser approve button can't inject the role header, so curl is the approval path here."
   else
     echo "!! Could not read a pending approval id from ${BASE}/approvals."
     echo "   The gate may not be pending yet (give the run a second and re-run GET ${BASE}/approvals),"

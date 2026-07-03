@@ -153,7 +153,8 @@ public sealed class TwoServiceIntegrationTests : IDisposable
                     TargetService = "billing-worker",
                     BatchId = null,
                     BatchStepId = null,
-                    Parameters = new Dictionary<string, object?>(),
+                    // InvoiceProcessing requires an orderId to complete; supply one for each RPC in the loop.
+                    Parameters = new Dictionary<string, object?> { ["orderId"] = 42 },
                     Headers = new Dictionary<string, string>(),
                     EnqueuedAtUtc = DateTimeOffset.UtcNow,
                     AttemptNumber = 1,

@@ -10,8 +10,9 @@ namespace UKBatch.Dashboard.Models.Wizard;
 /// <see cref="FromBatchStep"/> on edit-load.
 /// </summary>
 /// <remarks>
-/// Step Output Forwarding is v0.2: <see cref="Parameters"/> are static string key/values (emitted
-/// as <c>object?</c> = the string). No typed/JSON value parsing in v0.1.
+/// <see cref="Parameters"/> are static string key/values (emitted as <c>object?</c> = the string) with
+/// no typed/JSON value parsing. At run time they merge LAST, so a static value here overrides a
+/// same-named output forwarded from an earlier step.
 /// </remarks>
 public sealed class WizardStepDraft
 {

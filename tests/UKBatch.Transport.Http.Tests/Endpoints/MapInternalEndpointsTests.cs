@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using FluentAssertions;
+using UKBatch.Abstractions.Models;
 using UKBatch.Abstractions.Transport;
 using UKBatch.Transport.Http.Auth;
 using UKBatch.Transport.Http.Tests.Common;
@@ -39,7 +40,10 @@ public sealed class MapInternalEndpointsTests : IClassFixture<WorkerFactory>
         TargetService = null,
         BatchId = null,
         BatchStepId = null,
-        Parameters = new Dictionary<string, object?>(),
+        // InvoiceProcessing reads a required orderId and produces an invoiceId from it; supply it so the
+        // fixture job runs to completion. The route / HMAC / dedupe tests assert on the envelope, so this
+        // keeps their invoke a genuine success rather than a job that faults on a missing parameter.
+        Parameters = new Dictionary<string, object?> { ["orderId"] = 42 },
         Headers = new Dictionary<string, string>(),
         EnqueuedAtUtc = DateTimeOffset.UtcNow,
         AttemptNumber = 1,
@@ -265,6 +269,77 @@ public sealed class MapInternalEndpointsTests : IClassFixture<WorkerFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         // ≤ server cap (5s) + generous slack for CI variability.
         sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(15));
+    }
+
+    // === Output return on the synchronous invoke reply ===
+
+    [Fact]
+    public async Task InvokeEndpoint_OutputProducingJob_ReturnsOutputsInReturnValues()
+    {
+        // The fixture InvoiceProcessing job records invoiceId = INV-{orderId} as an output; a completed
+        // synchronous invoke must return that output on the JobResult so the caller (orchestrator) can
+        // forward it to the next batch step.
+        using var client = _factory.CreateClient();
+        var msg = BuildValidMessage();   // carries orderId = 42
+        var body = SerializeMessage(msg);
+        var req = new HttpRequestMessage(HttpMethod.Post, "/ukbatch/internal/jobs/invoke")
+        {
+            Content = TestHmacHeaders.JsonContent(body),
+        };
+        TestHmacHeaders.Attach(req, "/ukbatch/internal/jobs/invoke", _factory.SharedSecret, bodyBytes: body);
+        var resp = await client.SendAsync(req);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        // returnValues is populated only for a completed job (a failed one carries null), so a non-null
+        // object here proves both completion and that the recorded output rode back on the reply.
+        var returnValues = doc.RootElement.GetProperty("returnValues");
+        returnValues.ValueKind.Should().Be(JsonValueKind.Object, "a completed output-producing job returns its outputs");
+        returnValues.GetProperty("invoiceId").GetString()
+            .Should().Be("INV-42", "the completed job's recorded output rides back on the invoke reply");
+    }
+
+    [Fact]
+    public async Task InvokeEndpoint_FailedJob_ReturnValuesIsNull()
+    {
+        // The receiver's Completed-only gate on the wire: a FAILED job's reply must carry returnValues =
+        // null no matter what the row holds. This is the only executable lock on that gate — the parallel
+        // join in Core structurally folds Completed children only, so an executor-level test cannot detect
+        // the gate's removal. Omitting the required orderId makes the fixture job fail deterministically.
+        using var client = _factory.CreateClient();
+        var msg = new JobMessage
+        {
+            MessageId = Guid.NewGuid().ToString("N"),
+            CorrelationId = null,
+            JobName = "InvoiceProcessing",
+            SourceService = "orchestrator-test",
+            TargetService = null,
+            BatchId = null,
+            BatchStepId = null,
+            Parameters = new Dictionary<string, object?>(),   // no orderId → GetRequired throws → Failed
+            Headers = new Dictionary<string, string>(),
+            EnqueuedAtUtc = DateTimeOffset.UtcNow,
+            AttemptNumber = 1,
+        };
+        var body = SerializeMessage(msg);
+        var req = new HttpRequestMessage(HttpMethod.Post, "/ukbatch/internal/jobs/invoke")
+        {
+            Content = TestHmacHeaders.JsonContent(body),
+        };
+        TestHmacHeaders.Attach(req, "/ukbatch/internal/jobs/invoke", _factory.SharedSecret, bodyBytes: body);
+        var resp = await client.SendAsync(req);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, "a failed job is still a well-formed invoke reply");
+
+        // Assert through the same lens the orchestrator uses — deserialize the reply as a JobResult
+        // (tolerating both enum wire forms) and check the fields its fold gate consumes.
+        var opts = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
+        };
+        var result = JsonSerializer.Deserialize<JobResult>(await resp.Content.ReadAsStringAsync(), opts);
+        result.Should().NotBeNull();
+        result!.Status.Should().Be(JobStatus.Failed);
+        result.ReturnValues.Should().BeNull("a non-Completed job must never return outputs on the wire");
     }
 
     private static void AssertCacheControlNoStore(HttpResponseMessage resp)

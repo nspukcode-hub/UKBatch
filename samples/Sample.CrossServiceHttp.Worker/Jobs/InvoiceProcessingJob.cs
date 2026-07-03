@@ -3,8 +3,10 @@ using UKBatch.Abstractions.Jobs;
 namespace Sample.CrossServiceHttp.Worker.Jobs;
 
 /// <summary>
-/// Cross-service job invoked by the orchestrator's batch step 2. Receives an order id and
-/// "processes" it (no-op log + sleep). Demonstrates the request/reply path over HTTP transport.
+/// Cross-service job invoked by the orchestrator's batch step 2 over HTTP transport. Reads the forwarded
+/// <c>orderId</c> (produced by the local PrepareOrder step and carried across the boundary), "processes" it,
+/// and produces an <c>invoiceId</c> that is returned to the orchestrator for the final local step to read —
+/// a full local → cross-service → local data round-trip.
 /// </summary>
 [Job(Name = "InvoiceProcessing")]
 public sealed class InvoiceProcessingJob : IJob
@@ -19,7 +21,10 @@ public sealed class InvoiceProcessingJob : IJob
     public async Task ExecuteAsync(JobContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
-        var orderId = context.Parameters.TryGet<int>("orderId", out var v) ? v : -1;
+
+        // The forwarded orderId arrives as JSON (a JsonElement) across the boundary; the JSON-aware reader
+        // resolves it. It is now the real upstream value — not the -1 placeholder the pre-forwarding sample saw.
+        var orderId = context.Parameters.GetRequired<int>("orderId");
         _logger.LogInformation(
             "InvoiceProcessingJob (worker side): processing orderId={OrderId} from source={Source}.",
             orderId, context.TriggeredBy);
@@ -28,8 +33,11 @@ public sealed class InvoiceProcessingJob : IJob
         // synchronous wait-for-result semantics.
         await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
 
+        // Produce an invoice id and return it to the orchestrator on the reply — the final local step reads it.
+        var invoiceId = $"INV-{orderId}";
+        context.Outputs.Set("invoiceId", invoiceId);
         _logger.LogInformation(
-            "InvoiceProcessingJob (worker side): completed orderId={OrderId} — returning Completed status to orchestrator.",
-            orderId);
+            "InvoiceProcessingJob (worker side): completed orderId={OrderId} — produced invoiceId={InvoiceId}, returning it to the orchestrator.",
+            orderId, invoiceId);
     }
 }

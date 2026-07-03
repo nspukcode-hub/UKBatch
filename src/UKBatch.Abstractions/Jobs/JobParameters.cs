@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace UKBatch.Abstractions.Jobs;
 
@@ -21,6 +22,12 @@ public sealed class JobParameters
     private static readonly JsonSerializerOptions _jsonReadOptions = new()
     {
         PropertyNameCaseInsensitive = true,
+        // Every writer that carries these values (HTTP/RabbitMQ wire options, the EF JSON columns)
+        // serializes enums as their string names. Without the matching converter a typed enum read
+        // works locally (boxed CLR fast path) but throws on the cross-service / resumed JsonElement
+        // shape — the exact local-vs-remote fork this class promises not to have. The converter also
+        // still accepts numeric enum tokens, so both wire forms read fine.
+        Converters = { new JsonStringEnumConverter() },
     };
 
     /// <summary>Empty parameter set.</summary>
@@ -82,6 +89,13 @@ public sealed class JobParameters
             }
             if (raw is JsonElement element)
             {
+                // A JSON null is the cross-service / resumed shape of a null value. Deserialize<T> on a null
+                // token throws JsonException for a value-type T, so short-circuit to honor the documented
+                // "null → defaultValue" contract (a reference-type T would already null-coalesce below).
+                if (element.ValueKind == JsonValueKind.Null)
+                {
+                    return defaultValue;
+                }
                 return element.Deserialize<T>(_jsonReadOptions) ?? defaultValue;
             }
             return (T)raw;
@@ -111,6 +125,13 @@ public sealed class JobParameters
         }
         if (raw is JsonElement element)
         {
+            // A JSON null is the cross-service / resumed shape of a null value — surface the same
+            // InvalidCastException as the CLR-null branch above (not a JsonException), so a null output
+            // fails identically whether it arrived local or across a service boundary.
+            if (element.ValueKind == JsonValueKind.Null)
+            {
+                throw new InvalidCastException($"Required job parameter '{key}' is null but '{typeof(T).Name}' was requested.");
+            }
             return element.Deserialize<T>(_jsonReadOptions)
                 ?? throw new InvalidCastException($"Required job parameter '{key}' deserialized to null for '{typeof(T).Name}'.");
         }

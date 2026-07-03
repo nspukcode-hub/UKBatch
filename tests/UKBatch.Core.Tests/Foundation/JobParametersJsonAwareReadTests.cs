@@ -179,6 +179,54 @@ public class JobParametersJsonAwareReadTests
         value.Should().Be(0);
     }
 
+    // ===== JsonElement null: cross-service / resumed null value (reachable once outputs forward) =====
+
+    [Fact]
+    public void GetOrDefault_JsonElementNull_ReturnsSuppliedDefault()
+    {
+        // A JSON null is how a null value arrives across a service boundary or from a JSON-backed store.
+        // GetOrDefault must honor its "null → default" contract rather than letting Deserialize throw for a
+        // value-type T.
+        With("orderId", Json("null")).GetOrDefault("orderId", -1).Should().Be(-1);
+    }
+
+    [Fact]
+    public void GetRequired_JsonElementNull_ThrowsInvalidCast()
+    {
+        // A required value that is JSON null fails identically to a CLR null: InvalidCastException — NOT the
+        // raw JsonException the deserializer would otherwise surface for a value type. ThrowExactly proves the
+        // type is InvalidCastException (JsonException is an unrelated type, so this rules it out).
+        var act = () => With("orderId", Json("null")).GetRequired<int>("orderId");
+
+        act.Should().ThrowExactly<InvalidCastException>("a JSON-null required value surfaces as InvalidCastException, not JsonException");
+    }
+
+    // ===== JsonElement enum: writers serialize enums as STRING names =====
+
+    [Fact]
+    public void GetRequired_JsonElementEnumString_Deserializes()
+    {
+        // Every writer that carries forwarded values (HTTP/RabbitMQ wire options, the EF JSON columns)
+        // registers JsonStringEnumConverter, so an enum output arrives as a JSON string. The reader must
+        // resolve it — otherwise enum outputs work locally (boxed fast path) but break cross-service/resume.
+        With("day", Json("\"Monday\"")).GetRequired<DayOfWeek>("day").Should().Be(DayOfWeek.Monday);
+    }
+
+    [Fact]
+    public void GetRequired_JsonElementEnumNumber_Deserializes()
+    {
+        // The converter still accepts the numeric token form, so both wire shapes read fine.
+        With("day", Json("1")).GetRequired<DayOfWeek>("day").Should().Be(DayOfWeek.Monday);
+    }
+
+    [Fact]
+    public void TryGet_JsonElementEnumString_ReturnsValue()
+    {
+        With("day", Json("\"Monday\"")).TryGet<DayOfWeek>("day", out var day).Should().BeTrue(
+            "a legitimately-forwarded enum value must not read as missing");
+        day.Should().Be(DayOfWeek.Monday);
+    }
+
     // ===== missing / null parity (unchanged) =====
 
     [Fact]

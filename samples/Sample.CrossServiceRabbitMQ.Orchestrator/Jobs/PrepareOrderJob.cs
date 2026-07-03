@@ -3,9 +3,9 @@ using UKBatch.Abstractions.Jobs;
 namespace Sample.CrossServiceRabbitMQ.Orchestrator.Jobs;
 
 /// <summary>
-/// Step 1 of the cross-service RabbitMQ demo batch. Runs locally on the orchestrator process.
-/// Generates a synthetic order id (logged only — not forwarded; Step Output Forwarding is a v0.2
-/// concern) — in production this would typically validate / enrich the request payload.
+/// Step 1 of the cross-service RabbitMQ demo batch. Runs locally on the orchestrator process. Generates a
+/// synthetic order id and forwards it via <see cref="JobContext.Outputs"/> — the next step (InvoiceProcessing,
+/// on the billing worker across the broker) receives it as a parameter and processes the real value.
 /// </summary>
 public sealed class PrepareOrderJob : IJob
 {
@@ -20,8 +20,9 @@ public sealed class PrepareOrderJob : IJob
     {
         ArgumentNullException.ThrowIfNull(context);
         var orderId = Random.Shared.Next(1000, 9999);
+        context.Outputs.Set("orderId", orderId);
         _logger.LogInformation(
-            "PrepareOrderJob (orchestrator side): generated orderId={OrderId}. Next step crosses the RabbitMQ broker to billing-worker.",
+            "PrepareOrderJob (orchestrator side): generated orderId={OrderId} and forwarded it. Next step crosses the RabbitMQ broker to billing-worker.",
             orderId);
         await Task.Delay(TimeSpan.FromMilliseconds(200), cancellationToken).ConfigureAwait(false);
     }

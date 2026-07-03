@@ -3,8 +3,10 @@
 End-to-end server + workers demo: one `ukbatch/server` container (orchestrator + dashboard + worker registry)
 plus three worker microservices (`invoicing`, `shipping`, `notification`), wired together by
 **RabbitMQ** (cross-service transport) and **PostgreSQL** (durable server state). Two batches ship: a
-simple two-step sequential run (invoice → ship), and an **approval + parallel** run (approval gate →
-parallel{invoice, ship} → notify) that exercises all three workers — each step over the broker.
+simple three-step sequential run (invoice → ship → notify) whose steps **forward data down the chain**
+(the invoice produced on one worker is read on the next), and an **approval + parallel** run
+(parallel{invoice, notify} → approval gate → ship) that exercises all three workers — each step over
+the broker, with the parallel group's `invoiceId` output forwarded past the gate into the final step.
 
 This is the packaged sibling of `Sample.CrossServiceRabbitMQ` (which runs orchestrator + worker via
 `dotnet run`): here every process is a container and the orchestrator is the generic `UKBatch.Server`
@@ -61,7 +63,7 @@ dispatch (a worker missing from the panel still receives work over the broker).
 ## 3. Seed + trigger the cross-service batches
 
 The server ships with **no** batch definitions of its own (it is a generic orchestrator). The helper
-seeds **two** demos back-to-back — the simple two-step run below, then the approval + parallel run in
+seeds **two** demos back-to-back — the simple three-step run below, then the approval + parallel run in
 section 3a:
 
 ```bash
@@ -71,7 +73,7 @@ samples/Sample.WorkerMode/seed-batch.sh
 For the **simple** demo it does two REST calls against `http://localhost:5070/api`:
 
 ```bash
-# 1) Create an Api-source batch with two cross-service steps (enums are JSON strings).
+# 1) Create an Api-source batch with three cross-service steps (enums are JSON strings).
 curl -X POST http://localhost:5070/api/batches \
   -H 'Content-Type: application/json' \
   -d '{
@@ -82,7 +84,9 @@ curl -X POST http://localhost:5070/api/batches \
       { "stepId": "step-1-invoice", "order": 0, "stepType": "Job",
         "job": { "jobName": "GenerateInvoice", "targetService": "invoicing" } },
       { "stepId": "step-2-ship", "order": 1, "stepType": "Job",
-        "job": { "jobName": "ShipOrder", "targetService": "shipping" } }
+        "job": { "jobName": "ShipOrder", "targetService": "shipping" } },
+      { "stepId": "step-3-notify", "order": 2, "stepType": "Job",
+        "job": { "jobName": "SendNotification", "targetService": "notification" } }
     ]
   }'
 # -> 201 Created (or 409 Conflict if it already exists)
@@ -93,11 +97,13 @@ curl -X POST http://localhost:5070/api/batches/by-name/worker-mode-demo/run \
 # -> 202 Accepted, body: { "batchId": "0192..." }
 ```
 
-Then watch it run live at <http://localhost:5070/dashboard/self> (open the batch run). The two worker
-container logs show the cross-service invocations:
+Then watch it run live at <http://localhost:5070/dashboard/self> (open the batch run). The worker
+container logs show the cross-service invocations AND the data forwarded down the chain — the invoice
+produced on `invoicing` is read on `shipping`, and `notification` reads values from both hops:
 
-* `worker-invoicing` — `GenerateInvoiceJob (invoicing worker): received cross-service invocation from source=ukbatch-server over RabbitMQ`
-* `worker-shipping` — `ShipOrderJob (shipping worker): received cross-service invocation from source=ukbatch-server over RabbitMQ`
+* `worker-invoicing` — `GenerateInvoiceJob (invoicing worker): completed — produced invoiceId=INV-… for Acme Corporation …`
+* `worker-shipping` — `ShipOrderJob (shipping worker): received cross-service invocation from source=ukbatch-server — shipping invoiceId=INV-… for Acme Corporation …`
+* `worker-notification` — `SendNotificationJob (notification worker): notifying customer — invoice INV-… shipped as tracking TRK-… (values forwarded across invoicing → shipping → notification)`
 
 Track the run's status by id (from the 202 body):
 
@@ -106,24 +112,27 @@ curl -sS http://localhost:5070/api/batches/<batchId>/status | jq
 ```
 
 > **Routing-name ↔ `OnService` caveat.** A step's `targetService` is the **routing key** and
-> MUST match the worker's `WorkerName` **exactly (Ordinal)**: `invoicing` and `shipping` here. A
-> mismatch is **silent** — the message waits forever in the worker's quorum queue, the orchestrator's
-> `RequestReplyAsync` times out, and the Workers panel (observability only) won't reveal the cause.
-> The step's `jobName` (`GenerateInvoice` / `ShipOrder`) is the job's `[Job(Name = "...")]` value on
-> the worker, independent of the routing key.
+> MUST match the worker's `WorkerName` **exactly (Ordinal)**: `invoicing`, `shipping` and
+> `notification` here. A mismatch is **silent** — the message waits forever in the worker's quorum
+> queue, the orchestrator's `RequestReplyAsync` times out, and the Workers panel (observability only)
+> won't reveal the cause. The step's `jobName` (`GenerateInvoice` / `ShipOrder` / `SendNotification`)
+> is the job's `[Job(Name = "...")]` value on the worker, independent of the routing key.
 
 ## 3a. Approval + parallel demo (all three workers)
 
 The `seed-batch.sh` helper also creates and triggers an **`approval-parallel-demo`** batch that
-exercises all three workers and every v0.1 workflow shape over the broker:
+exercises all three workers and every core workflow shape over the broker:
 
 ```text
 step 1  ParallelGroup  (joinPolicy:"WaitAll")
-          ├─ GenerateInvoice @ invoicing
-          └─ ShipOrder       @ shipping                              ← both run concurrently
+          ├─ GenerateInvoice   @ invoicing                           ← produces the invoiceId output
+          └─ SendNotification  @ notification                        ← both run concurrently
 step 2  ApprovalGate   (allowedRoles:["ops"], no timeout)            ← run pauses here until granted
-step 3  Job  SendNotification @ notification
+step 3  Job  ShipOrder @ shipping                                    ← reads the forwarded invoiceId
 ```
+
+The parallel group's `invoiceId` output folds out of the group into the run and is forwarded **past the
+approval gate** into the final ship step's parameters.
 
 When triggered, the run **pauses at the approval gate** — open it live at
 <http://localhost:5070/dashboard/self/batches> (the approval node sits amber/awaiting; nothing
@@ -152,9 +161,9 @@ curl -X POST "http://localhost:5070/api/approvals/<approvalId>/approve" \
 
 The `seed-batch.sh` output prints the exact approve command with the real id filled in.
 
-The moment the gate is granted, step 2's two parallel nodes (**invoice** + **ship**) go **blue →
-green together**, then step 3 (**notify**) runs. The three worker logs show their cross-service
-invocations (`received cross-service invocation … over RabbitMQ`).
+The two parallel nodes (**invoice** + **notify**) go **blue → green together** before the gate; the
+moment the gate is granted, step 3 (**ship**) runs — reading the `invoiceId` forwarded from the
+parallel invoice step. The three worker logs show their cross-service invocations.
 
 > **Why curl, not the dashboard button?** The browser dashboard's approve button POSTs **without** the
 > role header (it has no header-injection or login flow yet), so against an `["ops"]` gate it would
@@ -207,7 +216,8 @@ docker compose start worker-shipping
 ```
 
 It reconnects, consumes the queued message, runs `ShipOrder`, and replies via direct-reply-to — step 2
-completes and the batch finishes. The Workers panel shows `shipping` going Offline → Online again.
+completes, the final notify step runs, and the batch finishes. The Workers panel shows `shipping` going
+Offline → Online again.
 
 > If you exceed the 30s timeout, step 2 fails with a timeout and the batch run is marked failed; the
 > message is still consumed when the worker restarts. Restart within 30s to see the happy path.
@@ -224,13 +234,15 @@ docker compose up -d --build --wait
 bash samples/Sample.WorkerMode/e2e-assert.sh
 ```
 
-It covers: stack health and the 3 workers reporting Online; a simple sequential cross-service run; the
-approval + parallel flow (asserting the gate really holds before granting, then all three cross-service
-executions complete); RabbitMQ durability (stop a worker, confirm its step waits in the durable queue,
+It covers: stack health and the 3 workers reporting Online; a simple sequential cross-service run with
+data forwarded down the 3-service chain; the approval + parallel flow (asserting the gate really holds
+before granting, then all three cross-service executions complete and the post-gate step read the
+forwarded value); RabbitMQ durability (stop a worker, confirm its step waits in the durable queue,
 restart, confirm completion); a compensation path (a deliberately-failing job drives the `OnFailure` branch);
-partitioned fan-out including the `ukbatch.workers` per-run override; and Postgres state durability across a
-server restart (definitions and completed history survive — within the v0.1 boundary of durable record, not
-workflow resume).
+partitioned fan-out including the `ukbatch.workers` per-run override; and Postgres durability across a
+server restart — definitions and completed history survive, AND the in-flight run **resumes** (durable
+resume re-attaches the pending gate; granting it completes the run with the output forwarded before the
+restart).
 
 ## 5. Tear down
 

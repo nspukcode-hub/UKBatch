@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using RabbitMQ.Client;
 using UKBatch.Abstractions.Models;
@@ -109,6 +110,33 @@ public sealed class PublishConsumeAndRpcTests : IClassFixture<RabbitMqContainerF
                 CancellationToken.None);
             result.Status.Should().Be(JobStatus.Completed);
         }
+    }
+
+    [Fact]
+    public async Task RequestReply_OutputProducingJob_ReturnsOutputs()
+    {
+        // Over a LIVE broker: a job that records an output has that value returned on the RPC reply. This is
+        // the transport-level regression guard for cross-service step-output return — the reply carries the
+        // worker's produced output back to the caller.
+        var prefix = NewTopologyPrefix();
+        const string Service = "worker-rpc-outputs";
+
+        await using var worker = await WorkerHost.StartAsync(
+            _fixture.ConnectionUri, Service, prefix,
+            configureJobs: b => b.AddJob<OutputProducingJob>().Named(nameof(OutputProducingJob)));
+        await using var sender = Sender.Build(_fixture.ConnectionUri, prefix);
+
+        var result = await sender.Transport.RequestReplyAsync(
+            Service,
+            Message(nameof(OutputProducingJob), Service),
+            TimeSpan.FromSeconds(20),
+            CancellationToken.None);
+
+        result.Status.Should().Be(JobStatus.Completed);
+        result.ReturnValues.Should().NotBeNull("a completed job's recorded outputs travel back on the reply");
+        // The value arrives deserialized as a JsonElement over the wire.
+        result.ReturnValues!["k"].Should().BeOfType<JsonElement>()
+            .Which.GetString().Should().Be("v");
     }
 
     [Fact]

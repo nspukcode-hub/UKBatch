@@ -318,11 +318,11 @@ internal sealed class BatchExecutor
                     // === CROSS-SERVICE PATH ===
                     // Sequential semantics: a Failed/Cancelled terminal status, a transport timeout, or a
                     // transport exception throw BatchStepFailureException so the per-step failure routing applies.
-                    // The remote step receives forwarded outputs as parameters; returning its produced output
-                    // arrives in a later slice (the worker reply does not carry it yet).
-                    await _crossServiceInvoker.InvokeAsync(
+                    // The remote step receives forwarded outputs as parameters; its own produced outputs come
+                    // back on the reply (Completed only) and fold into the run accumulator like a local step.
+                    var result = await _crossServiceInvoker.InvokeAsync(
                         def, batchId, step, initial, accumulatedOutputs, triggeredBy, throwOnFailure: true, cancellationToken).ConfigureAwait(false);
-                    return null;
+                    return result.Outputs;
                 }
             }
 

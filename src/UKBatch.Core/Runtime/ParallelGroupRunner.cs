@@ -118,11 +118,11 @@ internal static class ParallelGroupRunner
                     // === CROSS-SERVICE CHILD PATH ===
                     // Parallel semantics: a timeout/exception ends the shadow row Failed and returns Failed
                     // so the join policy decides; cancellation rethrows; the terminal status is returned raw
-                    // (a Cancelled child stays observable to the join). Output return for a cross-service
-                    // child arrives in a later slice; today the child contributes no forwarded output.
-                    var status = await crossServiceInvoker.InvokeAsync(
+                    // (a Cancelled child stays observable to the join). A Completed child's produced outputs
+                    // ride the result and fold in join order; a non-Completed child carries null (never folds).
+                    var result = await crossServiceInvoker.InvokeAsync(
                         def, batchId, child, initial, accumulatedOutputs, triggeredBy, throwOnFailure: false, groupCts.Token).ConfigureAwait(false);
-                    return new ChildResult(child.Order, status, null);
+                    return new ChildResult(child.Order, result.Status, result.Outputs);
                 }
             }, groupCts.Token))
             .ToArray();

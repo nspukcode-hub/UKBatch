@@ -803,6 +803,30 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             var error = result.Status == JobStatus.Cancelled
                 ? (result.ErrorMessage ?? "cross-service step cancelled by remote worker")
                 : result.ErrorMessage;
+
+            // Persist the worker's returned outputs onto the shadow row BEFORE the terminal flip, mirroring
+            // the local JobWorker capture order so a reader that observes Completed already sees them. On EF
+            // this is the durable source the resume probe reads back to forward a skipped step's output.
+            // This write is STRICTLY best-effort: the live forward does not depend on it (the caller folds
+            // the wire reply's ReturnValues directly), so no store fault here may fail a step whose remote
+            // work completed, nor block the terminal flip below. The cost of a swallowed fault is only the
+            // durable copy — a crash-then-resume before the run's forwarded state lands would then skip the
+            // step without re-forwarding its outputs.
+            if (result.Status == JobStatus.Completed && result.ReturnValues is { Count: > 0 } outputs)
+            {
+                try
+                {
+                    await _jobStore.UpdateOutputsAsync(executionId, outputs, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (ObjectDisposedException) { /* host shutdown — EF pooled factory disposal */ }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Failed to persist cross-service outputs for execution {ExecutionId}; the live forward is unaffected, but a resumed run cannot re-forward this step's outputs.",
+                        executionId);
+                }
+            }
+
             // CT-decouple (CancellationToken.None) per the cancel-path precedent: the terminal write
             // MUST land even if the batch CT just tripped, else the row orphans in Running.
             try
@@ -814,6 +838,11 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             {
                 // Host shutting down — EF's pooled context factory may throw at disposal.
                 // Finalization is best-effort; don't surface a scary dispose trace.
+            }
+            catch (KeyNotFoundException)
+            {
+                // Shadow row absent (store pruned it): nothing to finalize. The audit record is
+                // best-effort — the step outcome itself is decided by the wire reply, not this row.
             }
         }
     }
