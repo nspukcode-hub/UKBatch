@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -101,9 +102,15 @@ public class ResumeIdempotencyTests
             DeadlineUtc = deadlineUtc,
         }, CancellationToken.None);
 
-    /// <summary>Inserts a shadow execution row for a (run, step) into the in-memory store.</summary>
+    /// <summary>
+    /// Inserts a shadow execution row for a (run, step) into the in-memory store. An optional
+    /// <paramref name="outputs"/> set models a completed cross-service step that persisted its returned
+    /// values — the durable source resume forwards to the next step. Defaulting to <c>null</c> keeps the
+    /// existing callers unchanged.
+    /// </summary>
     private static Task SeedShadowRowAsync(
-        IJobStore jobStore, string runId, string stepId, JobStatus status, string jobName = "RemoteJob")
+        IJobStore jobStore, string runId, string stepId, JobStatus status, string jobName = "RemoteJob",
+        IReadOnlyDictionary<string, object?>? outputs = null)
     {
         var internalStore = (IJobStoreInternal)jobStore;
         var now = DateTimeOffset.UtcNow;
@@ -116,6 +123,7 @@ public class ResumeIdempotencyTests
             BatchDefinitionId = null,
             Status = status,
             Parameters = new Dictionary<string, object?>(),
+            Outputs = outputs,
             EnqueuedAtUtc = now.AddMinutes(-5),
             StartedAtUtc = now.AddMinutes(-5),
             CompletedAtUtc = JobStatusTransitions.IsTerminal(status) ? now.AddMinutes(-4) : null,
@@ -508,6 +516,42 @@ public class ResumeIdempotencyTests
             });
     }
 
+    /// <summary>A local step that captures its invocation parameters and signals when it ran.</summary>
+    private sealed class ForwardCaptureJob : IJob
+    {
+        public static JobParameters? Captured;
+        public static TaskCompletionSource Ran = New();
+        public static void Reset() { Captured = null; Ran = New(); }
+        private static TaskCompletionSource New() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task ExecuteAsync(JobContext context, CancellationToken cancellationToken)
+        {
+            Captured = context.Parameters;
+            Ran.TrySetResult();
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Builds a cross-service step (RemoteJob on "billing") followed by a local capturing step.</summary>
+    private static async Task<IHost> StartCrossServiceThenLocalHostAsync(string name, ITransport transport)
+    {
+        ForwardCaptureJob.Reset();
+        return await TestHostBuilder.StartAsync(
+            b =>
+            {
+                b.Configure(o => o.ThisServiceName = "orchestrator");
+                b.AddJob<ForwardCaptureJob>();
+                b.AddBatch(name, x => x
+                    .RunJob("RemoteJob", step => step.OnService("billing"))
+                    .ThenRunJob<ForwardCaptureJob>());
+            },
+            services =>
+            {
+                services.RemoveAll<ITransport>();
+                services.AddSingleton(transport);
+            });
+    }
+
     [Fact]
     public async Task ResumeCrossService_PriorCompletedShadow_SkipsTransport()
     {
@@ -610,6 +654,47 @@ public class ResumeIdempotencyTests
 
             // The decisive assertion: the transport WAS called — the in-flight-at-crash step re-dispatched.
             await transport.Received(1).RequestReplyAsync(
+                Arg.Any<string>(), Arg.Any<JobMessage>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            await TestHostBuilder.StopGracefullyAsync(host);
+        }
+    }
+
+    [Fact]
+    public async Task ResumeCrossService_PriorCompletedShadowWithOutputs_ForwardsToNextStep()
+    {
+        // A prior attempt COMPLETED the cross-service step and persisted its returned values on the shadow
+        // row. On resume the step is skipped (transport NOT called), yet its outputs must still forward to the
+        // next step — the durable-resume equivalent of the live fold. The output is seeded as the JsonElement
+        // shape a JSON-backed store rehydrates, so the downstream read exercises the JSON-aware path.
+        var transport = SubstituteTransport(JobStatus.Completed);
+        var host = await StartCrossServiceThenLocalHostAsync("resume.cross.outputs", transport);
+        try
+        {
+            var runner = host.Services.GetRequiredService<IJobRunner>();
+            var runStore = host.Services.GetRequiredService<IBatchRunStore>();
+            var jobStore = host.Services.GetRequiredService<IJobStore>();
+            var lookup = host.Services.GetRequiredService<IBatchDefinitionLookup>();
+            var def = lookup.TryGetByName("resume.cross.outputs")!;
+            var stepId = def.Steps[0].StepId;
+
+            var runId = Guid.NewGuid().ToString("N");
+            await SeedInProgressRunAsync(runStore, runId, def, cursor: 0);
+            // Completed shadow for step 0 carrying invoiceId as the durable JsonElement shape.
+            var invoiceId = JsonDocument.Parse("\"INV-1\"").RootElement.Clone();
+            await SeedShadowRowAsync(jobStore, runId, stepId, JobStatus.Completed,
+                outputs: new Dictionary<string, object?> { ["invoiceId"] = invoiceId });
+
+            await runner.ResumeBatchAsync(runId, ResumePolicy.ResumeForward, CancellationToken.None);
+
+            await ForwardCaptureJob.Ran.Task.WaitAsync(TimeSpan.FromSeconds(60));
+
+            // The skipped step still forwarded its persisted output to the downstream local step...
+            ForwardCaptureJob.Captured!.GetRequired<string>("invoiceId").Should().Be("INV-1");
+            // ...and the transport was NOT called (the prior Completed shadow let the step skip).
+            await transport.DidNotReceive().RequestReplyAsync(
                 Arg.Any<string>(), Arg.Any<JobMessage>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
         }
         finally

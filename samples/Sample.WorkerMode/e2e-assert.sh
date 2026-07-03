@@ -10,17 +10,21 @@
 #
 # Scenarios:
 #   S1  Stack health            — server + 3 workers /healthz 200; GET /api/workers → 3 Online.
-#   S2  Simple sequential       — invoice@invoicing → ship@shipping; both Completed on the right worker.
-#   S3  Approval + parallel      — parallel{invoice,ship} → approval gate → notify. Asserts the gate
-#                                  REALLY holds (notify NOT dispatched while pending), then grants and
-#                                  asserts all three cross-service executions Completed. First assertion
-#                                  of the cross-service PARALLEL child path.
+#   S2  Simple sequential       — invoice@invoicing → ship@shipping → notify@notification; data forwarded
+#                                  down the 3-service chain (ship reads invoiceId; notify reads invoiceId +
+#                                  the trackingNumber ship produced).
+#   S3  Approval + parallel      — parallel{invoice,notify} → approval gate → ship. Asserts the gate
+#                                  REALLY holds (ship NOT dispatched while pending), then grants and
+#                                  asserts all three cross-service executions Completed — and that ship
+#                                  read the invoiceId forwarded out of the parallel group (cross-service
+#                                  PARALLEL child path + parallel-fold output forwarding through the gate).
 #   S4  Durability               — stop the shipping worker, trigger; invoice completes, ship's message
 #                                  WAITS in the durable quorum queue; restart the worker within the RPC
 #                                  timeout; ship completes (the broker's headline feature).
-#   S6  Postgres state durability — restart ONLY the server; batch definitions + run history survive.
-#                                  Note the v0.1 boundary: durable record + re-decidability, NOT
-#                                  workflow resume (the in-flight gate is terminalized on restart).
+#   S6  Postgres state durability — restart ONLY the server; batch definitions + run history survive,
+#                                  AND the in-flight run resumes: durable resume re-attaches the pending
+#                                  gate, and granting it completes the run (the final ship reads the
+#                                  invoiceId forwarded before the restart — output survives the resume).
 #   (S5  onFailure/compensation  — needs a deliberately-failing job. See the S5 section below.)
 #
 # Prereq:  docker compose up -d --build --wait      (the full stack, from the repo root)
@@ -98,11 +102,15 @@ SIMPLE_BODY='{
     { "stepId": "step-1-invoice", "order": 0, "stepType": "Job",
       "job": { "jobName": "GenerateInvoice", "targetService": "invoicing" } },
     { "stepId": "step-2-ship", "order": 1, "stepType": "Job",
-      "job": { "jobName": "ShipOrder", "targetService": "shipping" } }
+      "job": { "jobName": "ShipOrder", "targetService": "shipping" } },
+    { "stepId": "step-3-notify", "order": 2, "stepType": "Job",
+      "job": { "jobName": "SendNotification", "targetService": "notification" } }
   ]
 }'
 
-# parallel{invoice,ship} (order 0) → approval gate (order 1) → notify (order 2). Matches seed-batch.sh.
+# parallel{invoice,notify} (order 0) → approval gate (order 1) → ship (order 2). Matches seed-batch.sh.
+# ShipOrder (order 2) reads the invoiceId GenerateInvoice produced in the parallel group: the output
+# folds out of the group into the run accumulator and forwards past the gate into ship's parameters.
 # The gate sets NO timeout, so it waits indefinitely for the manual ops decision the scenario needs.
 # onTimeout MUST still be sent (required member — omitting it is a binding 400) and MUST be "Fail":
 # AutoApprove/Hold without a timeout duration are rejected by definition validation; Fail with no
@@ -114,13 +122,13 @@ APPROVAL_PARALLEL_BODY='{
       "parallelGroup": { "joinPolicy": "WaitAll", "steps": [
         { "stepId": "step-1a-invoice", "order": 0, "stepType": "Job",
           "job": { "jobName": "GenerateInvoice", "targetService": "invoicing" } },
-        { "stepId": "step-1b-ship", "order": 1, "stepType": "Job",
-          "job": { "jobName": "ShipOrder", "targetService": "shipping" } }
+        { "stepId": "step-1b-notify", "order": 1, "stepType": "Job",
+          "job": { "jobName": "SendNotification", "targetService": "notification" } }
       ] } },
     { "stepId": "step-2-approve", "order": 1, "stepType": "ApprovalGate",
       "approval": { "title": "Release the cross-service run", "allowedRoles": ["ops"], "onTimeout": "Fail" } },
-    { "stepId": "step-3-notify", "order": 2, "stepType": "Job",
-      "job": { "jobName": "SendNotification", "targetService": "notification" } }
+    { "stepId": "step-3-ship", "order": 2, "stepType": "Job",
+      "job": { "jobName": "ShipOrder", "targetService": "shipping" } }
   ]
 }'
 
@@ -153,21 +161,27 @@ done
 # ═══════════════════════════════════════════════════════════════════════════════════════════════════
 # S2 — Simple sequential cross-service (invoice@invoicing → ship@shipping)
 # ═══════════════════════════════════════════════════════════════════════════════════════════════════
-section "S2 — simple sequential cross-service"
+section "S2 — simple sequential cross-service (3-service chain, data forwarded down the chain)"
 
 create_batch worker-mode-demo "$SIMPLE_BODY" || true
 run=$(trigger_batch worker-mode-demo)
 [ -n "$run" ] && pass "triggered (run=$run)" || fail "trigger returned no batchId"
 
-if wait_status "$run" 60 '(.items | length) == 2 and ([.items[].status] | all(. == "Completed"))'; then
-  pass "both steps Completed"
+if wait_status "$run" 60 '(.items | length) == 3 and ([.items[].status] | all(. == "Completed"))'; then
+  pass "all 3 steps Completed"
 else
-  fail "run did not reach 2× Completed in 60s ($(status_json "$run" | jq -c '[.items[]|{j:.jobName,s:.status}]'))"
+  fail "run did not reach 3× Completed in 60s ($(status_json "$run" | jq -c '[.items[]|{j:.jobName,s:.status}]'))"
 fi
 status_json "$run" | jq -e '[.items[] | select(.jobName=="GenerateInvoice" and .workerName=="invoicing" and .status=="Completed")] | length == 1' >/dev/null \
   && pass "GenerateInvoice ran on 'invoicing'" || fail "GenerateInvoice not Completed on invoicing"
-status_json "$run" | jq -e '[.items[] | select(.jobName=="ShipOrder" and .workerName=="shipping" and .status=="Completed")] | length == 1' >/dev/null \
-  && pass "ShipOrder ran on 'shipping'" || fail "ShipOrder not Completed on shipping"
+# ShipOrder read the forwarded invoiceId (from GenerateInvoice) and produced a trackingNumber of its own.
+status_json "$run" | jq -e '[.items[] | select(.jobName=="ShipOrder" and .workerName=="shipping" and .status=="Completed" and (.parameters.invoiceId != null))] | length == 1' >/dev/null \
+  && pass "ShipOrder ran on 'shipping' with the forwarded invoiceId" || fail "ShipOrder not Completed with forwarded invoiceId"
+# SendNotification (the THIRD service) received values forwarded down the chain: invoiceId (2 hops, from
+# GenerateInvoice) and trackingNumber (1 hop, from ShipOrder) — proof output flows across the whole pipeline.
+status_json "$run" | jq -e '[.items[] | select(.jobName=="SendNotification" and .workerName=="notification" and .status=="Completed" and (.parameters.invoiceId != null) and (.parameters.trackingNumber != null))] | length == 1' >/dev/null \
+  && pass "SendNotification on 'notification' got the forwarded invoiceId (2 hops) + trackingNumber (1 hop)" \
+  || fail "SendNotification did not receive both forwarded values ($(status_json "$run" | jq -c '[.items[]|select(.jobName=="SendNotification")|{s:.status,inv:.parameters.invoiceId,trk:.parameters.trackingNumber}]'))"
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════════
 # S3 — Approval + parallel cross-service (the gate must REALLY hold)
@@ -187,12 +201,12 @@ for ((i = 0; i < 60; i += 2)); do
 done
 [ -n "$appid" ] && pass "approval gate pending (id=$appid)" || fail "no pending approval appeared in 60s"
 
-# THE gate assertion: the two parallel jobs are Completed, but notify is NOT dispatched yet.
+# THE gate assertion: the two parallel jobs are Completed, but ship is NOT dispatched yet.
 if status_json "$run" | jq -e '
       (.items | length) == 2
       and ([.items[].status] | all(. == "Completed"))
-      and ([.items[] | select(.jobName == "SendNotification")] | length == 0)' >/dev/null; then
-  pass "gate holds — parallel done, notify NOT dispatched"
+      and ([.items[] | select(.jobName == "ShipOrder")] | length == 0)' >/dev/null; then
+  pass "gate holds — parallel (invoice+notify) done, ship NOT dispatched"
 else
   fail "gate did not hold ($(status_json "$run" | jq -c '[.items[]|{j:.jobName,s:.status}]'))"
 fi
@@ -204,14 +218,19 @@ if [ -n "$appid" ]; then
   [ "$code" = 204 ] && pass "approve → 204" || fail "approve → HTTP $code (expected 204)"
 fi
 
-# After the grant, notify dispatches and all three cross-service executions complete.
+# After the grant, ship dispatches and all three cross-service executions complete.
 if wait_status "$run" 60 '(.items | length) == 3 and ([.items[].status] | all(. == "Completed"))'; then
   pass "3 cross-service executions Completed after grant"
 else
   fail "run did not reach 3× Completed after grant ($(status_json "$run" | jq -c '[.items[]|{j:.jobName,s:.status}]'))"
 fi
 status_json "$run" | jq -e '[.items[] | select(.jobName=="SendNotification" and .workerName=="notification" and .status=="Completed")] | length == 1' >/dev/null \
-  && pass "SendNotification ran on 'notification'" || fail "SendNotification not Completed on notification"
+  && pass "SendNotification ran on 'notification' (parallel)" || fail "SendNotification not Completed on notification"
+# ShipOrder ran AFTER the gate and read the invoiceId GenerateInvoice produced in the parallel group —
+# the parallel-group output folds into the run accumulator and forwards past the approval gate.
+status_json "$run" | jq -e '[.items[] | select(.jobName=="ShipOrder" and .workerName=="shipping" and .status=="Completed" and (.parameters.invoiceId != null))] | length == 1' >/dev/null \
+  && pass "ShipOrder Completed on 'shipping' WITH the forwarded invoiceId (parallel-fold forwarding through the gate)" \
+  || fail "ShipOrder not Completed with forwarded invoiceId ($(status_json "$run" | jq -c '[.items[]|{j:.jobName,s:.status,inv:.parameters.invoiceId}]'))"
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════════
 # S4 — Durability (stop the shipping worker; its message waits in the durable quorum queue)
@@ -226,16 +245,17 @@ run=$(trigger_batch worker-mode-demo)
 wait_status "$run" 30 '[.items[] | select(.jobName == "GenerateInvoice")] | (length > 0) and (.[0].status == "Completed")' \
   && pass "invoice Completed while shipping is down" || fail "invoice did not complete with shipping down"
 
-# Step 2 (ship) must NOT be Completed — its message is parked in ukbatch.service.shipping.
+# Step 2 (ship) must NOT be Completed — its message is parked in ukbatch.service.shipping (step 3 waits behind it).
 status_json "$run" | jq -e '[.items[] | select(.jobName == "ShipOrder" and .status == "Completed")] | length == 0' >/dev/null \
   && pass "ship NOT completed (message waiting in quorum queue)" || fail "ship completed unexpectedly while worker down"
 
-# Restart within the 30s RPC timeout window → the worker consumes the queued message and replies.
+# Restart within the 30s RPC timeout window → the worker consumes the queued message and replies; the run
+# then advances through ship and the final notify.
 docker compose start worker-shipping >/dev/null 2>&1 && pass "restarted worker-shipping" || fail "could not restart worker-shipping"
-if wait_status "$run" 45 '(.items | length) == 2 and ([.items[].status] | all(. == "Completed"))'; then
-  pass "ship Completed after worker restart (durable delivery)"
+if wait_status "$run" 45 '(.items | length) == 3 and ([.items[].status] | all(. == "Completed"))'; then
+  pass "ship + notify Completed after worker restart (durable delivery)"
 else
-  fail "ship did not complete after restart ($(status_json "$run" | jq -c '[.items[]|{j:.jobName,s:.status}]'))"
+  fail "run did not complete after restart ($(status_json "$run" | jq -c '[.items[]|{j:.jobName,s:.status}]'))"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -334,7 +354,7 @@ grep -q "FINALIZE — bulk commit (simulated): AddRange(12)" <<<"$recent_log" \
 section "S6 — Postgres server-state durability (server restart)"
 
 # Set up state that must survive the restart: definitions, a finished run's history, and an in-flight
-# run parked at its approval gate (so we can observe the v0.1 boundary on the paused run).
+# run parked at its approval gate (so we can assert durable resume re-attaches it after the restart).
 defs_before=$(get "$BASE/batches" | jq '.totalCount')
 hist_run=$(trigger_batch approval-parallel-demo)
 appid_before=""
@@ -363,14 +383,32 @@ defs_after=$(get "$BASE/batches" | jq '.totalCount')
 status_json "$hist_run" | jq -e '[.items[] | select(.status == "Completed")] | length >= 1' >/dev/null \
   && pass "completed run history persisted (finished executions survive restart)" || fail "run history lost after restart"
 
-# (c) v0.1 BOUNDARY — no durable workflow resume. The paused
-#     run does NOT resume: graceful restart (ApplicationStopping) terminalizes the in-flight gate
-#     (→ Decided/Cancelled in Postgres), so it is no longer pending/re-decidable. We assert the HONEST
-#     boundary — the gate pending before the restart is gone afterwards — NOT "survives". When durable
-#     resume lands (v0.2), this assertion flips to "gate still pending + run resumes after grant".
-appid_after=$(pending_approval_id "$hist_run")
-[ -z "$appid_after" ] && pass "in-flight gate terminalized on restart — run does NOT resume (v0.1 boundary)" \
-  || fail "gate still pending after restart (expected terminalize under v0.1 no-resume boundary)"
+# (c) DURABLE RESUME — the paused run RESUMES. A graceful restart leaves the in-flight run in Postgres
+#     and DurableRunRecovery re-attaches the pending gate, so it is STILL pending + re-decidable after the
+#     restart. Granting it lets the run continue to the final ship step, which reads the invoiceId the
+#     parallel group produced BEFORE the restart.
+# Recovery runs asynchronously after boot (healthz turns 200 before the run is re-launched and its gate
+# re-attached), so poll — same window as the pre-restart gate wait above.
+appid_after=""
+for ((i = 0; i < 40; i += 2)); do
+  appid_after=$(pending_approval_id "$hist_run")
+  [ -n "$appid_after" ] && break
+  sleep 2
+done
+[ -n "$appid_after" ] && pass "in-flight gate survives restart — run resumes (durable resume re-attaches it)" \
+  || fail "gate not pending after restart (durable resume should re-attach the gate)"
+# Grant the re-attached gate: the resumed run completes its final ship step, reading the invoiceId the
+# parallel group produced before the restart — the forwarded cross-service output survives the resume.
+if [ -n "$appid_after" ]; then
+  code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' -X POST "$BASE/approvals/$appid_after/approve" \
+    -H 'Content-Type: application/json' -H 'X-Dev-User: e2e' -H 'X-Dev-Roles: ops' -d '{}')
+  [ "$code" = 204 ] && pass "granted the re-attached gate after restart → 204" || fail "grant after restart → HTTP $code (expected 204)"
+  if wait_status "$hist_run" 60 '[.items[] | select(.jobName == "ShipOrder" and .status == "Completed" and (.parameters.invoiceId != null))] | length == 1'; then
+    pass "resumed run completed — final ship read the invoiceId forwarded before the restart (output survives resume)"
+  else
+    fail "resumed run did not complete with the forwarded invoiceId ($(status_json "$hist_run" | jq -c '[.items[]|{j:.jobName,s:.status,inv:.parameters.invoiceId}]'))"
+  fi
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════════
 # Summary

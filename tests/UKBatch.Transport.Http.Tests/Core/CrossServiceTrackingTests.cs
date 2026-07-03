@@ -633,4 +633,42 @@ public sealed class CrossServiceTrackingTests
             await h.Host.StopAsync();
         }
     }
+
+    // ───────────────────────────────────────────────────────────────────────────────────────────
+    // 10. A completed cross-service step persists the worker's returned values onto its shadow row's
+    // Outputs — the visibility + durable-resume source for step-output forwarding.
+    // ───────────────────────────────────────────────────────────────────────────────────────────
+    [Fact]
+    public async Task CrossServiceStep_Completed_ShadowRowCarriesReturnValuesAsOutputs()
+    {
+        var returnValues = new Dictionary<string, object?> { ["invoiceId"] = "INV-9" };
+        var transport = TransportReturning(new JobResult
+        {
+            ExecutionId = "remote-ok",
+            Status = JobStatus.Completed,
+            ReturnValues = returnValues,
+            CompletedAtUtc = DateTimeOffset.UtcNow,
+        });
+        var h = await BootAsync(
+            b => b.AddBatch("xs-outputs", c => c.RunJob("RemoteJob", j => j.OnService("billing"))),
+            transport);
+        using (h.Host)
+        await using (var watch = await WatchCollector.StartAsync(h.WatchHub))
+        {
+            var def = h.Lookup.TryGetByName("xs-outputs")!;
+            using var deadline = new CancellationTokenSource(Deadline);
+
+            var batchId = await h.Runner.TriggerBatchAsync(def.Id, JobParameters.Empty, triggeredBy: "t", CancellationToken.None);
+            watch.ScopeTo(batchId);
+
+            await watch.WaitUntilAsync(evts => evts.Any(e => e.Status == JobStatus.Completed), deadline.Token);
+
+            var row = (await RowsForBatchAsync(h.Store, batchId)).Should().ContainSingle().Subject;
+            row.Status.Should().Be(JobStatus.Completed);
+            row.Outputs.Should().NotBeNull("a completed cross-service step persists its returned values onto the shadow row");
+            row.Outputs!["invoiceId"].Should().Be("INV-9");
+
+            await h.Host.StopAsync();
+        }
+    }
 }

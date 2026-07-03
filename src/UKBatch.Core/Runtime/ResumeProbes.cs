@@ -32,6 +32,16 @@ internal interface IResumeGateProbe
 }
 
 /// <summary>
+/// A proven-completed cross-service shadow row: its terminal <see cref="JobStatus"/> (always
+/// <see cref="JobStatus.Completed"/>) and the outputs it persisted. Carrying both lets a resumed run
+/// skip re-dispatch AND forward the outputs the skipped step produced — recovered from the durable
+/// shadow row when the crash landed before the run's forwarded state was saved.
+/// </summary>
+internal readonly record struct ResumeShadowCompletion(
+    JobStatus Status,
+    IReadOnlyDictionary<string, object?>? Outputs);
+
+/// <summary>
 /// Reports whether a cross-service shadow execution row for a (run, step) pair PROVES the step already
 /// finished before a crash, so a resumed run can skip a step it has already completed instead of
 /// re-dispatching it. A thin read-only seam over the existing <see cref="IJobExecutionReader.QueryAsync"/>:
@@ -42,7 +52,8 @@ internal interface IResumeGateProbe
 internal interface IResumeShadowProbe
 {
     /// <summary>
-    /// Returns <see cref="JobStatus.Completed"/> if the cross-service step <paramref name="stepId"/> in run
+    /// Returns a <see cref="ResumeShadowCompletion"/> (status always <see cref="JobStatus.Completed"/>, plus
+    /// the outputs that row persisted) if the cross-service step <paramref name="stepId"/> in run
     /// <paramref name="batchId"/> has a shadow row that proves it definitely finished before the crash, or
     /// <c>null</c> otherwise. ONLY a <see cref="JobStatus.Completed"/> row proves completion; any other
     /// state — a non-terminal <see cref="JobStatus.Running"/> row, a row tombstoned to
@@ -51,7 +62,7 @@ internal interface IResumeShadowProbe
     /// <c>null</c> and resume re-dispatches the step (the at-least-once replay). The symmetric counterpart
     /// of <see cref="IResumeGateProbe"/>, which re-opens a non-decided gate rather than fail-routing it.
     /// </summary>
-    Task<JobStatus?> TryGetCompletedStatusAsync(string batchId, string stepId, CancellationToken cancellationToken);
+    Task<ResumeShadowCompletion?> TryGetCompletedStatusAsync(string batchId, string stepId, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -162,7 +173,7 @@ internal sealed class ResumeShadowProbe : IResumeShadowProbe
         _reader = reader;
     }
 
-    public async Task<JobStatus?> TryGetCompletedStatusAsync(string batchId, string stepId, CancellationToken cancellationToken)
+    public async Task<ResumeShadowCompletion?> TryGetCompletedStatusAsync(string batchId, string stepId, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(batchId);
         ArgumentException.ThrowIfNullOrEmpty(stepId);
@@ -182,7 +193,9 @@ internal sealed class ResumeShadowProbe : IResumeShadowProbe
             if (string.Equals(row.BatchStepId, stepId, StringComparison.Ordinal)
                 && row.Status == JobStatus.Completed)
             {
-                return JobStatus.Completed;
+                // Surface the row's persisted outputs so the skip path forwards them (durable on EF; read
+                // back as JsonElement values, resolved downstream by the JSON-aware JobParameters readers).
+                return new ResumeShadowCompletion(JobStatus.Completed, row.Outputs);
             }
         }
 

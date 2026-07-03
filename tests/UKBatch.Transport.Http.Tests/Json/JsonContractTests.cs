@@ -59,4 +59,28 @@ public sealed class JsonContractTests
         var opts = GetTransportJsonOpts();
         opts.PropertyNamingPolicy.Should().Be(JsonNamingPolicy.CamelCase);
     }
+
+    [Fact]
+    public void JobResult_WithReturnValues_RoundTrip()
+    {
+        // Step-output forwarding rides the reply's ReturnValues across the wire; the values must round-trip.
+        // On deserialize the object? values come back as JsonElement (STJ's shape for object) — the JSON-aware
+        // JobParameters readers resolve them on the consuming side.
+        var opts = GetTransportJsonOpts();
+        var result = new JobResult
+        {
+            ExecutionId = "exec-1",
+            Status = JobStatus.Completed,
+            ReturnValues = new Dictionary<string, object?> { ["orderId"] = 42, ["invoiceId"] = "INV-42" },
+            CompletedAtUtc = DateTimeOffset.UtcNow,
+        };
+
+        var json = JsonSerializer.Serialize(result, opts);
+        var back = JsonSerializer.Deserialize<JobResult>(json, opts);
+
+        back.Should().NotBeNull();
+        back!.ReturnValues.Should().NotBeNull();
+        ((JsonElement)back.ReturnValues!["orderId"]!).GetInt32().Should().Be(42);
+        ((JsonElement)back.ReturnValues["invoiceId"]!).GetString().Should().Be("INV-42");
+    }
 }

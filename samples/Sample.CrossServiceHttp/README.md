@@ -40,11 +40,16 @@ either port is also taken on your machine, override via `--urls http://localhost
 
 Watch the two terminals while the batch runs:
 
-* **Step 1** `PrepareOrderJob` — orchestrator terminal logs `generated orderId=…`
+* **Step 1** `PrepareOrderJob` — orchestrator terminal logs `generated orderId=… and forwarded it`
 * **Step 2** `InvoiceProcessing` — **worker** terminal logs `processing orderId=… from source=orchestrator`
-* **Step 3** `FinalizeOrderJob` — orchestrator terminal logs `cross-service step completed; finalizing`
+* **Step 3** `FinalizeOrderJob` — orchestrator terminal logs `cross-service step completed and returned invoiceId=…; finalizing`
 
 The dashboard's batch detail page annotates step 2 with `TargetService=billing-worker`.
+
+> The three steps demonstrate **step-output forwarding across the HTTP transport**: step 1 records the
+> `orderId` via `context.Outputs.Set(...)`, the worker receives it as a parameter, produces an
+> `invoiceId` output that rides the invoke reply back, and step 3 reads that `invoiceId` from its
+> parameters — a full local → cross-service → local data round-trip.
 
 ## HMAC tampering test
 

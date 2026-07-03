@@ -112,6 +112,11 @@ else
         </section>
     }
 
+    @* Input parameters the step received: batch-initial values, outputs forwarded from earlier steps, and
+       the step's own static parameters, merged. This is the consumer side of step-output forwarding — a
+       downstream step shows the values an upstream step produced. Renders nothing when the step had none. *@
+    <KeyValuePanel Title="Input parameters" Items="@_execution.Parameters" KeyHeader="Parameter" ValueHeader="Value" />
+
     @* Output values the job recorded, forwarded to later steps. Renders nothing when none were recorded. *@
     <KeyValuePanel Title="Outputs" Items="@_execution.Outputs" KeyHeader="Output" ValueHeader="Value" />
 }

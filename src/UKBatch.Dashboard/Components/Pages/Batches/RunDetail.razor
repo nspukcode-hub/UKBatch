@@ -103,10 +103,11 @@
     </section>
 }
 
-@* Run-scoped forwarded state (read-only). Each panel renders nothing when its source is null/empty, so a
-   run that forwarded nothing (or whose row isn't in the recent-runs window) shows no extra cards. *@
+@* The batch-initial parameters the run was triggered with (read-only). Renders nothing when the run had
+   none. Per-step forwarding is shown on each execution's own detail (its Input parameters + Outputs), NOT
+   as a run-level accumulator — a flattened last-writer-wins blob can't show which step produced or consumed
+   what, so it is deliberately not rendered here. *@
 <KeyValuePanel Title="Initial parameters" Items="@_forwardedInitialParameters" KeyHeader="Parameter" ValueHeader="Value" />
-<KeyValuePanel Title="Forwarded outputs" Items="@_forwardedOutputs" KeyHeader="Output" ValueHeader="Value" />
 
 @if (_isLoading)
 {
@@ -183,20 +184,18 @@ else
     private bool _definitionLoaded;            // single-shot definition fetch guard
     private bool _definitionFetchFailed;       // bound retries when defId 404s persistently
 
-    // ── run-scoped forwarded state (read-only) ──
-    // The persisted run row carries the batch-initial parameters and accumulated step outputs under
-    // reserved ukbatch.* keys. It rides the same run-store list this page already has a client method for
+    // ── run-scoped initial parameters (read-only) ──
+    // The persisted run row carries the batch-initial parameters the run was triggered with, under a
+    // reserved ukbatch.* key. It rides the same run-store list this page already has a client method for
     // (QueryRunsAsync, filtered by definition id), fetched once the definition id is known — there is no
     // single-run-by-id endpoint, so this is a best-effort lookup within the most recent page of runs.
     private IReadOnlyDictionary<string, object?>? _forwardedInitialParameters;
-    private IReadOnlyDictionary<string, object?>? _forwardedOutputs;
     private bool _runLoaded;                    // single-shot run fetch guard (matches the definition guard)
     private bool _runFetchFailed;              // bound retries so the 4× fan-out doesn't re-query on every event
 
     // Reserved keys under BatchRun.ForwardedState (see UKBatch.Core ForwardedStateKeys). Referenced as
     // literals here so the dashboard does not need friend access to the internal Core constants.
     private const string ForwardedInitialParametersKey = "ukbatch.initialParameters";
-    private const string ForwardedOutputsKey = "ukbatch.forwardedOutputs";
     private IReadOnlyDictionary<string, JobStatus> _statusByStepId =
         new Dictionary<string, JobStatus>(StringComparer.Ordinal);
     // Approval-gate live status: gates are NOT jobs (no JobExecution row), so their state comes from the
@@ -395,7 +394,6 @@ else
             if (run.ForwardedState is { Count: > 0 } state)
             {
                 _forwardedInitialParameters = AsDictionary(state, ForwardedInitialParametersKey);
-                _forwardedOutputs = AsDictionary(state, ForwardedOutputsKey);
             }
         }
         catch (Exception)

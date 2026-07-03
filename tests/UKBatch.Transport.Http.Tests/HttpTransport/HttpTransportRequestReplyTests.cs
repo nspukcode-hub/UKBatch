@@ -29,7 +29,9 @@ public sealed class HttpTransportRequestReplyTests : IClassFixture<WorkerFactory
         TargetService = "billing-worker",
         BatchId = null,
         BatchStepId = null,
-        Parameters = new Dictionary<string, object?>(),
+        // InvoiceProcessing reads a required orderId and produces an invoiceId from it; supply one so the
+        // fixture job completes (the negative-path tests override the job name and never reach this read).
+        Parameters = new Dictionary<string, object?> { ["orderId"] = 42 },
         Headers = new Dictionary<string, string>(),
         EnqueuedAtUtc = DateTimeOffset.UtcNow,
         AttemptNumber = 1,

@@ -823,8 +823,12 @@ public sealed class BatchesRunDetailTests : TestContext
     }
 
     [Fact]
-    public void Render_RunWithForwardedState_ShowsBothPanels()
+    public void Render_RunLevel_ShowsInitialParameters_OmitsForwardedOutputsAccumulator()
     {
+        // The run-level view shows only the batch-initial parameters. Per-step forwarding is shown on each
+        // execution's own detail (its Input parameters + Outputs), NOT as a run-level accumulator — a
+        // flattened last-writer-wins blob can't show which step produced or consumed what, so the run page
+        // must not render the forwarded-outputs accumulator (its data, e.g. 8264, must not appear here).
         var forwarded = new Dictionary<string, object?>
         {
             ["ukbatch.initialParameters"] = new Dictionary<string, object?> { ["region"] = "eu-west" },
@@ -833,18 +837,17 @@ public sealed class BatchesRunDetailTests : TestContext
         var cut = RenderRunWithRunStore("br-fwd", RunWithForwardedState("br-fwd", FwdDefId, forwarded), out _);
 
         cut.WaitForAssertion(() =>
-        {
-            cut.Markup.Should().Contain("Initial parameters").And.Contain("region").And.Contain("eu-west");
-            cut.Markup.Should().Contain("Forwarded outputs").And.Contain("orderId").And.Contain("8264");
-        });
+            cut.Markup.Should().Contain("Initial parameters").And.Contain("region").And.Contain("eu-west"));
+        cut.Markup.Should().NotContain("Forwarded outputs");
+        cut.Markup.Should().NotContain("8264");
     }
 
     [Fact]
-    public void Render_RunWithForwardedState_FromJsonColumnShape_ShowsPanels()
+    public void Render_RunLevel_InitialParameters_FromJsonColumnShape()
     {
         // Over the wire (and from a JSON column) the ForwardedState values are JsonElement, not typed
-        // dictionaries. This exercises the JsonElement branch of RunDetail.AsDictionary end to end —
-        // the typed-dictionary bunit fixture above would pass even if that branch were broken.
+        // dictionaries. This exercises the JsonElement branch of RunDetail.AsDictionary end to end via the
+        // Initial parameters panel — the typed-dictionary fixture above would pass even if that branch broke.
         using var doc = System.Text.Json.JsonDocument.Parse(
             """{ "ukbatch.initialParameters": { "region": "eu-west" }, "ukbatch.forwardedOutputs": { "orderId": "8264" } }""");
         var forwarded = new Dictionary<string, object?>
@@ -855,10 +858,9 @@ public sealed class BatchesRunDetailTests : TestContext
         var cut = RenderRunWithRunStore("br-fwd", RunWithForwardedState("br-fwd", FwdDefId, forwarded), out _);
 
         cut.WaitForAssertion(() =>
-        {
-            cut.Markup.Should().Contain("Initial parameters").And.Contain("region").And.Contain("eu-west");
-            cut.Markup.Should().Contain("Forwarded outputs").And.Contain("orderId").And.Contain("8264");
-        });
+            cut.Markup.Should().Contain("Initial parameters").And.Contain("region").And.Contain("eu-west"));
+        cut.Markup.Should().NotContain("Forwarded outputs");
+        cut.Markup.Should().NotContain("8264");
     }
 
     [Fact]

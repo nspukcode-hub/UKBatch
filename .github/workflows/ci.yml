@@ -56,7 +56,11 @@ jobs:
       # design — its broker integration tests require Docker and are excluded from this job.
       - name: Coverage summary
         if: always()
+        # The extra tool restore keeps this always()-step honest: when an earlier step fails before
+        # "Restore tools" ran, reportgenerator would otherwise be missing here and this step's
+        # "run dotnet tool restore" error would mask the job's real failure.
         run: |
+          dotnet tool restore
           dotnet reportgenerator \
             -reports:"TestResults/**/coverage.cobertura.xml" \
             -targetdir:"coverage" \

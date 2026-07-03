@@ -148,7 +148,9 @@ internal static class InvokeEndpointHandler
         {
             ExecutionId = latest.ExecutionId,
             Status = latest.Status,
-            ReturnValues = null, // v0.1 — job runtime does not surface return values; reserved for a future release.
+            // Return the job's produced outputs to the orchestrator (Completed only — a failed job forwards
+            // nothing; the orchestrator gates on Completed too, so this keeps the wire honest as well).
+            ReturnValues = latest.Status == JobStatus.Completed ? latest.Outputs : null,
             ErrorMessage = latest.LastError,
             Headers = null,
             CompletedAtUtc = latest.CompletedAtUtc ?? DateTimeOffset.UtcNow,
