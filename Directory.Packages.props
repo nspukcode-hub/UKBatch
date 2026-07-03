@@ -27,6 +27,12 @@
     <!-- Built-in OpenAPI document generation requires net9+. The net8.0 build omits the package
          reference entirely (see UKBatch.Api.csproj), so a single version suffices here. -->
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.0" />
+    <!-- Transitive pin (CentralPackageTransitivePinningEnabled): Microsoft.AspNetCore.OpenApi 10.0.0
+         pulls Microsoft.OpenApi 2.0.0, which carries NU1903 advisory GHSA-v5pm-xwqc-g5wc (circular
+         schema references may terminate parsing; the 2.x line is patched in 2.7.5). Pin forward to
+         clear the audit under TreatWarningsAsErrors. The net8.0 build never references the OpenAPI
+         packages, so this entry is simply unused there. -->
+    <PackageVersion Include="Microsoft.OpenApi" Version="2.7.5" />
   </ItemGroup>
 
   <ItemGroup Label="Threading and runtime">
