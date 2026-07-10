@@ -169,7 +169,7 @@ public sealed class CompensationEditorTests : TestContext
 
         // Exactly ONE compensator toggle at the group level — the child editors recurse with
         // AllowCompensation=false, so a parallel child never offers its own compensator.
-        System.Text.RegularExpressions.Regex.Matches(cut.Markup, "Add compensator").Count.Should().Be(1,
+        System.Text.RegularExpressions.Regex.Count(cut.Markup, "Add compensator").Should().Be(1,
             "a ParallelGroup gets exactly one group-level compensator toggle, never one per child");
     }
 }
