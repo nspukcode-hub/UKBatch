@@ -34,6 +34,15 @@ public sealed record class BatchStep
     public ApprovalGateConfig? Approval { get; init; }
 
     /// <summary>
+    /// Optional compensator for this step, honored only on a top-level <see cref="BatchStepType.Job"/> or
+    /// <see cref="BatchStepType.ParallelGroup"/> step (a parallel group compensates as one unit). <c>null</c>
+    /// means "cannot be undone" — the step is skipped during a reverse unwind. Forbidden on ApprovalGate steps,
+    /// parallel-group CHILDREN, and OnFailure (compensation-chain) steps; the validator rejects those. Inert
+    /// unless <see cref="BatchDefinition.FailurePolicy"/> is <see cref="BatchFailurePolicy.Compensate"/>.
+    /// </summary>
+    public CompensationStepData? Compensation { get; init; }
+
+    /// <summary>
     /// Storage-adapter opaque metadata. Round-tripped verbatim by adapters; reserved for future
     /// step-type payloads and per-step annotations. Consumers in v0.1 SHOULD NOT depend on keys here.
     /// </summary>
@@ -79,4 +88,37 @@ public sealed record class ParallelGroupData
 
     /// <summary>Join semantics when fanning back in.</summary>
     public required ParallelJoinPolicy JoinPolicy { get; init; }
+}
+
+/// <summary>
+/// Optional compensator for a top-level <see cref="BatchStep"/>: the job to run if a LATER step fails and
+/// the batch's <see cref="BatchDefinition.FailurePolicy"/> is <see cref="BatchFailurePolicy.Compensate"/>.
+/// Compensators run in REVERSE order of the completed steps, so the most recently completed step is undone
+/// first. A compensator runs ONLY for a step that itself completed — the failed step is never compensated
+/// (a step that failed part-way is responsible for rolling back its own partial writes; the saga undoes only
+/// whole completed steps). A step with no compensator is simply skipped during unwind ("some work cannot be
+/// undone"). Modelled separately from <see cref="JobStepData"/> so a compensator can evolve independently.
+/// </summary>
+public sealed record class CompensationStepData
+{
+    /// <summary>Logical job name to dispatch as the compensator.</summary>
+    public required string JobName { get; init; }
+
+    /// <summary>
+    /// Target service for a cross-service compensator; <c>null</c> means local execution
+    /// (matches <see cref="Transport.JobMessage.TargetService"/>).
+    /// </summary>
+    public string? TargetService { get; init; }
+
+    /// <summary>Static parameters merged with the run's forwarded state at dispatch. <c>null</c> means none.</summary>
+    public IReadOnlyDictionary<string, object?>? Parameters { get; init; }
+
+    /// <summary>Max retry attempts for the compensator; <c>null</c> inherits the job/runtime default.</summary>
+    public int? MaxRetries { get; init; }
+
+    /// <summary>
+    /// Wall-clock timeout for the compensator in seconds; <c>null</c> inherits job/runtime default.
+    /// <c>0</c> means explicitly no timeout.
+    /// </summary>
+    public int? TimeoutSeconds { get; init; }
 }

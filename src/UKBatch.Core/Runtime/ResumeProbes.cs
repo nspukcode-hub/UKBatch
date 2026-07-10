@@ -32,29 +32,30 @@ internal interface IResumeGateProbe
 }
 
 /// <summary>
-/// A proven-completed cross-service shadow row: its terminal <see cref="JobStatus"/> (always
+/// A proven-completed execution row: its terminal <see cref="JobStatus"/> (always
 /// <see cref="JobStatus.Completed"/>) and the outputs it persisted. Carrying both lets a resumed run
 /// skip re-dispatch AND forward the outputs the skipped step produced — recovered from the durable
-/// shadow row when the crash landed before the run's forwarded state was saved.
+/// execution row when the crash landed before the run's forwarded state was saved.
 /// </summary>
 internal readonly record struct ResumeShadowCompletion(
     JobStatus Status,
     IReadOnlyDictionary<string, object?>? Outputs);
 
 /// <summary>
-/// Reports whether a cross-service shadow execution row for a (run, step) pair PROVES the step already
-/// finished before a crash, so a resumed run can skip a step it has already completed instead of
-/// re-dispatching it. A thin read-only seam over the existing <see cref="IJobExecutionReader.QueryAsync"/>:
-/// it adds no query surface and is consulted ONLY on the resume path (<c>true</c> for "definitely done"
-/// requires a <see cref="JobStatus.Completed"/> row; <c>null</c> on the trigger path, where there is no
-/// prior row, keeps the cross-service dispatch byte-for-byte).
+/// Reports whether an execution row for a (run, step) pair PROVES the step already finished before a
+/// crash, so a resumed run can skip a step it has already completed instead of re-dispatching it. It
+/// matches ANY row stamped with the step id — a cross-service shadow row, a local parallel child's row,
+/// or a compensator's derived-id row. A thin read-only seam over the existing
+/// <see cref="IJobExecutionReader.QueryAsync"/>: it adds no query surface and is consulted ONLY on the
+/// resume path (<c>true</c> for "definitely done" requires a <see cref="JobStatus.Completed"/> row;
+/// <c>null</c> on the trigger path, where there is no prior row, keeps the dispatch byte-for-byte).
 /// </summary>
 internal interface IResumeShadowProbe
 {
     /// <summary>
     /// Returns a <see cref="ResumeShadowCompletion"/> (status always <see cref="JobStatus.Completed"/>, plus
-    /// the outputs that row persisted) if the cross-service step <paramref name="stepId"/> in run
-    /// <paramref name="batchId"/> has a shadow row that proves it definitely finished before the crash, or
+    /// the outputs that row persisted) if the step <paramref name="stepId"/> in run
+    /// <paramref name="batchId"/> has an execution row that proves it definitely finished before the crash, or
     /// <c>null</c> otherwise. ONLY a <see cref="JobStatus.Completed"/> row proves completion; any other
     /// state — a non-terminal <see cref="JobStatus.Running"/> row, a row tombstoned to
     /// <see cref="JobStatus.Failed"/> by the orphan reaper, a remote <see cref="JobStatus.Failed"/> /
@@ -183,7 +184,7 @@ internal sealed class ResumeShadowProbe : IResumeShadowProbe
         var rows = await _reader.QueryAsync(
             new JobQuery { BatchId = batchId, Limit = int.MaxValue, Offset = 0 }, cancellationToken).ConfigureAwait(false);
 
-        // Only a Completed row proves the cross-service step finished. A reaper-tombstoned Failed row, a
+        // Only a Completed row proves the step finished. A reaper-tombstoned Failed row, a
         // remote Failed/Cancelled, or a still-Running orphan are all ambiguous or retryable, so they are
         // ignored here and resume re-dispatches (at-least-once). This mirrors the reaper-orphan gate path,
         // which re-opens an Interrupted gate rather than fail-routing it. If ANY attempt completed, the step

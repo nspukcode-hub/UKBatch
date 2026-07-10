@@ -80,6 +80,23 @@ public interface IBatchRunStore
     Task UpdateForwardedStateAsync(string batchId, IReadOnlyDictionary<string, object?> state, CancellationToken cancellationToken)
         => Task.CompletedTask;   // default no-op: forward-compat for external stores
 
+    /// <summary>
+    /// Sets the run's reverse-unwind cursor (<see cref="BatchRun.CompensationStepIndex"/>) so a host restart can
+    /// continue a compensation unwind from where it was interrupted instead of re-running compensators that
+    /// already finished — or, when set to <c>null</c>, clears it (an explicit restart policy abandons the unwind).
+    /// Called by the runtime as each compensator finishes. A no-op when the run id is absent (mirrors
+    /// <see cref="UpdateCursorAsync"/>).
+    /// </summary>
+    /// <remarks>
+    /// Last-write-wins; not deduped (a single run owner advances it monotonically). A store that leaves the
+    /// default no-op keeps working but loses mid-unwind durability: after a crash it re-runs the unwind from the
+    /// failed step (the pre-feature behavior) rather than resuming mid-unwind — it NEVER double-compensates,
+    /// because a re-run unwind re-checks each compensator's completion. The default in-memory store overrides
+    /// this so the cursor is observable in-process for tests.
+    /// </remarks>
+    Task UpdateCompensationCursorAsync(string batchId, int? compensationStepIndex, CancellationToken cancellationToken)
+        => Task.CompletedTask;   // default no-op: forward-compat for external stores
+
     /// <summary>Returns the run by id, or <c>null</c> if absent.</summary>
     Task<BatchRun?> GetAsync(string batchId, CancellationToken cancellationToken);
 

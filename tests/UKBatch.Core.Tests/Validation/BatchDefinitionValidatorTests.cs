@@ -497,6 +497,25 @@ public class BatchDefinitionValidatorTests
     }
 
     [Fact]
+    public void Validate_StepIdEndingInReservedCompensatorSuffix_Fails()
+    {
+        // A real step id must not end with the compensator suffix: that namespace is reserved for the
+        // derived id a compensator's execution rows and dashboard node carry. A REST-supplied definition
+        // reusing it would make the parent-vs-compensator derivation ambiguous.
+        var def = MinimalValid() with
+        {
+            Steps = new[]
+            {
+                new BatchStep { StepId = "cleanup:comp", Order = 0, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "j" } },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "Steps[0].StepId"
+            && e.Message.Contains(":comp", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Validate_UniqueStepIdsAcrossAllRegions_Succeeds()
     {
         // Distinct ids across top-level steps, parallel children, and compensation steps — the rule
@@ -530,5 +549,202 @@ public class BatchDefinitionValidatorTests
         };
         var result = BatchDefinitionValidator.Validate(def);
         result.IsValid.Should().BeTrue();
+    }
+
+    // ===== per-step compensator placement rules =====
+
+    private static CompensationStepData Compensator(string jobName = "undo") => new() { JobName = jobName };
+
+    [Fact]
+    public void Validate_CompensationOnTopLevelJob_Succeeds()
+    {
+        var def = MinimalValid() with
+        {
+            Steps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "s1",
+                    Order = 0,
+                    StepType = BatchStepType.Job,
+                    Job = new JobStepData { JobName = "j" },
+                    Compensation = Compensator(),
+                },
+            },
+        };
+        BatchDefinitionValidator.Validate(def).IsValid.Should().BeTrue(
+            "a top-level Job step is a legal compensator carrier");
+    }
+
+    [Fact]
+    public void Validate_CompensationOnTopLevelParallelGroup_Succeeds()
+    {
+        var def = MinimalValid() with
+        {
+            Steps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "g",
+                    Order = 0,
+                    StepType = BatchStepType.ParallelGroup,
+                    ParallelGroup = new ParallelGroupData
+                    {
+                        JoinPolicy = ParallelJoinPolicy.WaitAll,
+                        Steps = new[]
+                        {
+                            new BatchStep { StepId = "c1", Order = 0, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "j" } },
+                            new BatchStep { StepId = "c2", Order = 1, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "j" } },
+                        },
+                    },
+                    Compensation = Compensator(),
+                },
+            },
+        };
+        BatchDefinitionValidator.Validate(def).IsValid.Should().BeTrue(
+            "a top-level ParallelGroup compensates as one unit and may carry a group-level compensator");
+    }
+
+    [Fact]
+    public void Validate_CompensationOnApprovalGate_Rejected()
+    {
+        var def = MinimalValid() with
+        {
+            Steps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "gate",
+                    Order = 0,
+                    StepType = BatchStepType.ApprovalGate,
+                    Approval = new ApprovalGateConfig { Title = "Confirm", AllowedRoles = new[] { "ops" } },
+                    Compensation = Compensator(),
+                },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "Steps[0].Compensation"
+            && e.Message.Contains("ApprovalGate", StringComparison.Ordinal),
+            "an approval gate has no work to undo — a compensator on it is rejected at its own path");
+    }
+
+    [Fact]
+    public void Validate_CompensationOnParallelChild_Rejected()
+    {
+        var def = MinimalValid() with
+        {
+            Steps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "g",
+                    Order = 0,
+                    StepType = BatchStepType.ParallelGroup,
+                    ParallelGroup = new ParallelGroupData
+                    {
+                        JoinPolicy = ParallelJoinPolicy.WaitAll,
+                        Steps = new[]
+                        {
+                            new BatchStep
+                            {
+                                StepId = "c1",
+                                Order = 0,
+                                StepType = BatchStepType.Job,
+                                Job = new JobStepData { JobName = "j" },
+                                Compensation = Compensator(),   // illegal: children are not compensation units
+                            },
+                            new BatchStep { StepId = "c2", Order = 1, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "j" } },
+                        },
+                    },
+                },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "Steps[0].ParallelGroup.Steps[0].Compensation"
+            && e.Message.Contains("not allowed here", StringComparison.Ordinal),
+            "a hand-built/REST definition placing a compensator on a parallel CHILD must be rejected — " +
+            "silently ignoring it would fake wired-up cleanup");
+    }
+
+    [Fact]
+    public void Validate_CompensationOnOnFailureStep_Rejected()
+    {
+        var def = MinimalValid() with
+        {
+            FailurePolicy = BatchFailurePolicy.Compensate,
+            OnFailureSteps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "chain1",
+                    Order = 0,
+                    StepType = BatchStepType.Job,
+                    Job = new JobStepData { JobName = "rollback" },
+                    Compensation = Compensator(),   // illegal: no compensation of compensation
+                },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "OnFailureSteps[0].Compensation"
+            && e.Message.Contains("not allowed here", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validate_BlankCompensatorJobName_Rejected()
+    {
+        var def = MinimalValid() with
+        {
+            Steps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "s1",
+                    Order = 0,
+                    StepType = BatchStepType.Job,
+                    Job = new JobStepData { JobName = "j" },
+                    Compensation = Compensator("   "),
+                },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "Steps[0].Compensation.JobName",
+            "a blank compensator job name would only surface as a silent runtime failure mid-unwind");
+    }
+
+    [Fact]
+    public void Validate_DerivedCompensatorId_CollidesWithManualStepId_Rejected()
+    {
+        // A compensator's execution rows are correlated by the derived id "{parent}:comp". A hand-built
+        // definition declaring a REAL step with that exact id would make the correlation ambiguous.
+        var def = MinimalValid() with
+        {
+            Steps = new[]
+            {
+                new BatchStep
+                {
+                    StepId = "s1",
+                    Order = 0,
+                    StepType = BatchStepType.Job,
+                    Job = new JobStepData { JobName = "j" },
+                    Compensation = Compensator(),
+                },
+                new BatchStep
+                {
+                    StepId = CompensationStepIds.For("s1"),
+                    Order = 1,
+                    StepType = BatchStepType.Job,
+                    Job = new JobStepData { JobName = "j" },
+                },
+            },
+        };
+        var result = BatchDefinitionValidator.Validate(def);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyPath == "StepId"
+            && e.Message.Contains(CompensationStepIds.For("s1"), StringComparison.Ordinal),
+            "the derived compensator id lives in the same uniqueness space as declared step ids");
     }
 }

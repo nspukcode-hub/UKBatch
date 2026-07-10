@@ -37,11 +37,11 @@ internal static class ParallelGroupRunner
     /// <remarks>
     /// <paramref name="accumulatedOutputs"/> is the snapshot of prior steps' outputs, merged into every
     /// child's parameters (under the batch-initial set, beneath the child's own static parameters).
-    /// <paramref name="resumeShadowProbe"/> is the OPTIONAL cross-service resume idempotency probe,
-    /// threaded into the shared <see cref="CrossServiceStepInvoker"/> so a cross-service CHILD that already
-    /// terminated before a crash is not re-dispatched on resume. <c>null</c> on the trigger path keeps the
-    /// child dispatch byte-for-byte (the trailing-optional accommodation: an optional parameter cannot
-    /// precede the existing non-defaulted <paramref name="cancellationToken"/>).
+    /// <paramref name="resumeShadowProbe"/> is the OPTIONAL resume idempotency probe, consulted for every
+    /// child (and threaded into the shared <see cref="CrossServiceStepInvoker"/> for cross-service ones) so
+    /// a child that already completed before a crash is not re-dispatched on resume. <c>null</c> on the
+    /// trigger path keeps the child dispatch byte-for-byte (the trailing-optional accommodation: an
+    /// optional parameter cannot precede the existing non-defaulted <paramref name="cancellationToken"/>).
     /// </remarks>
     public static async Task<IReadOnlyDictionary<string, object?>> RunAsync(
         BatchDefinition def,
@@ -85,6 +85,19 @@ internal static class ParallelGroupRunner
 
                 if (string.IsNullOrWhiteSpace(child.Job.TargetService))
                 {
+                    // Resume-only skip: on a resume (probe bound) a child that already COMPLETED before the
+                    // crash must NOT re-run — a successful financial child may have advanced the ledger. On
+                    // the trigger path the probe is null, so this is byte-for-byte the original dispatch.
+                    if (resumeShadowProbe is not null)
+                    {
+                        var prior = await resumeShadowProbe
+                            .TryGetCompletedStatusAsync(batchId, child.StepId, groupCts.Token).ConfigureAwait(false);
+                        if (prior is { } completion)
+                        {
+                            return new ChildResult(child.Order, completion.Status, completion.Outputs);
+                        }
+                    }
+
                     // === LOCAL CHILD PATH ===
                     // A null, empty, or whitespace TargetService means "run here", consistent with the
                     // sequential executor and the trigger-time pre-flight.

@@ -99,4 +99,86 @@ public class BatchTriggerValidationTests
             await TestHostBuilder.StopGracefullyAsync(host).ConfigureAwait(false);
         }
     }
+
+    // ===== per-step compensator registration pre-flight =====
+
+    [Fact]
+    public async Task TriggerBatch_UnregisteredLocalCompensator_ThrowsNamingStepAndJob()
+    {
+        // A LOCAL compensator naming an unregistered job would otherwise only surface when the run FAILS
+        // and unwinds — the worst moment to discover a typo. The pre-flight must reject the trigger.
+        var host = await TestHostBuilder.StartAsync(b =>
+        {
+            b.AddJob<RegisteredJob>();
+            b.AddBatch("trigger.comp.unregistered", x => x
+                .RunJob<RegisteredJob>(s => s.CompensateWith("ghost.comp")));
+        }).ConfigureAwait(false);
+        try
+        {
+            var runner = host.Services.GetRequiredService<IJobRunner>();
+            var def = host.Services.GetRequiredService<IBatchDefinitionLookup>().TryGetByName("trigger.comp.unregistered")!;
+            var stepId = def.Steps[0].StepId;
+
+            var act = async () => await runner.TriggerBatchAsync(def.Id, null, "test", default).ConfigureAwait(false);
+
+            var thrown = await act.Should().ThrowAsync<BatchTriggerValidationException>().ConfigureAwait(false);
+            thrown.Which.Errors.Should().Contain(
+                e => e.Path.Contains(stepId) && e.Path.Contains("compensator") && e.Message.Contains("ghost.comp"),
+                "the validation error must attribute the unregistered compensator to its parent step.");
+        }
+        finally
+        {
+            await TestHostBuilder.StopGracefullyAsync(host).ConfigureAwait(false);
+        }
+    }
+
+    [Fact]
+    public async Task TriggerBatch_CrossServiceCompensator_NotLocallyRegistered_DoesNotThrowPreflight()
+    {
+        // A cross-service compensator targets a remote worker, so its job is NOT in this process's
+        // registry; the pre-flight must skip it, mirroring the cross-service main-step rule.
+        var host = await TestHostBuilder.StartAsync(b =>
+        {
+            b.AddJob<RegisteredJob>();
+            b.AddBatch("trigger.comp.crossservice", x => x
+                .RunJob<RegisteredJob>(s => s.CompensateWith("RemoteComp", c => c.OnService("billing-worker"))));
+        }).ConfigureAwait(false);
+        try
+        {
+            var runner = host.Services.GetRequiredService<IJobRunner>();
+            var def = host.Services.GetRequiredService<IBatchDefinitionLookup>().TryGetByName("trigger.comp.crossservice")!;
+
+            var act = async () => await runner.TriggerBatchAsync(def.Id, null, "test", default).ConfigureAwait(false);
+
+            await act.Should().NotThrowAsync<BatchTriggerValidationException>().ConfigureAwait(false);
+        }
+        finally
+        {
+            await TestHostBuilder.StopGracefullyAsync(host).ConfigureAwait(false);
+        }
+    }
+
+    [Fact]
+    public async Task TriggerBatch_RegisteredLocalCompensator_Passes()
+    {
+        var host = await TestHostBuilder.StartAsync(b =>
+        {
+            b.AddJob<RegisteredJob>();
+            b.AddBatch("trigger.comp.registered", x => x
+                .RunJob<RegisteredJob>(s => s.CompensateWith<RegisteredJob>()));
+        }).ConfigureAwait(false);
+        try
+        {
+            var runner = host.Services.GetRequiredService<IJobRunner>();
+            var def = host.Services.GetRequiredService<IBatchDefinitionLookup>().TryGetByName("trigger.comp.registered")!;
+
+            var batchId = await runner.TriggerBatchAsync(def.Id, null, "test", default).ConfigureAwait(false);
+
+            batchId.Should().NotBeNullOrEmpty("a batch whose compensator is locally registered triggers normally.");
+        }
+        finally
+        {
+            await TestHostBuilder.StopGracefullyAsync(host).ConfigureAwait(false);
+        }
+    }
 }

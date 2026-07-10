@@ -47,4 +47,10 @@ public static class ProblemDetailsConventions
 
     /// <summary><c>ukbatch:batch-trigger-validation</c> — 400.</summary>
     public const string BatchTriggerValidation = TypePrefix + "batch-trigger-validation";
+
+    /// <summary><c>ukbatch:batch-run-not-found</c> — the batch RUN id has no record (404).</summary>
+    public const string BatchRunNotFound = TypePrefix + "batch-run-not-found";
+
+    /// <summary><c>ukbatch:batch-run-not-retryable</c> — the run exists but cannot be retried from its failed step (409).</summary>
+    public const string BatchRunNotRetryable = TypePrefix + "batch-run-not-retryable";
 }

@@ -5,7 +5,10 @@ namespace UKBatch.Abstractions.Models;
 /// automatic crash-recovery path always uses <see cref="ResumeForward"/>.
 /// </summary>
 /// <remarks>
-/// Resume NEVER auto-compensates: every mode runs forward from the chosen step. Skipping completed
+/// Resume never STARTS compensation: every mode replays forward from the chosen step. A run that was
+/// already unwinding (its <see cref="BatchRun.CompensationStepIndex"/> is set) continues its unwind only
+/// under <see cref="ResumeForward"/>; the <see cref="RestartAll"/> / <see cref="RestartFrom"/> overrides
+/// clear the unwind cursor and replay forward from the chosen step. Skipping completed
 /// steps relies on those steps being safe to skip (the run already did them); re-running steps relies
 /// on them being safe to repeat. The library cannot know which is which, so the policy is the
 /// operator's explicit choice for a manual resume, and <see cref="ResumeForward"/> is the safe

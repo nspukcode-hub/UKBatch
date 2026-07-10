@@ -231,7 +231,11 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             {
                 await _batchRunStore.UpdateForwardedStateAsync(batchId, forwardedState, ct).ConfigureAwait(false);
                 await _batchRunStore.UpdateCursorAsync(batchId, nextIndex, ct).ConfigureAwait(false);
-            });
+            },
+            // Persist the reverse-unwind cursor as compensation progresses, so a crash mid-unwind resumes
+            // the unwind instead of re-running compensators that already finished. Never invoked unless the
+            // run actually routes to compensation — a run that never compensates writes zero cursor values.
+            onCompensationProgress: (index, ct) => _batchRunStore.UpdateCompensationCursorAsync(batchId, index, ct));
 
         // Per-run cancellation: link the host-stopping token with a fresh source so an administrative
         // cancel (via IBatchRunCanceller) trips ONLY this run; the host token still cancels every run on
@@ -359,6 +363,20 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             }
         }
 
+        // Same registration check for per-step compensators: a LOCAL compensator naming an unregistered
+        // job would only surface when the run FAILS and unwinds — the worst moment to discover a typo.
+        // Cross-service compensators are remote and skipped, same rationale as job steps.
+        foreach (var (stepId, comp) in EnumerateCompensators(def))
+        {
+            if (comp is { JobName: { Length: > 0 } name }
+                && string.IsNullOrWhiteSpace(comp.TargetService)
+                && _jobRegistry.TryGet(name) is null)
+            {
+                errors.Add(new BatchTriggerValidationError(
+                    $"step '{stepId}' compensator", $"job '{name}' is not registered"));
+            }
+        }
+
         if (errors.Count > 0)
         {
             throw new BatchTriggerValidationException(
@@ -387,6 +405,18 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
         foreach (var step in def.OnFailureSteps)
         {
             yield return step;
+        }
+    }
+
+    /// <summary>
+    /// Walks every top-level step of a definition that carries a per-step compensator, yielding the
+    /// PARENT step id (for error attribution) alongside the compensator payload.
+    /// </summary>
+    private static IEnumerable<(string StepId, CompensationStepData Comp)> EnumerateCompensators(BatchDefinition def)
+    {
+        foreach (var step in def.Steps)
+        {
+            if (step.Compensation is { } comp) { yield return (step.StepId, comp); }
         }
     }
 
@@ -464,8 +494,9 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
     /// <summary>
     /// Counts the steps of a definition for the run record's <c>StepCount</c>: each Job step, each
     /// ParallelGroup CHILD (the group is a grouping, not a step in its own right), each ApprovalGate
-    /// step, and each OnFailureSteps compensation step. A topology number, distinct from the
-    /// executed-row total.
+    /// step, each per-step compensator (a distinct executable step, so the drift tripwire notices a
+    /// compensator being added or removed), and each OnFailureSteps compensation step. A topology
+    /// number, distinct from the executed-row total.
     /// </summary>
     private static int CountDefinitionSteps(BatchDefinition def)
     {
@@ -473,6 +504,7 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
         foreach (var step in def.Steps)
         {
             count += step.ParallelGroup is { Steps: { } children } ? children.Count : 1;
+            if (step.Compensation is not null) { count++; }   // each compensator is a distinct executable step
         }
         return count + def.OnFailureSteps.Count;
     }
@@ -521,6 +553,95 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
                 $"Definition {run.BatchDefinitionId} for run {batchId} not found; cannot resume.")
             { BatchDefinitionId = run.BatchDefinitionId };
 
+        // A run interrupted MID-UNWIND (its compensation cursor is set) resumes the unwind, not the
+        // forward walk. Handled BEFORE the forward drift tripwire below, because that tripwire's
+        // ResumeForward→RestartAll degrade is the WRONG remedy for an unwinding run: an index-based unwind
+        // against a changed topology could compensate the wrong step, and a forward restart of a
+        // half-compensated run would re-run steps whose effects were already undone.
+        if (run.CompensationStepIndex is { } compIndex)
+        {
+            if (policy == ResumePolicy.ResumeForward)
+            {
+                // Definition-drift during an unwind: finalize the run Failed WITHOUT further compensation
+                // (un-wedges recovery honestly). Only the automatic ResumeForward path is drift-guarded;
+                // an explicit operator override below already chose its risk.
+                if (run.StepCount != CountDefinitionSteps(def))
+                {
+                    _logger.LogError(
+                        "Batch run {BatchId}: definition {DefId} changed while an unwind was in progress; finalizing Failed without further compensation.",
+                        batchId, def.Id);
+                    await CompleteRunRecordAsync(batchId, JobStatus.Failed).ConfigureAwait(false);
+                    return;
+                }
+
+                var unwindExecutor = BuildResumeExecutor(batchId);
+                var unwindCts = CancellationTokenSource.CreateLinkedTokenSource(_hostStopping);
+                _batchRunRegistry.Register(batchId, unwindCts);
+                var unwindToken = unwindCts.Token;
+
+                _ = Task.Run(async () =>
+                {
+                    JobStatus? runtimeTerminal = null;
+                    var hostShuttingDown = false;
+                    try
+                    {
+                        await unwindExecutor.ResumeCompensationAsync(
+                            def, batchId, ResumeParameters(run), ResumeForwardedOutputs(run),
+                            triggeredBy: run.TriggeredBy,
+                            Math.Clamp(compIndex, 0, def.Steps.Count), unwindToken).ConfigureAwait(false);
+                        runtimeTerminal = JobStatus.Failed;   // a compensated run is Failed
+                    }
+                    catch (OperationCanceledException ex)
+                    {
+                        // Same host-shutdown discrimination as the forward paths: graceful shutdown leaves
+                        // the run in-flight (the unwind resumes on the next start); an administrative
+                        // cancel records Cancelled.
+                        if (_hostStopping.IsCancellationRequested)
+                        {
+                            hostShuttingDown = true;
+                            _logger.LogInformation(ex,
+                                "Resumed unwind of batch {BatchId} (definition {DefId}) interrupted by host shutdown; left in-flight.",
+                                batchId, def.Id);
+                        }
+                        else
+                        {
+                            runtimeTerminal = JobStatus.Cancelled;
+                            _logger.LogWarning(ex, "Resumed unwind of batch {BatchId} (definition {DefId}) cancelled.", batchId, def.Id);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        runtimeTerminal = JobStatus.Failed;
+                        _logger.LogError(ex, "Resumed unwind of batch {BatchId} (definition {DefId}) failed.", batchId, def.Id);
+                    }
+                    finally
+                    {
+                        if (!hostShuttingDown)
+                        {
+                            await CompleteRunRecordAsync(batchId, runtimeTerminal).ConfigureAwait(false);
+                        }
+                        _batchRunRegistry.Remove(batchId);
+                        unwindCts.Dispose();
+                        _batchCompletionSignal.Signal(new BatchCompletionSignalPayload
+                        {
+                            BatchRunId = batchId,
+                            BatchDefinitionId = def.Id,
+                            BatchName = def.Name,
+                            RuntimeTerminalStatus = runtimeTerminal,
+                        });
+                    }
+                }, CancellationToken.None);
+                return;
+            }
+
+            // RestartAll / RestartFrom(k): the operator explicitly abandons the unwind — clear the cursor
+            // and fall through to the normal forward path below.
+            _logger.LogWarning(
+                "Batch run {BatchId}: resume policy {Policy} abandons the in-progress unwind (was at index {Index}); clearing the compensation cursor and restarting forward.",
+                batchId, policy, compIndex);
+            await _batchRunStore.UpdateCompensationCursorAsync(batchId, null, cancellationToken).ConfigureAwait(false);
+        }
+
         // Definition-drift tripwire: the cursor was recorded against the run's creation-time topology.
         // If the definition's step count changed since (a step was added/removed), a forward replay could
         // skip or re-run the wrong step. For the automatic ResumeForward path, degrade to a full restart
@@ -555,26 +676,7 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             return;
         }
 
-        var executor = new BatchExecutor(
-            this,
-            _serviceProvider.GetRequiredService<IApprovalGateCoordinator>(),
-            _serviceProvider.GetRequiredService<IJobExecutionAwaiter>(),
-            _transport,
-            ResolveThisServiceName(),
-            _clock,
-            _serviceProvider.GetRequiredService<ILogger<BatchExecutor>>(),
-            // Forwarded state first, cursor second (see TriggerBatchAsync for the crash-window rationale):
-            // a crash between the two writes re-runs the just-completed step rather than dropping its output.
-            onStepCompleted: async (nextIndex, forwardedState, ct) =>
-            {
-                await _batchRunStore.UpdateForwardedStateAsync(batchId, forwardedState, ct).ConfigureAwait(false);
-                await _batchRunStore.UpdateCursorAsync(batchId, nextIndex, ct).ConfigureAwait(false);
-            },
-            // Bind the resume idempotency probes (null on the trigger path). The gate probe honors a gate
-            // already decided before the crash; the shadow probe skips a cross-service step that already
-            // terminated. Without these, resume re-opens approved gates and repeats completed remote work.
-            resumeGateProbe: _serviceProvider.GetRequiredService<IResumeGateProbe>(),
-            resumeShadowProbe: _serviceProvider.GetRequiredService<IResumeShadowProbe>());
+        var executor = BuildResumeExecutor(batchId);
 
         // Per-run cancellation, identical to TriggerBatchAsync: link the host-stopping token so an
         // administrative cancel trips only this run; the host token still cancels every run on shutdown.
@@ -637,6 +739,166 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             }
         }, CancellationToken.None);
     }
+
+    /// <inheritdoc/>
+    public async Task<string> RetryBatchAsync(string batchId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+
+        var run = await _batchRunStore.GetAsync(batchId, cancellationToken).ConfigureAwait(false)
+            ?? throw new BatchRunNotFoundException($"Batch run {batchId} not found.") { BatchId = batchId };
+
+        // Retry preconditions — each rejection is explicit, never coerced, because a wrong retry point
+        // replays completed work (the exact hazard this entry point exists to prevent).
+        if (run.Status != JobStatus.Failed)
+        {
+            throw new BatchRunNotRetryableException(
+                $"Batch run {batchId} is {(run.Status is null ? "still in progress" : run.Status.ToString())}; only a Failed run can be retried from its failed step.")
+            { BatchId = batchId };
+        }
+        if (run.CompensationStepIndex is not null)
+        {
+            throw new BatchRunNotRetryableException(
+                $"Batch run {batchId} was compensated — its completed steps were already undone, so continuing forward from the failed step would replay work on a rolled-back state. Trigger a fresh run instead.")
+            { BatchId = batchId };
+        }
+        if (run.CurrentStepIndex is null && run.Succeeded > 0)
+        {
+            // The store never recorded a resume cursor although steps completed (a store that leaves the
+            // cursor hook as a no-op). Retrying "from the beginning" would re-run that completed work.
+            throw new BatchRunNotRetryableException(
+                $"Batch run {batchId} completed {run.Succeeded} execution(s) but its store recorded no resume cursor, so the retry point cannot be proven. Trigger a fresh run instead.")
+            { BatchId = batchId };
+        }
+
+        var def = _batchLookup.TryGetById(run.BatchDefinitionId)
+            ?? await _batchDefinitionStore.GetAsync(run.BatchDefinitionId, cancellationToken).ConfigureAwait(false)
+            ?? throw new BatchDefinitionNotFoundException(
+                $"Definition {run.BatchDefinitionId} for run {batchId} not found; cannot retry.")
+            { BatchDefinitionId = run.BatchDefinitionId };
+
+        if (run.StepCount != CountDefinitionSteps(def))
+        {
+            throw new BatchRunNotRetryableException(
+                $"Definition {def.Id} changed since run {batchId} started ({run.StepCount} -> {CountDefinitionSteps(def)} steps); an index-based retry could land on the wrong step. Trigger a fresh run.")
+            { BatchId = batchId };
+        }
+
+        // Same synchronous pre-flight as a fresh trigger: the job registry may have changed since the
+        // failed run was created, and accepting a retry that can only fail at dispatch helps nobody.
+        ValidateBatchForTrigger(def);
+
+        var newBatchId = IdGenerator.NewBatchId();
+        var startStepIndex = Math.Clamp(run.CurrentStepIndex ?? 0, 0, def.Steps.Count);
+
+        // The retry is a NEW run: the failed run's record is never mutated (its terminal status is
+        // set-once, and honest history is the point). The new run starts at the old cursor, carries the
+        // old forwarded state so earlier outputs stay visible, and links back for lineage. Its OWN cursor
+        // is set at create time — a crash before the first retried step completes must still resume from
+        // the retry point, not from zero.
+        var newRun = new BatchRun
+        {
+            BatchId = newBatchId,
+            BatchDefinitionId = def.Id,
+            BatchName = def.Name,
+            Status = null,
+            TriggeredBy = run.TriggeredBy,
+            StartedAtUtc = _clock.GetUtcNow(),
+            CompletedAtUtc = null,
+            StepCount = CountDefinitionSteps(def),
+            Total = 0,
+            Succeeded = 0,
+            Failed = 0,
+            Cancelled = 0,
+            ForwardedState = run.ForwardedState,
+            CurrentStepIndex = startStepIndex,
+            RetryOfBatchId = run.BatchId,
+        };
+        await _batchRunStore.CreateAsync(newRun, cancellationToken).ConfigureAwait(false);
+
+        var executor = BuildResumeExecutor(newBatchId);
+        var runCts = CancellationTokenSource.CreateLinkedTokenSource(_hostStopping);
+        _batchRunRegistry.Register(newBatchId, runCts);
+        var runToken = runCts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            JobStatus? runtimeTerminal = null;
+            var hostShuttingDown = false;
+            try
+            {
+                await executor.RunAsync(
+                    def, newBatchId, ResumeParameters(newRun), triggeredBy: run.TriggeredBy, runToken, startStepIndex,
+                    ResumeForwardedOutputs(newRun)).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException ex)
+            {
+                if (_hostStopping.IsCancellationRequested)
+                {
+                    hostShuttingDown = true;
+                    _logger.LogInformation(ex,
+                        "Retried batch {BatchId} (of failed run {OriginalId}) interrupted by host shutdown; left in-flight for durable resume.",
+                        newBatchId, batchId);
+                }
+                else
+                {
+                    runtimeTerminal = JobStatus.Cancelled;
+                    _logger.LogWarning(ex, "Retried batch {BatchId} (of failed run {OriginalId}) cancelled.", newBatchId, batchId);
+                }
+            }
+            catch (Exception ex)
+            {
+                runtimeTerminal = JobStatus.Failed;
+                _logger.LogError(ex, "Retried batch {BatchId} (of failed run {OriginalId}) failed.", newBatchId, batchId);
+            }
+            finally
+            {
+                if (!hostShuttingDown)
+                {
+                    await CompleteRunRecordAsync(newBatchId, runtimeTerminal).ConfigureAwait(false);
+                }
+                _batchRunRegistry.Remove(newBatchId);
+                runCts.Dispose();
+                _batchCompletionSignal.Signal(new BatchCompletionSignalPayload
+                {
+                    BatchRunId = newBatchId,
+                    BatchDefinitionId = def.Id,
+                    BatchName = def.Name,
+                    RuntimeTerminalStatus = runtimeTerminal,
+                });
+            }
+        }, CancellationToken.None);
+
+        return newBatchId;
+    }
+
+    /// <summary>
+    /// Single construction point for the RESUME-path executor, shared by the forward resume and the
+    /// mid-unwind resume so their seam bindings can never drift apart. Binds all four resume seams:
+    /// the forwarded-state + cursor writer, the compensation-cursor writer, and both idempotency probes
+    /// (the gate probe honors a gate already decided before the crash; the shadow probe skips a
+    /// cross-service step — or a compensator — that already completed). The trigger path stays a separate,
+    /// probe-less construction, preserving its byte-for-byte first-pass dispatch.
+    /// </summary>
+    private BatchExecutor BuildResumeExecutor(string batchId)
+        => new(
+            this,
+            _serviceProvider.GetRequiredService<IApprovalGateCoordinator>(),
+            _serviceProvider.GetRequiredService<IJobExecutionAwaiter>(),
+            _transport,
+            ResolveThisServiceName(),
+            _clock,
+            _serviceProvider.GetRequiredService<ILogger<BatchExecutor>>(),
+            // Forwarded state first, cursor second (see TriggerBatchAsync for the crash-window rationale):
+            // a crash between the two writes re-runs the just-completed step rather than dropping its output.
+            onStepCompleted: async (nextIndex, forwardedState, ct) =>
+            {
+                await _batchRunStore.UpdateForwardedStateAsync(batchId, forwardedState, ct).ConfigureAwait(false);
+                await _batchRunStore.UpdateCursorAsync(batchId, nextIndex, ct).ConfigureAwait(false);
+            },
+            resumeGateProbe: _serviceProvider.GetRequiredService<IResumeGateProbe>(),
+            resumeShadowProbe: _serviceProvider.GetRequiredService<IResumeShadowProbe>(),
+            onCompensationProgress: (index, ct) => _batchRunStore.UpdateCompensationCursorAsync(batchId, index, ct));
 
     /// <summary>
     /// Initial parameters supplied to a resumed run, rehydrated from the persisted forwarded state. Falls

@@ -884,4 +884,52 @@ public sealed class BatchesRunDetailTests : TestContext
         cut.Markup.Should().NotContain("Initial parameters");
         cut.Markup.Should().NotContain("Forwarded outputs");
     }
+
+    // ── retry-from-failed-step CTA ─────────────────────────────────────────────────────────
+    // The button is gated on the PERSISTED run row: only a Failed run that was NOT compensated may
+    // continue forward (an unwind already undid its completed steps, so a forward retry would replay
+    // work on a rolled-back state). Everything else hides the CTA; the server re-checks regardless.
+
+    [Fact]
+    public void RetryButton_FailedUncompensatedRun_Rendered()
+    {
+        var run = RunWithForwardedState("br-fwd", FwdDefId, null) with
+        {
+            Status = JobStatus.Failed,
+            CompensationStepIndex = null,
+        };
+        var cut = RenderRunWithRunStore("br-fwd", run, out _);
+
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Retry from failed step",
+            "a Failed, uncompensated run is exactly the forward-retry case"));
+    }
+
+    [Fact]
+    public void RetryButton_CompensatedFailedRun_Hidden()
+    {
+        var run = RunWithForwardedState("br-fwd", FwdDefId, null) with
+        {
+            Status = JobStatus.Failed,
+            CompensationStepIndex = 0,
+        };
+        var cut = RenderRunWithRunStore("br-fwd", run, out _);
+
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Executions"));
+        cut.Markup.Should().NotContain("Retry from failed step",
+            "a compensated run's completed steps were undone — forward continuation is invalid");
+    }
+
+    [Fact]
+    public void RetryButton_CompletedRun_Hidden()
+    {
+        var run = RunWithForwardedState("br-fwd", FwdDefId, null) with
+        {
+            Status = JobStatus.Completed,
+            CompensationStepIndex = null,
+        };
+        var cut = RenderRunWithRunStore("br-fwd", run, out _);
+
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Executions"));
+        cut.Markup.Should().NotContain("Retry from failed step", "only a Failed run is retryable");
+    }
 }

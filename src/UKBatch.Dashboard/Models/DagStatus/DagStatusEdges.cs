@@ -42,6 +42,14 @@ public static class DagStatusEdges
         var renderedStepIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var n in layout.Nodes) renderedStepIds.Add(n.StepId);
 
+        // Compensator nodes are synthesized on a lower lane by DagStatusLayout and appended by the canvas
+        // AFTER the DagLayout node list — so their derived ids are rendered-by-construction but absent from
+        // layout.Nodes. Register them here so the guard below never silently drops a compensation edge.
+        foreach (var step in steps)
+        {
+            if (step.Compensation is not null) renderedStepIds.Add(CompensationStepIds.For(step.StepId));
+        }
+
         var edges = new List<StatusEdge>();
 
         // prevExitStepIds = the node(s) the NEXT step connects FROM. Empty at start ⇒ a leading
@@ -108,6 +116,29 @@ public static class DagStatusEdges
                 });
             }
             prevFailureStepId = f.StepId;
+        }
+
+        // ── Compensation edges: a dashed parent → {parent}:comp link for each compensator. The compensator
+        //    node lives on the lower compensation lane. For a Job/Approval parent the source is the parent
+        //    spine node; for a ParallelGroup parent (whose own StepId is NOT a rendered node) the source
+        //    fans IN from every rendered child exit — the same anchoring the OnFailure origin uses for a
+        //    trailing group. The compensator TARGET is rendered-by-construction (registered above), so it is
+        //    never dropped by the rendered-set guard. ──
+        foreach (var step in steps.OrderBy(s => s.Order))
+        {
+            if (step.Compensation is null) continue;
+            var derivedId = CompensationStepIds.For(step.StepId);
+            var (_, sourceNodes, _) = Resolve(step, renderedStepIds);
+            foreach (var src in sourceNodes)
+            {
+                edges.Add(new StatusEdge
+                {
+                    FromStepId = src,
+                    ToStepId = derivedId,
+                    Kind = "Compensation",
+                    IsFanIn = false,
+                });
+            }
         }
 
         return edges;

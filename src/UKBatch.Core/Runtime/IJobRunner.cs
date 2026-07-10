@@ -43,4 +43,21 @@ public interface IJobRunner
     /// </remarks>
     Task ResumeBatchAsync(string batchId, ResumePolicy policy, CancellationToken cancellationToken)
         => throw new NotSupportedException("Durable resume requires the runtime JobRunner.");
+
+    /// <summary>
+    /// Creates a NEW run that retries a <c>Failed</c> run from the step it failed on, carrying the failed
+    /// run's forwarded state so already-completed steps are not re-run. Returns the new run id. The
+    /// original run stays <c>Failed</c> (history is honest); the new run links back via
+    /// <see cref="Abstractions.Models.BatchRun.RetryOfBatchId"/>. Rejected (never silently coerced) when
+    /// the run is not <c>Failed</c>, was compensated (its earlier steps were undone, so forward
+    /// continuation is invalid), recorded completed work without a resume cursor (the retry point cannot
+    /// be proven), or the definition's step count changed since the run started.
+    /// </summary>
+    /// <remarks>
+    /// Default-implemented as a hard <see cref="NotSupportedException"/>: retry is a property of the
+    /// runtime <c>JobRunner</c>, so a non-runtime <see cref="IJobRunner"/> stub fails loudly rather than
+    /// silently dropping the retry. The runtime supplies the real override.
+    /// </remarks>
+    Task<string> RetryBatchAsync(string batchId, CancellationToken cancellationToken)
+        => throw new NotSupportedException("Retry-from-failed-step requires the runtime JobRunner.");
 }

@@ -15,9 +15,9 @@ namespace UKBatch.Storage.EntityFrameworkCore.Tests.Json;
 
 /// <summary>
 /// JSON-column round-trip fidelity through the real SQLite converters: Parameters dict, Steps list,
-/// nested ParallelGroup, ApprovalGateConfig, and <see cref="BatchStep.Metadata"/> verbatim (the
-/// forward-compat invariant). Plus the enum-as-NAME round-trip and the proof that the
-/// <c>ReferenceEquals</c> fast-path does NOT drop a genuine change.
+/// nested ParallelGroup, ApprovalGateConfig, per-step <see cref="BatchStep.Compensation"/>, and
+/// <see cref="BatchStep.Metadata"/> verbatim (the forward-compat invariant). Plus the enum-as-NAME
+/// round-trip and the proof that the <c>ReferenceEquals</c> fast-path does NOT drop a genuine change.
 /// </summary>
 public sealed class JsonColumnRoundTripTests : IAsyncLifetime
 {
@@ -127,6 +127,49 @@ public sealed class JsonColumnRoundTripTests : IAsyncLifetime
         cfg.AllowedRoles.Should().BeEquivalentTo(new[] { "ops", "release-mgr" });
         cfg.TimeoutAfter.Should().Be(TimeSpan.FromHours(2));
         cfg.OnTimeout.Should().Be(ApprovalTimeoutAction.AutoApprove);
+    }
+
+    [Fact]
+    public async Task JsonColumn_RoundTrips_BatchStep_Compensation_WithParameters()
+    {
+        // A compensator rides inside the existing Steps JSON column (no schema change for definitions),
+        // so every field — including its Parameters dict — must survive the write-read cycle.
+        var step = TestData.JobStep("s1", 0, "Provision.Job") with
+        {
+            Compensation = new CompensationStepData
+            {
+                JobName = "Deprovision.Job",
+                TargetService = "worker-b",
+                Parameters = new Dictionary<string, object?> { ["mode"] = "rollback", ["attempts"] = 3 },
+                MaxRetries = 2,
+                TimeoutSeconds = 30,
+            },
+        };
+        await _batchStore.CreateAsync(TestData.BatchDef("def-1", "batch", steps: new[] { step }), CancellationToken.None);
+
+        var fetched = await _batchStore.GetAsync("def-1", CancellationToken.None);
+        var comp = fetched!.Steps.Single().Compensation;
+        comp.Should().NotBeNull();
+        comp!.JobName.Should().Be("Deprovision.Job");
+        comp.TargetService.Should().Be("worker-b");
+        comp.MaxRetries.Should().Be(2);
+        comp.TimeoutSeconds.Should().Be(30);
+        comp.Parameters.Should().NotBeNull();
+        // object? values deserialize as JsonElement (documented "raw dict" contract) — compare by serialized form.
+        JsonSerializer.Serialize(comp.Parameters, JsonColumn.Opts)
+            .Should().Be(JsonSerializer.Serialize(step.Compensation!.Parameters, JsonColumn.Opts));
+    }
+
+    [Fact]
+    public async Task Steps_NullCompensation_RoundTripsAsNull()
+    {
+        // The default (no compensator) must stay null through the JSON column — a null-compensation step
+        // written by an older producer must not gain a phantom compensator on read.
+        var step = TestData.JobStep("s1", 0, "Job.One");   // Compensation null
+        await _batchStore.CreateAsync(TestData.BatchDef("def-1", "batch", steps: new[] { step }), CancellationToken.None);
+
+        var fetched = await _batchStore.GetAsync("def-1", CancellationToken.None);
+        fetched!.Steps.Single().Compensation.Should().BeNull();
     }
 
     [Fact]

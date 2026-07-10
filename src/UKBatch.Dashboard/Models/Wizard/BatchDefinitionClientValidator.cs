@@ -32,9 +32,9 @@ public static class BatchDefinitionClientValidator
         ValidateCatchUpWindow(model, errors);
         for (var i = 0; i < model.Steps.Count; i++)
             ValidateStep(model.Steps[i], $"Steps[{i}]", errors, allowParallel: true);
-        // Validate OnFailureSteps (Compensate branch). The server validator currently has a parallel
-        // gap here; the wizard MUST surface blank JobName etc. so the operator
-        // doesn't ship a runtime-fail definition. Path prefix routes to the FailurePolicy step.
+        // Validate OnFailureSteps (the Compensate branch). The server validates these too; this client
+        // pass surfaces the wizard-emittable failures (blank JobName, bad shape) up front so the operator
+        // fixes them before the round-trip. Path prefix routes the Next-gating to the FailurePolicy step.
         for (var i = 0; i < model.OnFailureSteps.Count; i++)
             ValidateStep(model.OnFailureSteps[i], $"OnFailureSteps[{i}]", errors, allowParallel: false);
         return errors
@@ -79,6 +79,12 @@ public static class BatchDefinitionClientValidator
                     errors.Add(($"{path}.Approval.Timeout", "required when the on-timeout action is AutoApprove or Hold"));
                 break;
         }
+
+        // A compensator with a blank job name would emit an unrunnable step; the wizard only attaches
+        // compensators to top-level Job/ParallelGroup steps, so the shape/context rejections are left to the
+        // server (authoritative) and only the blank-JobName case is surfaced here — mirroring the server rule.
+        if (step.Compensation is { } comp && string.IsNullOrWhiteSpace(comp.JobName))
+            errors.Add(($"{path}.Compensation.JobName", "must be non-empty"));
     }
 
     // The schedule catch-up window is a CLIENT-ONLY check (excluded from server parity, like the

@@ -24,7 +24,7 @@ public sealed record class StatusEdge
     /// <summary>Destination node StepId (always real).</summary>
     public required string ToStepId { get; init; }
 
-    /// <summary>Visual line style: <c>"Sequential" | "Parallel" | "OnFailure"</c>.</summary>
+    /// <summary>Visual line style: <c>"Sequential" | "Parallel" | "OnFailure" | "Compensation"</c>.</summary>
     public required string Kind { get; init; }
 
     /// <summary>

@@ -304,6 +304,50 @@ public class JobRunnerBatchRunIntegrationTests
     }
 
     [Fact]
+    public async Task StepCount_CountsPerStepCompensators_PlusOneEach()
+    {
+        // Topology: [Job(+compensator), ParallelGroup(2 children, +group compensator), OnFailure(1)]
+        // → 1 + 1 + 2 + 1 + 1 = 6. Each per-step compensator is a distinct executable step, so the drift
+        // tripwire notices a compensator being added or removed.
+        var spy = new SpyBatchRunStore();
+        var host = await TestHostBuilder.StartAsync(
+            b =>
+            {
+                b.AddJob<NoopJob>();
+                b.AddBatch("topology.compensators", x => x
+                    .RunJob<NoopJob>(s => s.CompensateWith<NoopJob>())
+                    .ThenInParallel(g => g
+                        .RunJob<NoopJob>()
+                        .RunJob<NoopJob>()
+                        .CompensateWith<NoopJob>())
+                    .FailurePolicy(BatchFailurePolicy.Compensate)
+                    .OnFailure(f => f.RunJob<NoopJob>()));
+            },
+            services =>
+            {
+                services.RemoveAll<IBatchRunStore>();
+                services.AddSingleton<IBatchRunStore>(spy);
+            });
+        try
+        {
+            var runner = host.Services.GetRequiredService<IJobRunner>();
+            var lookup = host.Services.GetRequiredService<IBatchDefinitionLookup>();
+            var def = lookup.TryGetByName("topology.compensators")!;
+
+            var runId = await runner.TriggerBatchAsync(def.Id, null, "tester", default);
+
+            await spy.Created.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var created = (await spy.GetAsync(runId, CancellationToken.None))!;
+            created.StepCount.Should().Be(6,
+                "1 job + its compensator + 2 parallel children + the group compensator + 1 OnFailure step = 6");
+        }
+        finally
+        {
+            await TestHostBuilder.StopGracefullyAsync(host);
+        }
+    }
+
+    [Fact]
     public async Task RunRecord_CreatedInProgress_BeforeItRuns()
     {
         // The create happens on the trigger thread; observe Status == null at create time (before completion).

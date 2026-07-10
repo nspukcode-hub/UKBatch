@@ -164,6 +164,9 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Postgres
                     b.Property<int>("Cancelled")
                         .HasColumnType("integer");
 
+                    b.Property<int?>("CompensationStepIndex")
+                        .HasColumnType("integer");
+
                     b.Property<DateTimeOffset?>("CompletedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -175,6 +178,10 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Postgres
 
                     b.Property<string>("ForwardedState")
                         .HasColumnType("jsonb");
+
+                    b.Property<string>("RetryOfBatchId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<DateTimeOffset>("StartedAtUtc")
                         .HasColumnType("timestamp with time zone");

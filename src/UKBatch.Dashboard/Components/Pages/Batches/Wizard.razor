@@ -166,7 +166,8 @@ else
                            always cross-service-capable. *@
                         <div class="wizard-step-editor">
                             <StepDraftEditor Step="step" JobNames="_jobNames" JobCatalog="_jobCatalog" Services="_services"
-                                             AllowTargetService="true" OnChanged="@(() => { })" />
+                                             AllowTargetService="true" AllowCompensation="true"
+                                             OnCompensationEnabled="OnStepCompensationEnabledAsync" OnChanged="@(() => { })" />
                         </div>
                     }
                 </div>
@@ -496,6 +497,17 @@ else
     }
 
     private void ToggleExpand(int idx) => _expandedStep = _expandedStep == idx ? null : idx;
+
+    // Adding a compensator to a step implies the batch must run under the Compensate policy — flip it
+    // (warn-don't-revert), so the operator does not silently ship a compensator that never runs.
+    private async Task OnStepCompensationEnabledAsync()
+    {
+        if (_model.EnsureCompensatePolicy())
+        {
+            await Notifications.InfoAsync("Failure policy",
+                "Set to Compensate because a step compensator was added.");
+        }
+    }
 
     // Parallel-children + approval-role CRUD moved into StepDraftEditor (extracted — shared with
     // the visual Editor's inspector). The Wizard keeps only the main-list + OnFailure-list concerns.

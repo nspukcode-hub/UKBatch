@@ -313,6 +313,18 @@ internal sealed class RestUKBatchClient : IUKBatchClient
         await ThrowIfErrorAsync(res, ct).ConfigureAwait(false);
     }
 
+    public async Task<string> RetryRunAsync(string batchRunId, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchRunId);
+        // An empty POST body — the run id is the only input. The server answers 202 with the NEW run's
+        // id (the retry is a fresh run linked to the failed one); 404/409 surface as a client exception
+        // carrying the ProblemDetails message.
+        using var content = new StringContent(string.Empty);
+        using var res = await _http.PostAsync($"batches/{Uri.EscapeDataString(batchRunId)}/retry", content, ct).ConfigureAwait(false);
+        var payload = await DeserializeOrThrowAsync<BatchRunResponse>(res, ct).ConfigureAwait(false);
+        return payload.BatchId;
+    }
+
     public async Task SetScheduleEnabledAsync(string definitionId, bool enabled, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrEmpty(definitionId);

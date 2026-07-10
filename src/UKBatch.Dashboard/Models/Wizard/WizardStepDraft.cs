@@ -38,6 +38,14 @@ public sealed class WizardStepDraft
     /// <summary>Wall-clock timeout in seconds; <c>0</c> = no timeout, <c>null</c> = inherit.</summary>
     public int? TimeoutSeconds { get; set; }
 
+    // ── Compensation (top-level Job / ParallelGroup only) ──
+    /// <summary>
+    /// Optional compensator for a top-level Job or ParallelGroup step; <c>null</c> = none. Ignored (never
+    /// emitted) for ApprovalGate steps, parallel-group children, and compensation-chain steps. Round-tripped
+    /// through edit-load so a builder-authored batch does not lose its compensators when re-saved from the UI.
+    /// </summary>
+    public CompensationDraft? Compensation { get; set; }
+
     // ── ParallelGroup ──
     /// <summary>Fan-in join semantics.</summary>
     public ParallelJoinPolicy JoinPolicy { get; set; } = ParallelJoinPolicy.WaitAll;
@@ -88,6 +96,7 @@ public sealed class WizardStepDraft
                 MaxRetries = MaxRetries,
                 TimeoutSeconds = TimeoutSeconds,
             },
+            Compensation = BuildCompensation(),
         },
         BatchStepType.ParallelGroup => new BatchStep
         {
@@ -97,6 +106,7 @@ public sealed class WizardStepDraft
                 JoinPolicy = JoinPolicy,
                 Steps = Children.Select((c, i) => c.ToBatchStep(i)).ToList(),
             },
+            Compensation = BuildCompensation(),
         },
         BatchStepType.ApprovalGate => new BatchStep
         {
@@ -133,6 +143,7 @@ public sealed class WizardStepDraft
                         .Select(kv => new KeyValuePair<string, string>(kv.Key, StringifyValue(kv.Value)))
                         .ToList();
                 }
+                draft.Compensation = ToCompensationDraft(step.Compensation);
                 break;
             case BatchStepType.ParallelGroup:
                 draft.JoinPolicy = step.ParallelGroup?.JoinPolicy ?? ParallelJoinPolicy.WaitAll;
@@ -140,6 +151,7 @@ public sealed class WizardStepDraft
                     .OrderBy(c => c.Order)
                     .Select(FromBatchStep)
                     .ToList() ?? new();
+                draft.Compensation = ToCompensationDraft(step.Compensation);
                 break;
             case BatchStepType.ApprovalGate:
                 draft.ApprovalTitle = step.Approval?.Title ?? string.Empty;
@@ -178,6 +190,48 @@ public sealed class WizardStepDraft
             result[p.Key] = p.Value;
         }
         return result.Count == 0 ? null : result;
+    }
+
+    /// <summary>
+    /// Projects the compensator draft into a <see cref="CompensationStepData"/>. Render-safe (mirrors
+    /// <see cref="BuildParameters"/>): never throws, so a preview render on an in-progress draft is safe.
+    /// Returns <c>null</c> when there is no compensator or its job name is blank (a blank compensator is
+    /// treated as "none" rather than emitting an invalid step).
+    /// </summary>
+    private CompensationStepData? BuildCompensation()
+    {
+        if (Compensation is not { } c || string.IsNullOrWhiteSpace(c.JobName)) return null;
+        var parms = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var p in c.Parameters)
+        {
+            if (string.IsNullOrWhiteSpace(p.Key)) continue;
+            parms[p.Key] = p.Value;
+        }
+        return new CompensationStepData
+        {
+            JobName = c.JobName.Trim(),
+            TargetService = string.IsNullOrWhiteSpace(c.TargetService) ? null : c.TargetService,
+            Parameters = parms.Count == 0 ? null : parms,
+            MaxRetries = c.MaxRetries,
+            TimeoutSeconds = c.TimeoutSeconds,
+        };
+    }
+
+    // Inverse of BuildCompensation: rehydrates a mutable compensator draft from the fetched step so an
+    // edit round-trips a builder-authored compensator instead of silently dropping it.
+    private static CompensationDraft? ToCompensationDraft(CompensationStepData? comp)
+    {
+        if (comp is null) return null;
+        return new CompensationDraft
+        {
+            JobName = comp.JobName,
+            TargetService = comp.TargetService,
+            MaxRetries = comp.MaxRetries,
+            TimeoutSeconds = comp.TimeoutSeconds,
+            Parameters = comp.Parameters?
+                .Select(kv => new KeyValuePair<string, string>(kv.Key, StringifyValue(kv.Value)))
+                .ToList() ?? new(),
+        };
     }
 
     private static string StringifyValue(object? value) => value switch

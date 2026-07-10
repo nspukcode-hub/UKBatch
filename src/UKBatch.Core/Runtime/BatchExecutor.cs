@@ -33,6 +33,7 @@ internal sealed class BatchExecutor
     private readonly IResumeShadowProbe? _resumeShadowProbe;
     private readonly IResumeGateProbe? _resumeGateProbe;
     private readonly Func<int, IReadOnlyDictionary<string, object?>, CancellationToken, Task>? _onStepCompleted;
+    private readonly Func<int, CancellationToken, Task>? _onCompensationProgress;
     private readonly ILogger<BatchExecutor> _logger;
 
     /// <summary>Constructs the executor.</summary>
@@ -63,6 +64,12 @@ internal sealed class BatchExecutor
     /// unchanged); bound by the resume entry point so a cross-service step that already terminated before a
     /// crash is not re-dispatched.
     /// </param>
+    /// <param name="onCompensationProgress">
+    /// Optional durable-unwind seam, invoked with the reverse-unwind cursor as compensation progresses so a
+    /// host restart can continue the unwind from where it stopped. <c>null</c> on paths that record no
+    /// progress; bound by the trigger and resume entry points. Unbound leaves compensation behavior
+    /// identical, just non-durable.
+    /// </param>
     public BatchExecutor(
         IJobRunnerInternal runner,
         IApprovalGateCoordinator approvalCoordinator,
@@ -73,7 +80,8 @@ internal sealed class BatchExecutor
         ILogger<BatchExecutor> logger,
         Func<int, IReadOnlyDictionary<string, object?>, CancellationToken, Task>? onStepCompleted = null,
         IResumeGateProbe? resumeGateProbe = null,
-        IResumeShadowProbe? resumeShadowProbe = null)
+        IResumeShadowProbe? resumeShadowProbe = null,
+        Func<int, CancellationToken, Task>? onCompensationProgress = null)
     {
         ArgumentNullException.ThrowIfNull(runner);
         ArgumentNullException.ThrowIfNull(approvalCoordinator);
@@ -91,6 +99,7 @@ internal sealed class BatchExecutor
         _resumeGateProbe = resumeGateProbe;       // null in the byte-for-byte trigger path
         _crossServiceInvoker = CrossServiceStepInvoker.Create(transport, runner, thisServiceName, timeProvider, resumeShadowProbe);
         _onStepCompleted = onStepCompleted;   // null in the byte-for-byte trigger path
+        _onCompensationProgress = onCompensationProgress;   // null on paths that record no unwind progress
         _logger = logger;
     }
 
@@ -175,7 +184,7 @@ internal sealed class BatchExecutor
             catch (BatchStepFailureException stepFailure)
             {
                 var compensation = RouteStepFailureAsync(
-                    def, batchId, step, stepFailure, initial, accumulatedOutputs, triggeredBy, cancellationToken,
+                    def, batchId, step, stepFailure, initial, accumulatedOutputs, triggeredBy, orderedSteps, i, cancellationToken,
                     ref firstFailure, out var continueLoop);
                 if (compensation is not null)
                 {
@@ -196,7 +205,7 @@ internal sealed class BatchExecutor
                 // policy switch has a single descriptive failure type while preserving the original cause.
                 var wrapped = new BatchStepFailureException($"Step {step.StepId} failed: {ex.Message}", ex);
                 var compensation = RouteStepFailureAsync(
-                    def, batchId, step, wrapped, initial, accumulatedOutputs, triggeredBy, cancellationToken,
+                    def, batchId, step, wrapped, initial, accumulatedOutputs, triggeredBy, orderedSteps, i, cancellationToken,
                     ref firstFailure, out var continueLoop);
                 if (compensation is not null)
                 {
@@ -215,7 +224,8 @@ internal sealed class BatchExecutor
     /// <summary>
     /// Routes a step failure through <see cref="BatchDefinition.FailurePolicy"/>. Returns the
     /// compensation <see cref="Task"/> the caller must await (only for <see cref="BatchFailurePolicy.Compensate"/>
-    /// with non-empty <see cref="BatchDefinition.OnFailureSteps"/>), or <c>null</c> otherwise.
+    /// when a completed earlier step carries a compensator or <see cref="BatchDefinition.OnFailureSteps"/>
+    /// is non-empty), or <c>null</c> otherwise.
     /// <paramref name="continueLoop"/> is <c>true</c> only for <see cref="BatchFailurePolicy.ContinueOnFailure"/>;
     /// every other case leaves it <c>false</c> so the caller rethrows. Failure state is threaded
     /// explicitly (no instance fields) to keep the executor reentrant.
@@ -228,6 +238,8 @@ internal sealed class BatchExecutor
         JobParameters initial,
         IReadOnlyDictionary<string, object?> accumulatedOutputs,
         string? triggeredBy,
+        List<BatchStep> orderedSteps,
+        int failedStepIndex,
         CancellationToken cancellationToken,
         ref Exception? firstFailure,
         out bool continueLoop)
@@ -249,11 +261,20 @@ internal sealed class BatchExecutor
                 return null;
 
             case BatchFailurePolicy.Compensate:
-                if (def.OnFailureSteps.Count == 0)
+                // Compensation fires when EITHER a completed earlier step [0, failedStepIndex) carries a
+                // per-step compensator OR the batch-level failure chain is non-empty; with neither, the
+                // route degrades to StopOnFailure — bit-identical to a no-compensator, no-chain definition.
+                var hasCompensator = false;
+                for (var j = 0; j < failedStepIndex; j++)
                 {
-                    return null;
+                    if (orderedSteps[j].Compensation is not null) { hasCompensator = true; break; }
                 }
-                return RunCompensationAsync(def, batchId, initial, accumulatedOutputs, triggeredBy, cancellationToken);
+                if (!hasCompensator && def.OnFailureSteps.Count == 0)
+                {
+                    return null;   // nothing to compensate AND no failure chain → behaves exactly like StopOnFailure
+                }
+                return RunCompensationAsync(
+                    def, batchId, initial, accumulatedOutputs, triggeredBy, orderedSteps, failedStepIndex, cancellationToken);
 
             default:
                 return null;
@@ -397,7 +418,200 @@ internal sealed class BatchExecutor
         }
     }
 
+    /// <summary>
+    /// Orchestrates the failure response of a <see cref="BatchFailurePolicy.Compensate"/> batch: mark the
+    /// unwind started, run the per-step compensators of completed steps in REVERSE order, mark the unwind
+    /// finished, then run the batch-level <see cref="BatchDefinition.OnFailureSteps"/> failure chain.
+    /// </summary>
     private async Task RunCompensationAsync(
+        BatchDefinition def,
+        string batchId,
+        JobParameters initial,
+        IReadOnlyDictionary<string, object?> accumulatedOutputs,
+        string? triggeredBy,
+        List<BatchStep> orderedSteps,
+        int failedStepIndex,
+        CancellationToken cancellationToken)
+    {
+        // Mark the unwind as started BEFORE the first compensator, at the failed step's index. On a crash
+        // before any compensator ran, recovery resumes the whole unwind [0, failedStepIndex).
+        if (_onCompensationProgress is not null)
+        {
+            await _onCompensationProgress(failedStepIndex, cancellationToken).ConfigureAwait(false);
+        }
+
+        await UnwindRangeAsync(
+            def, batchId, initial, accumulatedOutputs, triggeredBy, orderedSteps, failedStepIndex, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Unwind finished → chain phase. (No-op cursor write when the seam is unbound.)
+        if (_onCompensationProgress is not null)
+        {
+            await _onCompensationProgress(0, cancellationToken).ConfigureAwait(false);
+        }
+
+        await RunFailureChainAsync(def, batchId, initial, accumulatedOutputs, triggeredBy, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Resumes a run that was interrupted mid-unwind: continues the reverse unwind over
+    /// <c>[0, compensationStepIndex)</c> (skipping compensators whose derived-id execution row already
+    /// completed on a prior attempt), then runs the failure chain. Success does NOT throw — the caller
+    /// stamps the run's terminal status (a compensated run is Failed). A <paramref name="compensationStepIndex"/>
+    /// of <c>0</c> skips the unwind and runs the chain wholesale.
+    /// </summary>
+    public async Task ResumeCompensationAsync(
+        BatchDefinition def,
+        string batchId,
+        JobParameters initial,
+        IReadOnlyDictionary<string, object?>? resumeOutputs,
+        string? triggeredBy,
+        int compensationStepIndex,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(def);
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+        ArgumentNullException.ThrowIfNull(initial);
+
+        var validation = BatchDefinitionValidator.Validate(def);
+        if (!validation.IsValid)
+        {
+            var errors = string.Join("; ", validation.Errors.Select(e => $"{e.PropertyPath}: {e.Message}"));
+            throw new InvalidOperationException($"BatchDefinition {def.Id} validation failed: {errors}");
+        }
+
+        var orderedSteps = def.Steps.OrderBy(s => s.Order).ToList();
+        var accumulatedOutputs = resumeOutputs is { Count: > 0 }
+            ? new Dictionary<string, object?>(resumeOutputs, StringComparer.Ordinal)
+            : new Dictionary<string, object?>(StringComparer.Ordinal);
+
+        // compensationStepIndex is clamped to the ordered-step count by the caller; guard here too.
+        var k = Math.Clamp(compensationStepIndex, 0, orderedSteps.Count);
+        if (k > 0)
+        {
+            await UnwindRangeAsync(def, batchId, initial, accumulatedOutputs, triggeredBy, orderedSteps, k, cancellationToken)
+                .ConfigureAwait(false);
+            if (_onCompensationProgress is not null)
+            {
+                await _onCompensationProgress(0, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        await RunFailureChainAsync(def, batchId, initial, accumulatedOutputs, triggeredBy, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The single reverse-unwind core shared by the fresh unwind (<paramref name="fromExclusive"/> = the
+    /// failed step's index) and the resumed unwind (<paramref name="fromExclusive"/> = the persisted
+    /// compensation cursor). Walks <c>[fromExclusive-1 .. 0]</c>, skipping steps with no compensator (no
+    /// row, no cursor write). Each compensator runs through the SHARED <see cref="RunStepAsync"/> via a
+    /// synthesized step, inheriting the local awaiter / cross-service shadow / parameter merge / retries /
+    /// timeout; its output is NOT forwarded (no subsequent normal step follows). On a resume (shadow probe
+    /// bound) a compensator whose derived-id row already completed is skipped — the effectively-once dedupe.
+    /// </summary>
+    private async Task UnwindRangeAsync(
+        BatchDefinition def,
+        string batchId,
+        JobParameters initial,
+        IReadOnlyDictionary<string, object?> accumulatedOutputs,
+        string? triggeredBy,
+        List<BatchStep> orderedSteps,
+        int fromExclusive,
+        CancellationToken cancellationToken)
+    {
+        for (var j = fromExclusive - 1; j >= 0; j--)
+        {
+            var parent = orderedSteps[j];
+            if (parent.Compensation is null)
+            {
+                continue;   // no compensator for this step — nothing to undo (no row, no cursor write)
+            }
+
+            var compensatorStep = BuildCompensatorStep(parent);
+
+            // Resume-only dedupe: the probe is null on the trigger path (fresh unwind unchanged) and bound
+            // on the resume path, where a compensator whose derived-id row already COMPLETED before the
+            // crash must not run twice. Local and cross-service compensators dedupe through the same query.
+            if (_resumeShadowProbe is not null)
+            {
+                var prior = await _resumeShadowProbe
+                    .TryGetCompletedStatusAsync(batchId, compensatorStep.StepId, cancellationToken).ConfigureAwait(false);
+                if (prior is not null)
+                {
+                    _logger.LogInformation(
+                        "Compensator {Step} of batch {Batch} already completed on a prior attempt; skipping.",
+                        compensatorStep.StepId, batchId);
+                    if (_onCompensationProgress is not null)
+                    {
+                        await _onCompensationProgress(j, cancellationToken).ConfigureAwait(false);
+                    }
+                    continue;
+                }
+            }
+
+            try
+            {
+                await RunStepAsync(def, batchId, compensatorStep, initial, accumulatedOutputs, triggeredBy, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;   // administrative cancel stops the unwind; host shutdown is left in-flight upstream
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Compensator for step {Step} of batch {Batch} failed; continuing the remaining unwind.",
+                    parent.StepId, batchId);
+            }
+
+            // Cursor AFTER the compensator (a crash before this write re-runs this compensator on resume —
+            // the documented at-least-once replay, deduped by the completed-row probe). The reverse order
+            // would permanently skip a compensator whose write landed but whose run had not, breaking the
+            // saga guarantee.
+            if (_onCompensationProgress is not null)
+            {
+                await _onCompensationProgress(j, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Synthesizes the runnable compensator step for <paramref name="parent"/>. The derived StepId
+    /// (<see cref="CompensationStepIds.For"/>) stamps the compensator's execution row, feeding the dashboard
+    /// node map, the cross-service shadow, and the resume dedupe probe with no extra plumbing.
+    /// </summary>
+    private static BatchStep BuildCompensatorStep(BatchStep parent)
+    {
+        var c = parent.Compensation!;
+        return new BatchStep
+        {
+            StepId = CompensationStepIds.For(parent.StepId),
+            Order = parent.Order,
+            StepType = BatchStepType.Job,
+            Job = new JobStepData
+            {
+                JobName = c.JobName,
+                TargetService = c.TargetService,
+                Parameters = c.Parameters,
+                MaxRetries = c.MaxRetries,
+                TimeoutSeconds = c.TimeoutSeconds,
+            },
+            ParallelGroup = null,
+            Approval = null,
+            Metadata = null,
+        };
+    }
+
+    /// <summary>
+    /// Runs the batch-level <see cref="BatchDefinition.OnFailureSteps"/> failure chain (forward order).
+    /// Cancellation rethrows so an administrative cancel ends the run Cancelled and a host shutdown leaves
+    /// it in-flight for durable resume; any other failure is logged and the chain continues (best-effort —
+    /// there is no compensation of compensation).
+    /// </summary>
+    private async Task RunFailureChainAsync(
         BatchDefinition def,
         string batchId,
         JobParameters initial,
@@ -409,14 +623,18 @@ internal sealed class BatchExecutor
         {
             try
             {
-                // Compensation steps receive forwarded outputs as parameters; their own output is not
+                // Chain steps receive forwarded outputs as parameters; their own output is not
                 // folded forward (no subsequent normal step follows compensation).
                 await RunStepAsync(def, batchId, step, initial, accumulatedOutputs, triggeredBy, cancellationToken).ConfigureAwait(false);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;   // cancellation stops the chain (matches the unwind arm); no compensation of compensation
+            }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Compensation step {Step} of batch {Batch} failed; continuing remaining compensation.", step.StepId, batchId);
-                // do NOT rethrow — acyclic safety; we do not compensate the compensation.
+                _logger.LogError(ex,
+                    "Compensation chain step {Step} of batch {Batch} failed; continuing remaining chain.", step.StepId, batchId);
             }
         }
     }

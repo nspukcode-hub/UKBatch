@@ -1,3 +1,4 @@
+using UKBatch.Abstractions.Batches;
 using UKBatch.Dashboard.Models.Wizard;
 
 namespace UKBatch.Dashboard.Models.Editor;
@@ -39,6 +40,25 @@ public static class EditorEdges
                 ToStepId = steps[i + 1].StepId,
                 Kind = "Sequential",
             });
+        }
+
+        // Per-step compensator edges: each compensator renders as its own display node (derived id =
+        // parent id + fixed suffix) hanging off the step it undoes — visually distinct from the
+        // batch-level failure chain, which anchors on the spine EXIT below. Reuses the OnFailure edge
+        // kind so the existing dashed styling applies without a new style hook.
+        foreach (var s in steps)
+        {
+            // Match the display-node projection: a compensator only round-trips on a Job / ParallelGroup
+            // step, so only those get an edge — never a dangling edge to a node that is not drawn.
+            if (s is { Compensation: not null, StepType: BatchStepType.Job or BatchStepType.ParallelGroup })
+            {
+                edges.Add(new EditorEdge
+                {
+                    FromStepId = s.StepId,
+                    ToStepId = CompensationStepIds.For(s.StepId),
+                    Kind = "OnFailure",
+                });
+            }
         }
 
         // Spine exit = the LAST top-level step's node id. The editor renders a ParallelGroup as ONE node

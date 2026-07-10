@@ -61,6 +61,17 @@
     /// </summary>
     [Parameter] public bool AllowTargetService { get; set; } = true;
 
+    /// <summary>
+    /// When true, a top-level Job / ParallelGroup step renders the compensator editor (attach a job that
+    /// undoes this step on a later failure). Default <c>false</c> (additive): parallel-group children pass
+    /// <c>false</c> (children compensate as a group), ApprovalGate steps never render it, and the compensation
+    /// -chain (OnFailure) editors keep <c>false</c> (a chain step cannot itself have a compensator).
+    /// </summary>
+    [Parameter] public bool AllowCompensation { get; set; }
+
+    /// <summary>Raised when a compensator is ENABLED so the parent can flip the batch policy to Compensate.</summary>
+    [Parameter] public EventCallback OnCompensationEnabled { get; set; }
+
     /// <summary>Raised after ANY mutation so the parent can refresh its summary / validation / canvas label.</summary>
     [Parameter] public EventCallback OnChanged { get; set; }
 
@@ -194,6 +205,11 @@
                 <span class="form-field__hint">0 = no timeout; empty = inherit.</span>
             </div>
         </div>
+        @if (AllowCompensation)
+        {
+            <CompensationEditor Step="step" JobCatalog="JobCatalog" Services="Services"
+                                OnChanged="OnChanged" OnCompensationChanged="OnCompensationEnabled" />
+        }
     </div>;
 
     // ── ParallelGroup ────────────────────────────────────────────────────────────
@@ -232,13 +248,19 @@
                        Job editor markup stays single-source. JobCatalog threads through so the child
                        picker is worker-aware too. *@
                     <StepDraftEditor Step="child" JobNames="JobNames" JobCatalog="JobCatalog" Services="Services"
-                                     AllowTargetService="true" OnChanged="OnChanged" />
+                                     AllowTargetService="true" AllowCompensation="false" OnChanged="OnChanged" />
                 </div>
             }
         </div>
         <button class="btn btn--secondary btn--sm" @onclick="@(() => AddChildAsync(step))">
             <span class="material-symbols-outlined">add</span> Add branch
         </button>
+        @if (AllowCompensation)
+        {
+            @* Group-level compensator: a parallel group compensates as ONE unit (not per child). *@
+            <CompensationEditor Step="step" JobCatalog="JobCatalog" Services="Services"
+                                OnChanged="OnChanged" OnCompensationChanged="OnCompensationEnabled" />
+        }
     </div>;
 
     // ── ApprovalGate ─────────────────────────────────────────────────────────────

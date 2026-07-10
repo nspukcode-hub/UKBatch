@@ -66,7 +66,9 @@ internal static class TestData
         int succeeded = 0,
         int failed = 0,
         int cancelled = 0,
-        int? currentStepIndex = null) => new()
+        int? currentStepIndex = null,
+        int? compensationStepIndex = null,
+        string? retryOfBatchId = null) => new()
         {
             BatchId = batchId,
             BatchDefinitionId = batchDefinitionId,
@@ -76,6 +78,8 @@ internal static class TestData
             StartedAtUtc = startedAtUtc ?? new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
             CompletedAtUtc = completedAtUtc,
             CurrentStepIndex = currentStepIndex,
+            CompensationStepIndex = compensationStepIndex,
+            RetryOfBatchId = retryOfBatchId,
             StepCount = stepCount,
             Total = total,
             Succeeded = succeeded,

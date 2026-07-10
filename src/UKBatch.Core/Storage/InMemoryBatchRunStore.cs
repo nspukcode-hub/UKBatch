@@ -88,6 +88,23 @@ public sealed class InMemoryBatchRunStore : IBatchRunStore
     }
 
     /// <inheritdoc/>
+    public Task UpdateCompensationCursorAsync(string batchId, int? compensationStepIndex, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+        // No-op when the run row is absent, mirroring UpdateCursorAsync. Compare-and-swap until the
+        // update sticks or the row vanishes.
+        while (_runs.TryGetValue(batchId, out var existing))
+        {
+            var updated = existing with { CompensationStepIndex = compensationStepIndex };
+            if (_runs.TryUpdate(batchId, updated, existing))
+            {
+                break;
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc/>
     public Task<BatchRun?> GetAsync(string batchId, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(batchId);

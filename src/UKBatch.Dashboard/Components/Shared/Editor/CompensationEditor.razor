@@ -1,0 +1,160 @@
+@* Per-step compensator editor. Attaches an optional compensator to a top-level Job / ParallelGroup step:
+   the job that runs to undo this step when a LATER step fails and the batch policy is Compensate. Shares
+   the wizard's form-field taxonomy and the job-catalog picker (so JobName + TargetService are set together
+   from an advertised job). Unlike the compensation-CHAIN editor, a compensator MAY run cross-service, so the
+   Target service field is freely editable here.
+
+   Enabling a compensator raises OnCompensationChanged so the parent can flip the batch failure policy to
+   Compensate (warn-don't-revert). Every field mutation raises OnChanged so the parent refreshes its summary. *@
+@using System.Globalization
+@using UKBatch.Dashboard.Models
+
+<div class="form-field compensation-editor__toggle">
+    <label class="form-field__label">
+        <input type="checkbox" checked="@(Step.Compensation is not null)" @onchange="ToggleAsync" />
+        Add compensator
+    </label>
+    <span class="form-field__hint">Runs to undo this step if a later step fails (Compensate policy).
+        Compensators run in reverse order — the most recently completed step is undone first.</span>
+</div>
+
+@if (Step.Compensation is { } comp)
+{
+    <div class="wizard-pane compensation-editor">
+        <div class="form-field">
+            <label class="form-field__label">Compensator job</label>
+            @* Same catalog picker the step Job editor uses: an option is a "JobName @ service" pair; selecting
+               one sets BOTH the compensator's JobName and TargetService (cross-service compensators supported). *@
+            <select class="form-field__select" value="@SelectedCatalogToken(comp)"
+                    @onchange="@(e => SelectFromCatalogAsync(comp, e))">
+                <option value="">— select a job —</option>
+                @if (CurrentNotInCatalog(comp))
+                {
+                    <option value="@CurrentToken" selected>@CurrentJobLabel(comp)</option>
+                }
+                @for (var ci = 0; ci < JobCatalog.Count; ci++)
+                {
+                    var entry = JobCatalog[ci];
+                    <option @key="entry" value="@ci.ToString(CultureInfo.InvariantCulture)">@CatalogLabel(entry)</option>
+                }
+            </select>
+            @if (JobCatalog.Count == 0)
+            {
+                <span class="form-field__hint">No advertised jobs yet — type the compensator job name below.</span>
+            }
+        </div>
+        <div class="form-field">
+            <label class="form-field__label">Compensator job name</label>
+            <input class="form-field__input" @bind="comp.JobName" @bind:event="oninput" @bind:after="OnChanged.InvokeAsync" />
+        </div>
+        <div class="form-field">
+            <label class="form-field__label">Target service</label>
+            <select class="form-field__select" @bind="comp.TargetService" @bind:after="OnChanged.InvokeAsync">
+                <option value="">Local (this service)</option>
+                @foreach (var svc in Services)
+                {
+                    <option @key="svc.Name" value="@svc.Name">@(svc.DisplayName ?? svc.Name)</option>
+                }
+            </select>
+            <span class="form-field__hint">Cross-service compensators are supported — route the undo to whichever worker owns the rollback.</span>
+        </div>
+        <div class="form-field">
+            <label class="form-field__label">Parameters</label>
+            <KeyValueEditor @bind-Pairs="comp.Parameters" @bind-Pairs:after="OnChanged.InvokeAsync" />
+        </div>
+        <div class="form-row">
+            <div class="form-field">
+                <label class="form-field__label">Max retries</label>
+                <input class="form-field__input" type="number" min="0" @bind="comp.MaxRetries" @bind:after="OnChanged.InvokeAsync" />
+                <span class="form-field__hint">Empty = inherit.</span>
+            </div>
+            <div class="form-field">
+                <label class="form-field__label">Timeout (seconds)</label>
+                <input class="form-field__input" type="number" min="0" @bind="comp.TimeoutSeconds" @bind:after="OnChanged.InvokeAsync" />
+                <span class="form-field__hint">0 = no timeout; empty = inherit.</span>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>The step whose compensator is being edited (binds <see cref="WizardStepDraft.Compensation"/>).</summary>
+    [Parameter, EditorRequired] public WizardStepDraft Step { get; set; } = default!;
+
+    /// <summary>Worker-aware "job @ service" catalog for the compensator picker (same as the step Job editor).</summary>
+    [Parameter] public IReadOnlyList<JobCatalogEntry> JobCatalog { get; set; } = [];
+
+    /// <summary>Configured services for the compensator's Target-service dropdown (cross-service compensators).</summary>
+    [Parameter] public IReadOnlyList<UKBatchServiceDescriptor> Services { get; set; } = [];
+
+    /// <summary>Raised after any field mutation so the parent refreshes its summary / validation.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    /// <summary>Raised when the toggle ENABLES a compensator so the parent can flip the policy to Compensate.</summary>
+    [Parameter] public EventCallback OnCompensationChanged { get; set; }
+
+    private const string CurrentToken = "current";
+
+    private async Task ToggleAsync(ChangeEventArgs e)
+    {
+        var enabled = e.Value is true || string.Equals(e.Value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+        if (enabled)
+        {
+            Step.Compensation ??= new CompensationDraft();
+            await OnCompensationChanged.InvokeAsync();
+        }
+        else
+        {
+            Step.Compensation = null;
+        }
+        await OnChanged.InvokeAsync();
+    }
+
+    // ── job catalog picker (mirrors StepDraftEditor.SelectFromCatalogAsync, writing the compensator draft) ──
+
+    private bool CurrentNotInCatalog(CompensationDraft comp)
+    {
+        if (string.IsNullOrWhiteSpace(comp.JobName)) return false;
+        var svc = NormalizeService(comp.TargetService);
+        return !JobCatalog.Any(e => e.JobName == comp.JobName && NormalizeService(e.ServiceName) == svc);
+    }
+
+    private string SelectedCatalogToken(CompensationDraft comp)
+    {
+        if (string.IsNullOrWhiteSpace(comp.JobName)) return string.Empty;
+        var svc = NormalizeService(comp.TargetService);
+        for (var i = 0; i < JobCatalog.Count; i++)
+        {
+            var e = JobCatalog[i];
+            if (e.JobName == comp.JobName && NormalizeService(e.ServiceName) == svc)
+            {
+                return i.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+        return CurrentToken;
+    }
+
+    private async Task SelectFromCatalogAsync(CompensationDraft comp, ChangeEventArgs e)
+    {
+        var token = e.Value?.ToString();
+        if (string.IsNullOrEmpty(token) || token == CurrentToken) return;
+        if (!int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx)) return;
+        if (idx < 0 || idx >= JobCatalog.Count) return;
+
+        var entry = JobCatalog[idx];
+        comp.JobName = entry.JobName;
+        // Compensators MAY run cross-service, so the catalog pick carries the routing target verbatim
+        // (null service → "" so the Target dropdown shows "Local (this service)").
+        comp.TargetService = entry.ServiceName ?? string.Empty;
+        await OnChanged.InvokeAsync();
+    }
+
+    private static string CatalogLabel(JobCatalogEntry entry)
+        => entry.ServiceName is { Length: > 0 } svc ? $"{entry.JobName} — {svc}" : $"{entry.JobName} — Local";
+
+    private static string CurrentJobLabel(CompensationDraft comp)
+        => comp.TargetService is { Length: > 0 } svc ? $"{comp.JobName} — {svc}" : $"{comp.JobName} — Local";
+
+    private static string NormalizeService(string? service)
+        => string.IsNullOrWhiteSpace(service) ? string.Empty : service;
+}

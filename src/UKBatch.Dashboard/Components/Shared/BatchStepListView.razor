@@ -29,6 +29,13 @@
             <span class="batch-step-list__type">@step.StepType</span>
             <span class="batch-step-list__detail">@StepDetail(step)</span>
         </div>
+        @if (step.Compensation is { } comp)
+        {
+            <div class="batch-step-list__comp" style="padding-left: @((depth + 1) * 24)px;">
+                <span class="material-symbols-outlined batch-step-list__comp-icon">undo</span>
+                <span>compensated by @comp.JobName@(comp.TargetService is { Length: > 0 } svc ? $" @ {svc}" : string.Empty)</span>
+            </div>
+        }
         @if (step.StepType == BatchStepType.ParallelGroup && step.ParallelGroup is { } pg)
         {
             <div class="batch-step-list__children">

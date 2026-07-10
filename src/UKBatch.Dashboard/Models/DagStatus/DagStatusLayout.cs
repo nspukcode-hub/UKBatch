@@ -50,6 +50,9 @@ public static class DagStatusLayout
     /// <summary>Vertical distance between stacked ParallelGroup siblings (≥ card height + gap).</summary>
     internal const double ChildStride = 150;
 
+    /// <summary>Lower-lane floor for the reverse-unwind compensators (sits below the spine, above the chain).</summary>
+    internal const double CompensationLaneDy = 150;
+
     /// <summary>Lower lane offset for the OnFailure compensation chain (clears the fan-out).</summary>
     internal const double FailureLaneDy = 300;
 
@@ -78,6 +81,10 @@ public static class DagStatusLayout
         // OnFailure lane placed clear BELOW it (robust by construction — not a fixed offset gamble).
         double maxMainBottom = MidY + NodeH / 2;
 
+        // Compensator nodes (one per top-level step with a compensator) placed on a lane below the spine.
+        // Tracked here in the parent's column so the lane sits directly under the step it undoes.
+        var compensators = new List<(string StepId, int Column)>();
+
         int column = 0;
         foreach (var step in steps.OrderBy(s => s.Order))
         {
@@ -103,8 +110,29 @@ public static class DagStatusLayout
                 map[step.StepId] = (x, TopFor(MidY));
             }
 
+            if (step.Compensation is not null)
+            {
+                compensators.Add((CompensationStepIds.For(step.StepId), column));
+            }
+
             // The column advances by ONE regardless of how many child nodes the group expanded to.
             column++;
+        }
+
+        // Compensation lane: one node per compensator, in the PARENT's column, on a row below the spine's
+        // deepest node (same floor-vs-content max the OnFailure lane uses). Placing it here EXTENDS
+        // maxMainBottom, so the OnFailure lane computed below automatically shifts further down — the two
+        // lower lanes never collide by construction. Skipped entirely when there are no compensators, so a
+        // definition without compensators lays out byte-identically to before.
+        if (compensators.Count > 0)
+        {
+            double compCenterY = Math.Max(MidY + CompensationLaneDy, maxMainBottom + ChildStride / 2 + NodeH / 2);
+            foreach (var (compStepId, col) in compensators)
+            {
+                double cx = StartX + col * ColStride;
+                map[compStepId] = (cx, TopFor(compCenterY));
+            }
+            maxMainBottom = Math.Max(maxMainBottom, compCenterY + NodeH / 2);
         }
 
         // OnFailure lane: a lower row, left→right. CONTINUES the column counter from where the spine ended

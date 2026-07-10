@@ -145,8 +145,10 @@ else
         <StepEditorModal IsVisible="_modalOpen"
                          Step="SelectedDraft()"
                          AllowTargetService="@(!IsSelectedOnFailure())"
+                         AllowCompensation="@(!IsSelectedOnFailure())"
                          JobNames="_jobNames" JobCatalog="_jobCatalog" Services="_services"
                          OnChanged="HandlePropertyChangedAsync"
+                         OnCompensationEnabled="EnsureCompensatePolicyAsync"
                          OnClose="CloseModal" />
 
         <div class="dag-ed-actionbar">
@@ -184,6 +186,25 @@ else
     // ref-equality discipline (don't re-run DagLayout.Compute on a re-render). DrawflowCanvas only
     // consumes Graph on first render; later structural changes are pushed imperatively (AddNode etc.).
     private DagGraphSpec? _graph;
+
+    // Derived ids of compensator display nodes CURRENTLY on the canvas. The canvas is only told about
+    // node add/remove explicitly (there is no diffing re-import on field edits), so this set is what
+    // lets the dialog's add/remove-compensator toggle create or delete the node live. Seeded wherever a
+    // FULL graph import happens; maintained by the add/remove paths.
+    private readonly HashSet<string> _compNodeIds = new(StringComparer.Ordinal);
+
+    private void ResetCompNodeTracking()
+    {
+        _compNodeIds.Clear();
+        if (_graph is null) return;
+        foreach (var n in _graph.Nodes)
+        {
+            if (n.StepId.EndsWith(CompensationStepIds.Suffix, StringComparison.Ordinal))
+            {
+                _compNodeIds.Add(n.StepId);
+            }
+        }
+    }
 
     private string? _nameError;
     private bool _loading = true, _notFound, _unsupported, _redirected, _editorUnavailable, _saving, _concurrencyConflict;
@@ -276,6 +297,7 @@ else
         finally
         {
             RebuildGraph();   // build the cached spec once, after load
+            ResetCompNodeTracking();   // the initial import (Graph parameter) places these nodes
             _loading = false;
         }
     }
@@ -284,11 +306,17 @@ else
 
     // Searches BOTH the main flow AND the compensation lane (StepIds are globally unique, so at most one
     // match across the two lists — no cross-lane bleed). Returns null gracefully if neither matches.
+    // A compensator display node carries its PARENT's id plus a fixed suffix and is not a draft of its
+    // own — selecting it resolves to the parent (the compensator is edited in the parent's dialog).
     private WizardStepDraft? SelectedDraft()
-        => _selectedStepId is null
-            ? null
-            : _model.Steps.FirstOrDefault(s => s.StepId == _selectedStepId)
-              ?? _model.OnFailureSteps.FirstOrDefault(s => s.StepId == _selectedStepId);
+    {
+        if (_selectedStepId is null) return null;
+        var id = _selectedStepId.EndsWith(CompensationStepIds.Suffix, StringComparison.Ordinal)
+            ? _selectedStepId[..^CompensationStepIds.Suffix.Length]
+            : _selectedStepId;
+        return _model.Steps.FirstOrDefault(s => s.StepId == id)
+            ?? _model.OnFailureSteps.FirstOrDefault(s => s.StepId == id);
+    }
 
     // True when the current selection resolves in the compensation lane → the modal renders Job-only,
     // local-only (AllowTargetService=false): compensation steps always run locally.
@@ -330,6 +358,20 @@ else
     // Close the edit modal (Done / X / backdrop). The selection (and canvas highlight) persists so the
     // rail chip stays marked; only the dialog dismisses.
     private void CloseModal() => _modalOpen = false;
+
+    // Attaching a compensator to a step implies the batch runs under the Compensate policy — flip it
+    // (warn-don't-revert). Compensators are NOT canvas nodes (edited in the modal + shown as a rail marker),
+    // so only the policy + dirty flag change here.
+    private async Task EnsureCompensatePolicyAsync()
+    {
+        if (_model.EnsureCompensatePolicy())
+        {
+            await Notifications.InfoAsync("Failure policy",
+                "Set to Compensate because a step compensator was added.");
+        }
+        MarkDirty();
+        await InvokeAsync(StateHasChanged);
+    }
 
     // ── palette drop (two-step add) ────────────────────────────────────────────────
 
@@ -457,12 +499,49 @@ else
 
     private async Task HandleNodeRemovedAsync(string stepId)
     {
+        // Deleting a compensator display node detaches the compensator from its PARENT step (the node is
+        // a projection of the parent's Compensation field, not a step of its own).
+        if (stepId.EndsWith(CompensationStepIds.Suffix, StringComparison.Ordinal))
+        {
+            var parentId = stepId[..^CompensationStepIds.Suffix.Length];
+            var parent = _model.Steps.FirstOrDefault(s => s.StepId == parentId);
+            if (parent is { Compensation: not null })
+            {
+                parent.Compensation = null;
+                _localHints.Remove(stepId);
+                _compNodeIds.Remove(stepId);
+                if (string.Equals(_selectedStepId, stepId, StringComparison.Ordinal)) _selectedStepId = null;
+                RebuildGraph();
+                // The parent card carries the compensator mark on its subtitle — re-render it without one.
+                if (_canvas is not null)
+                {
+                    await _canvas.RefreshNodeAsync(_graph!.Nodes.First(n => n.StepId == parentId));
+                }
+                await SyncConnectionsAsync();
+                MarkDirty();
+            }
+            return;
+        }
+
         var idx = _model.Steps.FindIndex(s => s.StepId == stepId);
         if (idx >= 0)
         {
+            var removed = _model.Steps[idx];
             _model.Steps.RemoveAt(idx);
             _localHints.Remove(stepId);
-            if (string.Equals(_selectedStepId, stepId, StringComparison.Ordinal)) _selectedStepId = null;
+            // The step's compensator display node is a projection of the removed step — take it down too
+            // (the canvas only removed the card the operator deleted).
+            var compId = CompensationStepIds.For(stepId);
+            if (string.Equals(_selectedStepId, stepId, StringComparison.Ordinal)
+                || string.Equals(_selectedStepId, compId, StringComparison.Ordinal))
+            {
+                _selectedStepId = null;   // the parent OR its comp node may be the current selection
+            }
+            if (removed.Compensation is not null && _compNodeIds.Remove(compId))
+            {
+                _localHints.Remove(compId);
+                if (_canvas is not null) await _canvas.RemoveNodeAsync(compId);
+            }
             await ResyncOrderBadgesAsync(); // remaining indices shifted
             await SyncConnectionsAsync();   // redraw flow lines minus the removed node
             RebuildGraph();
@@ -526,22 +605,43 @@ else
         // re-push titles+badges. Cheap (<50 nodes) and keeps the canvas in sync without a full reimport.
         await ResyncOrderBadgesAsync();
 
-        // A ParallelGroup edit can ALSO change the node's BODY (add/remove a branch, rename a child job)
-        // — the in-card branch chips must reflect it without opening the modal again. UpdateLabelAsync
-        // (above) only patches the title/badge; for a group we re-render the whole card from a fresh
-        // spec via RefreshNodeAsync (which also reflows the connection anchors after the card resizes).
-        // Re-render on every OnChanged is fine at this scale (<50 nodes, one DOM swap). The cached
-        // _graph is left to the structural-change rebuilds (drop/remove/reorder) — a child-field edit is
-        // NOT a top-level structural change, so RebuildGraph is intentionally not called here.
+        // An edit can ALSO change the node's BODY beyond the title: a ParallelGroup's branch chips, or a
+        // Job's subtitle line (the compensator mark lives there — adding/removing a compensator must show
+        // on the card without reopening the page). UpdateLabelAsync (above) only patches the title/badge;
+        // re-render the whole card from a fresh spec via RefreshNodeAsync (which also reflows the
+        // connection anchors after the card resizes). Re-render on every OnChanged is fine at this scale
+        // (<50 nodes, one DOM swap). The cached _graph is left to the structural-change rebuilds
+        // (drop/remove/reorder) — a field edit is NOT a top-level structural change, so RebuildGraph is
+        // intentionally not called here.
         var sel = SelectedDraft();
-        if (sel is { StepType: BatchStepType.ParallelGroup } && _canvas is not null)
+        if (sel is { StepType: BatchStepType.Job or BatchStepType.ParallelGroup } && _canvas is not null)
         {
             var idx = _model.Steps.IndexOf(sel);
             if (idx >= 0)
             {
-                var byId = DagLayout.Compute(_model.StepsAsBatchSteps(), _model.OnFailureAsBatchSteps(), _localHints)
-                    .Nodes.ToDictionary(n => n.StepId, StringComparer.Ordinal);
-                await _canvas.RefreshNodeAsync(ToNodeSpec(sel, idx, byId));
+                // Rebuild the cached spec: the edit may have added/removed the step's compensator, which
+                // is a STRUCTURAL canvas change (its display node appears/disappears live, right from the
+                // dialog — no save/reload needed).
+                RebuildGraph();
+                var compId = CompensationStepIds.For(sel.StepId);
+                var compSpec = _graph!.Nodes.FirstOrDefault(n => n.StepId == compId);
+                if (compSpec is not null && _compNodeIds.Add(compId))
+                {
+                    await _canvas.AddNodeAsync(compSpec);
+                    await SyncConnectionsAsync();
+                }
+                else if (compSpec is null && _compNodeIds.Remove(compId))
+                {
+                    _localHints.Remove(compId);
+                    await _canvas.RemoveNodeAsync(compId);
+                    await SyncConnectionsAsync();
+                }
+                else if (compSpec is not null)
+                {
+                    // Already on canvas — the compensator's own card may need fresh text (renamed job).
+                    await _canvas.RefreshNodeAsync(compSpec);
+                }
+                await _canvas.RefreshNodeAsync(_graph.Nodes.First(n => n.StepId == sel.StepId));
             }
         }
 
@@ -594,6 +694,12 @@ else
     private const double LtrGapX = 90;
     private const double LtrNodeHeight = 90;    // approx card height — used only for the drop "near origin" test
 
+    // Compensator display nodes live on a MIDDLE lane: below the spine (LtrRowY), above the batch-level
+    // failure-chain lane (LtrFailureLaneY) — visually "this step's own undo", not part of the chain. The
+    // small X nudge keeps the parent→compensator edge from rendering as a purely vertical line under the card.
+    private const double CompensatorLaneY = 200;
+    private const double CompensatorLaneXNudge = 30;
+
     // Compensation (onFailure) nodes render on a LOWER lane, left→right, below the spine row (LtrRowY=60).
     // 320 clears a normal ~90px job/approval node with headroom. CAVEAT: a spine ParallelGroup node grows
     // with its child chips and can exceed ~260px tall for 4+ children, so the dashed branch MAY overlap a
@@ -630,8 +736,52 @@ else
         {
             specs.Add(ToFailureNodeSpec(_model.OnFailureSteps[i], i, byId));
         }
+        // Third loop: per-step compensator display nodes, one per compensator-bearing top-level step,
+        // hanging directly below their parent (mid lane — between the spine and the failure-chain lane).
+        // Display-only: the compensator is edited in the parent's dialog; selecting/deleting the node
+        // routes to the parent via the derived-id suffix.
+        for (int i = 0; i < _model.Steps.Count; i++)
+        {
+            // Only Job / ParallelGroup steps carry a compensator to storage (the draft projection and the
+            // validator both restrict it there), so keep the display node in lockstep — never paint an
+            // uneditable node for a compensator that would not round-trip.
+            if (_model.Steps[i] is { Compensation: not null, StepType: BatchStepType.Job or BatchStepType.ParallelGroup })
+            {
+                specs.Add(ToCompensatorNodeSpec(_model.Steps[i], specs[i]));
+            }
+        }
         var edges = EditorEdges.Build(_model.Steps, _model.OnFailureSteps);
         return new DagGraphSpec { Nodes = specs, Edges = edges };
+    }
+
+    // Compensator display node: derived id (parent id + fixed suffix), red failure accent, placed on a
+    // MIDDLE lane below its parent (a saved drag hint wins) so it reads as "this step's undo" — clearly
+    // apart from the batch-level failure chain on the bottom lane.
+    private DagNodeSpec ToCompensatorNodeSpec(WizardStepDraft parent, DagNodeSpec parentSpec)
+    {
+        var comp = parent.Compensation!;
+        var id = CompensationStepIds.For(parent.StepId);
+        double x, y;
+        if (_localHints.TryGetValue(id, out var h))
+        {
+            (x, y) = (h.X, h.Y);
+        }
+        else
+        {
+            (x, y) = (parentSpec.X + CompensatorLaneXNudge, CompensatorLaneY);
+        }
+        return new DagNodeSpec
+        {
+            StepId = id,
+            Kind = "Job",
+            Title = string.IsNullOrWhiteSpace(comp.JobName) ? "(compensator)" : comp.JobName.Split('.')[^1],
+            Subtitle = "compensation",
+            OrderBadge = "↩",
+            TargetService = comp.TargetService,
+            IsOnFailure = true,
+            X = x,
+            Y = y,
+        };
     }
 
     private DagNodeSpec ToNodeSpec(WizardStepDraft step, int index, IReadOnlyDictionary<string, DagLayoutNode> byId)
@@ -653,17 +803,32 @@ else
             (x, y) = (LtrStartX + index * (LtrNodeWidth + LtrGapX), LtrRowY);
         }
 
+        // A per-step compensator is edited in the step dialog, not drawn as a canvas node — so the node
+        // card itself must say the compensator exists, or "add compensator then look at the canvas"
+        // reads as a silent no-op. Rides the subtitle line (rendered verbatim by the canvas card), so
+        // no canvas-script change is needed. Short name only; the dialog shows the full detail.
+        var compensatorMark = step.Compensation is { } comp
+            ? "↩ " + (string.IsNullOrWhiteSpace(comp.JobName) ? "compensator" : comp.JobName.Split('.')[^1])
+            : null;
+        // A ParallelGroup has no read-only layout node (DagLayout fans its children out instead of
+        // emitting a container node), so n is null and n?.Subtitle would be null — give the group a
+        // "Parallel · {JoinPolicy}" subheading for the branches block (mirrors Wizard.StepSummary).
+        var baseSubtitle = n?.Subtitle ?? (step.StepType == BatchStepType.ParallelGroup
+            ? $"Parallel · {step.JoinPolicy}"
+            : null);
+
         return new DagNodeSpec
         {
             StepId = step.StepId,
             Kind = step.StepType.ToString(),
             Title = n?.Title ?? NodeTitle(step),
-            // A ParallelGroup has no read-only layout node (DagLayout fans its children out instead of
-            // emitting a container node), so n is null and n?.Subtitle would be null — give the group a
-            // "Parallel · {JoinPolicy}" subheading for the branches block (mirrors Wizard.StepSummary).
-            Subtitle = n?.Subtitle ?? (step.StepType == BatchStepType.ParallelGroup
-                ? $"Parallel · {step.JoinPolicy}"
-                : null),
+            Subtitle = (baseSubtitle, compensatorMark) switch
+            {
+                (null, null) => null,
+                (null, _) => compensatorMark,
+                (_, null) => baseSubtitle,
+                _ => $"{baseSubtitle} · {compensatorMark}",
+            },
             OrderBadge = (index + 1).ToString(CultureInfo.InvariantCulture),
             TargetService = n?.TargetService ?? (step.StepType == BatchStepType.Job ? step.TargetService : null),
             // A ParallelGroup renders its children as branch chips INSIDE the node (display-only;
@@ -850,6 +1015,7 @@ else
             _nameError = null;
             _dirty = false;
             RebuildGraph();
+            ResetCompNodeTracking();   // full re-import below replaces every node, compensators included
             if (_canvas is not null) await _canvas.ImportAsync(_graph!); // re-place the fresh graph
             await Notifications.InfoAsync("Reloaded", "Loaded the latest version. Re-apply your edits and save again.");
         }
