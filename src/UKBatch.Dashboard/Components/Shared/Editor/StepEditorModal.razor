@@ -25,7 +25,8 @@
             </div>
             <div class="modal-card__body dag-ed-modal__body">
                 <StepDraftEditor Step="Step" JobNames="JobNames" JobCatalog="JobCatalog" Services="Services"
-                                 AllowTargetService="AllowTargetService" OnChanged="OnChanged" />
+                                 AllowTargetService="AllowTargetService" AllowCompensation="AllowCompensation"
+                                 OnCompensationEnabled="OnCompensationEnabled" OnChanged="OnChanged" />
             </div>
             <div class="modal-card__actions">
                 <button class="btn btn--primary" @onclick="OnClose">Done</button>
@@ -56,6 +57,15 @@
     /// Defaults to <c>true</c> (top-level steps may run cross-service).
     /// </summary>
     [Parameter] public bool AllowTargetService { get; set; } = true;
+
+    /// <summary>
+    /// Forwarded to <c>StepDraftEditor</c>. <c>true</c> ⇒ a top-level Job / ParallelGroup step may attach a
+    /// compensator. The Editor passes <c>false</c> for compensation-chain (OnFailure) nodes. Default <c>false</c>.
+    /// </summary>
+    [Parameter] public bool AllowCompensation { get; set; }
+
+    /// <summary>Raised when a compensator is enabled so the Editor can flip the batch policy to Compensate.</summary>
+    [Parameter] public EventCallback OnCompensationEnabled { get; set; }
 
     /// <summary>Bubbled up on any field mutation so the Editor can sync the canvas label + mark dirty.</summary>
     [Parameter] public EventCallback OnChanged { get; set; }

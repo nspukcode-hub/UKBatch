@@ -18,7 +18,7 @@ public sealed record class DagStatusEdge
     /// <summary>Destination node StepId.</summary>
     public required string ToStepId { get; init; }
 
-    /// <summary>Visual line style: <c>"Sequential" | "Parallel" | "OnFailure"</c>.</summary>
+    /// <summary>Visual line style: <c>"Sequential" | "Parallel" | "OnFailure" | "Compensation"</c>.</summary>
     public required string Kind { get; init; }
 
     /// <summary>Resolved <c>data-status</c> value (may be <c>""</c>) from <see cref="DagStatusClasses.EdgeClass"/>.</summary>

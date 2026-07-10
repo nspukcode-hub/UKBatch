@@ -17,10 +17,10 @@ namespace UKBatch.Dashboard.Clients;
 /// from events on dispose.
 /// </summary>
 /// <remarks>
-/// <para><b>Surface organization (39 reflection members):</b></para>
+/// <para><b>Surface organization (40 reflection members):</b></para>
 /// <list type="bullet">
 ///   <item><b>Identity + lifecycle</b> (5 members — 2 props + 1 event + 2 methods): <c>Service</c>, <c>State</c>, <c>StateChanged</c>, <c>ConnectAsync</c>, <c>DisconnectAsync</c>.</item>
-///   <item><b>REST</b> (22 methods): job catalog/detail/trigger (3), batch catalog/by-id/by-name/run/run-status (5) + create/update/delete (3) + run-list/run-cancel (2) + schedule-pause-resume (1) = 11, execution detail/query/cancel (3), approval list/approve/reject/by-batch-gates (4), worker snapshot (1).</item>
+///   <item><b>REST</b> (23 methods): job catalog/detail/trigger (3), batch catalog/by-id/by-name/run/run-status (5) + create/update/delete (3) + run-list/run-cancel/run-retry (3) + schedule-pause-resume (1) = 12, execution detail/query/cancel (3), approval list/approve/reject/by-batch-gates (4), worker snapshot (1).</item>
 ///   <item><b>Hub events</b> (4 events): <see cref="ExecutionStateChanged"/>, <see cref="ProgressUpdated"/>, <see cref="ApprovalRequested"/>, <see cref="BatchCompleted"/>.</item>
 ///   <item><b>Hub subscriptions</b> (8 methods): Subscribe/Unsubscribe × {Execution, Batch, Job, All}.</item>
 /// </list>
@@ -131,6 +131,14 @@ public interface IUKBatchClient : IAsyncDisposable
     /// parked approval gate). Idempotent — succeeds even if the run already finished or never existed.
     /// </summary>
     Task CancelRunAsync(string batchRunId, CancellationToken ct);
+
+    /// <summary>
+    /// POST <c>/batches/{batchRunId}/retry</c>. Retries a <c>Failed</c> run from the step it failed on,
+    /// as a NEW run carrying the failed run's forwarded state (completed steps are not re-run); returns
+    /// the new run id. Throws <see cref="UKBatchClientException"/> on 404 (unknown run) or 409 (the run
+    /// is not Failed, was compensated, or the definition changed since the run started).
+    /// </summary>
+    Task<string> RetryRunAsync(string batchRunId, CancellationToken ct);
 
     /// <summary>
     /// POST <c>/batches/by-id/{id}/resume</c> (<paramref name="enabled"/> = <c>true</c>) or

@@ -16,6 +16,7 @@ builder.AddUKBatchAspNetCore(b =>
     // The job's routing name is "GenerateInvoice" via [Job(Name = "GenerateInvoice")]; the server's
     // batch definition references it as the step JobName + OnService("invoicing").
     b.AddJob<GenerateInvoiceJob>();
+    b.AddJob<CancelInvoiceJob>();
 
     // Intra-job parallelism demo: an IPartitionedJob<InvoiceRow> — "SELECT, then process
     // the rows on 3 concurrent workers". WithParallelism(3) IS the worker count (the runtime spins a

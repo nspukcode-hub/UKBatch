@@ -160,6 +160,9 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Sqlite
                     b.Property<int>("Cancelled")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("CompensationStepIndex")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("CompletedAtUtc")
                         .HasColumnType("TEXT");
 
@@ -170,6 +173,10 @@ namespace UKBatch.Storage.EntityFrameworkCore.Migrations.Sqlite
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("ForwardedState")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RetryOfBatchId")
+                        .HasMaxLength(64)
                         .HasColumnType("TEXT");
 
                     b.Property<string>("StartedAtUtc")

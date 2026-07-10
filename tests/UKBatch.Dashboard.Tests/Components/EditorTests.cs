@@ -443,9 +443,10 @@ public sealed class EditorTests : TestContext
         cut.FindAll("div.dag-ed-palette__tile").Count.Should().Be(4,
             "the palette has FOUR draggable tiles: Job, Parallel group, Approval gate, Compensation");
         cut.FindAll("div.dag-ed-palette__tile--failure").Should().NotBeEmpty(
-            "the 4th tile is the compensation (onFailure) tile with the --failure modifier");
-        cut.Find("div.dag-ed-palette").TextContent.Should().Contain("Compensation",
-            "the compensation tile is labelled 'Compensation'");
+            "the 4th tile is the failure-chain (onFailure) tile with the --failure modifier");
+        cut.Find("div.dag-ed-palette").TextContent.Should().Contain("Failure chain",
+            "the tile is labelled 'Failure chain' — it appends to the batch-level OnFailure chain, "
+            + "deliberately distinct from the per-step compensator edited in a step's own dialog");
     }
 
     [Fact]
@@ -471,5 +472,59 @@ public sealed class EditorTests : TestContext
         // The drop opened the modal for the fresh compensation node.
         cut.FindAll("div.dag-ed-modal").Should().NotBeEmpty(
             "a compensation drop mints the draft AND opens the modal to configure it");
+    }
+
+    // ── per-step compensator display node (canvas ↔ model sync) ─────────────────────
+
+    [Fact]
+    public async Task EnableCompensator_InModal_MarksTheStepRailChip()
+    {
+        // Enabling "Add compensator" in a step's Edit dialog attaches a compensator to that draft. The
+        // per-step compensator is a property of the step (its own display node is added imperatively on
+        // the canvas), and the always-rendered rail chip gains a comp marker — the observable proof the
+        // model actually carries the compensator, right from the dialog (no save/reload).
+        WireDeps();
+        var cut = RenderCreate();
+        cut.WaitForState(() => cut.FindAll("div.dag-ed-canvas").Count > 0);
+
+        var canvas = cut.FindComponent<DrawflowCanvas>();
+        await cut.InvokeAsync(() => canvas.Instance.OnNodeDroppedCb.InvokeAsync(
+            new NodeDropIntent(BatchStepType.Job, 12, 8)));
+        cut.FindAll("span.dag-ed-rail__comp").Should().BeEmpty("a fresh step has no compensator yet");
+
+        // Toggle the compensation editor's checkbox inside the modal.
+        var toggle = cut.FindAll("div.dag-ed-modal input[type=checkbox]").Last();
+        await cut.InvokeAsync(() => toggle.Change(true));
+
+        cut.FindAll("span.dag-ed-rail__comp").Should().ContainSingle(
+            "enabling the compensator marks the step's rail chip — the model now carries Compensation");
+    }
+
+    [Fact]
+    public async Task DeleteCompensatorNode_DetachesCompensator_KeepsParentStep()
+    {
+        // Deleting the compensator DISPLAY node (its derived "{parent}:comp" id) detaches the compensator
+        // from its parent step WITHOUT removing the parent — the node is a projection of the parent's
+        // Compensation field, not a step of its own.
+        WireDeps();
+        var cut = RenderCreate();
+        cut.WaitForState(() => cut.FindAll("div.dag-ed-canvas").Count > 0);
+
+        var canvas = cut.FindComponent<DrawflowCanvas>();
+        await cut.InvokeAsync(() => canvas.Instance.OnNodeDroppedCb.InvokeAsync(
+            new NodeDropIntent(BatchStepType.Job, 12, 8)));
+        var parentId = canvas.Instance.Graph.Nodes.Single().StepId;
+        var toggle = cut.FindAll("div.dag-ed-modal input[type=checkbox]").Last();
+        await cut.InvokeAsync(() => toggle.Change(true));
+        cut.FindAll("span.dag-ed-rail__comp").Should().ContainSingle("precondition: compensator attached");
+
+        // The JS raises OnNodeRemoved with the compensator's DERIVED id.
+        await cut.InvokeAsync(() => canvas.Instance.OnNodeRemovedCb.InvokeAsync(
+            UKBatch.Abstractions.Batches.CompensationStepIds.For(parentId)));
+
+        cut.FindAll("span.dag-ed-rail__comp").Should().BeEmpty(
+            "deleting the compensator node clears the parent's Compensation (marker gone)");
+        cut.FindAll("div.dag-ed-rail__chip").Count.Should().Be(1,
+            "the PARENT step must survive — only its compensator was detached");
     }
 }

@@ -44,7 +44,7 @@ internal static class BatchDefinitionValidator
 
         for (var i = 0; i < def.Steps.Count; i++)
         {
-            ValidateStep(def.Steps[i], $"Steps[{i}]", errors, allowParallel: true);
+            ValidateStep(def.Steps[i], $"Steps[{i}]", errors, allowParallel: true, allowCompensation: true);
         }
 
         // Compensation steps are persisted verbatim and run via the same step dispatch as the main
@@ -52,7 +52,7 @@ internal static class BatchDefinitionValidator
         // through REST create/update and only surfaces as a silent runtime failure.
         for (var i = 0; i < def.OnFailureSteps.Count; i++)
         {
-            ValidateStep(def.OnFailureSteps[i], $"OnFailureSteps[{i}]", errors, allowParallel: true);
+            ValidateStep(def.OnFailureSteps[i], $"OnFailureSteps[{i}]", errors, allowParallel: true, allowCompensation: false);
         }
 
         ValidateStepIdUniqueness(def, errors);
@@ -102,6 +102,13 @@ internal static class BatchDefinitionValidator
         foreach (var step in def.Steps)
         {
             yield return step.StepId;
+            // A compensator's execution rows are correlated by a derived id (parent id + fixed suffix), so
+            // that derived id lives in the same uniqueness space: a hand-built definition that declares a
+            // step id colliding with a compensator's derived id would make the mapping ambiguous.
+            if (step.Compensation is not null)
+            {
+                yield return CompensationStepIds.For(step.StepId);
+            }
             if (step.StepType == BatchStepType.ParallelGroup && step.ParallelGroup is not null)
             {
                 foreach (var child in step.ParallelGroup.Steps)
@@ -116,11 +123,20 @@ internal static class BatchDefinitionValidator
         }
     }
 
-    private static void ValidateStep(BatchStep step, string path, List<ValidationError> errors, bool allowParallel)
+    private static void ValidateStep(BatchStep step, string path, List<ValidationError> errors, bool allowParallel, bool allowCompensation)
     {
         if (string.IsNullOrWhiteSpace(step.StepId))
         {
             errors.Add(new ValidationError($"{path}.StepId", "must be non-empty"));
+        }
+        else if (step.StepId.EndsWith(CompensationStepIds.Suffix, StringComparison.Ordinal))
+        {
+            // The compensator suffix is a reserved correlation namespace: a compensator's execution rows
+            // and dashboard node carry the parent id plus this suffix. A real step id ending in it would
+            // collide with a derived compensator id, and dashboards that strip the suffix to map a node
+            // back to its parent would mis-resolve it. Reject it up front so the derivation stays unambiguous.
+            errors.Add(new ValidationError($"{path}.StepId",
+                $"must not end with the reserved compensator suffix '{CompensationStepIds.Suffix}'"));
         }
 
         switch (step.StepType)
@@ -174,7 +190,7 @@ internal static class BatchDefinitionValidator
 
                 for (var j = 0; j < step.ParallelGroup.Steps.Count; j++)
                 {
-                    ValidateStep(step.ParallelGroup.Steps[j], $"{path}.ParallelGroup.Steps[{j}]", errors, allowParallel: false);
+                    ValidateStep(step.ParallelGroup.Steps[j], $"{path}.ParallelGroup.Steps[{j}]", errors, allowParallel: false, allowCompensation: false);
                 }
                 break;
 
@@ -207,6 +223,27 @@ internal static class BatchDefinitionValidator
                 // Unknown step type — forward-compat tolerated at validator level; the runtime
                 // logs and continues per BatchFailurePolicy.
                 break;
+        }
+
+        // A compensator is only meaningful where the reverse unwind can honor it: a top-level Job or
+        // ParallelGroup step (a group compensates as one unit). Rejecting it elsewhere — parallel
+        // children, compensation-chain steps, approval gates — is deliberate: silently ignoring a
+        // declared compensator would let a caller believe cleanup is wired when it never runs.
+        if (step.Compensation is { } comp)
+        {
+            if (!allowCompensation)
+            {
+                errors.Add(new ValidationError($"{path}.Compensation",
+                    "compensation is not allowed here (only on top-level Job or ParallelGroup steps)"));
+            }
+            else if (step.StepType == BatchStepType.ApprovalGate)
+            {
+                errors.Add(new ValidationError($"{path}.Compensation", "an ApprovalGate step cannot have a compensator"));
+            }
+            if (string.IsNullOrWhiteSpace(comp.JobName))
+            {
+                errors.Add(new ValidationError($"{path}.Compensation.JobName", "must be non-empty"));
+            }
         }
     }
 }

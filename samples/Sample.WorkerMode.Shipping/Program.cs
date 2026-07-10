@@ -16,6 +16,7 @@ builder.AddUKBatchAspNetCore(b =>
     // The job's routing name is "ShipOrder" via [Job(Name = "ShipOrder")]; the server's batch
     // definition references it as the step JobName + OnService("shipping").
     b.AddJob<ShipOrderJob>();
+    b.AddJob<CancelShipmentJob>();
 
     // Worker self-advertisement. WorkerName IS the routing key — it MUST match (Ordinal) the
     // server batch step's OnService("shipping"); a mismatch is SILENT (message waits forever in the

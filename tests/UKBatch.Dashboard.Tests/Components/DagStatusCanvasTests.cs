@@ -165,6 +165,36 @@ public sealed class DagStatusCanvasTests : TestContext
     }
 
     [Fact]
+    public async Task OnNodeSelectedFromJs_CompensatorDerivedId_ResolvesToParentStep()
+    {
+        // A compensator node carries a DERIVED id ("{parent}:comp") and is not a real BatchStep. A click on it
+        // MUST resolve to the PARENT step so the inspector opens on the step being compensated (the resolution
+        // lives in FindStep so the existing OnNodeSelected contract carries the parent up).
+        var steps = new[]
+        {
+            Job("s1", 0, "A"),
+            new BatchStep
+            {
+                StepId = "s2", Order = 1, StepType = BatchStepType.Job,
+                Job = new JobStepData { JobName = "B" },
+                Compensation = new CompensationStepData { JobName = "UndoB" },
+            },
+        };
+        BatchStep? selected = null;
+
+        var cut = RenderComponent<DagStatusCanvas>(p => p
+            .Add(d => d.Steps, steps)
+            .Add(d => d.OnFailureSteps, Array.Empty<BatchStep>())
+            .Add<BatchStep>(d => d.OnNodeSelected, s => { selected = s; }));
+
+        await cut.InvokeAsync(() => cut.Instance.OnNodeSelectedFromJs(CompensationStepIds.For("s2")));
+
+        selected.Should().NotBeNull();
+        selected!.StepId.Should().Be("s2",
+            "clicking a compensator node resolves the derived id back to its parent step");
+    }
+
+    [Fact]
     public async Task OnNodeSelectedFromJs_UnknownStepId_DoesNotRaise()
     {
         var steps = new[] { Job("s1", 0, "A") };

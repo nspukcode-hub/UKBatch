@@ -194,4 +194,40 @@ public sealed class BatchRunEndpointsTests : IClassFixture<SampleRestApiFactory>
         }
         noLongerRunning.Should().BeTrue("the cancelled run must reach a terminal status and appear in the includeRunning=false list");
     }
+
+    [Fact]
+    public async Task RetryRun_UnknownId_Returns404_WithProblemType()
+    {
+        using var client = _factory.CreateClient().WithDevAuth("alice", "ops");
+
+        var resp = await client.PostAsync(
+            new Uri("/api/batches/00000000000000000000000000000000/retry", UriKind.Relative), new StringContent(string.Empty));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound, "an unknown run cannot be retried — unlike cancel, retry is not idempotent-tolerant");
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("type").GetString().Should().Be("ukbatch:batch-run-not-found");
+    }
+
+    [Fact]
+    public async Task RetryRun_NonFailedRun_Returns409_WithProblemType()
+    {
+        using var client = _factory.CreateClient().WithDevAuth("alice", "ops");
+        var wildcardDefId = await ResolveDefinitionIdAsync(client, WildcardApprovalPipeline);
+
+        // Park a run on its approval gate: still in progress, so it is not retryable (only Failed is).
+        var runId = await client.TriggerBatchByNameAsync(WildcardApprovalPipeline);
+        using (await PollRunsUntilAsync(client, $"?batchDefinitionId={wildcardDefId}&includeRunning=true&limit=500", minimum: 1))
+        {
+            // running
+        }
+
+        var retryResp = await client.PostAsync(new Uri($"/api/batches/{runId}/retry", UriKind.Relative), new StringContent(string.Empty));
+        retryResp.StatusCode.Should().Be(HttpStatusCode.Conflict, "an in-progress run is not Failed, so retry must be refused");
+        using var doc = JsonDocument.Parse(await retryResp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("type").GetString().Should().Be("ukbatch:batch-run-not-retryable");
+
+        // Clean up the parked run so it does not linger across tests.
+        var cancelResp = await client.PostAsync(new Uri($"/api/batches/{runId}/cancel", UriKind.Relative), new StringContent(string.Empty));
+        cancelResp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
 }

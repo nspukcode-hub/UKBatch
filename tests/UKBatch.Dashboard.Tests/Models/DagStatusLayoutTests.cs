@@ -219,4 +219,69 @@ public sealed class DagStatusLayoutTests
         map["second"].X.Should().Be(StartX + ColStride);
         map["third"].X.Should().Be(StartX + 2 * ColStride);
     }
+
+    // ── compensation lane: one node per compensator, in the parent's column, below the spine ──
+
+    private static BatchStep JobWithComp(string id, int order, string compJob = "Undo", string name = "JobX") => new()
+    {
+        StepId = id,
+        Order = order,
+        StepType = BatchStepType.Job,
+        Job = new JobStepData { JobName = name },
+        Compensation = new CompensationStepData { JobName = compJob },
+    };
+
+    [Fact]
+    public void Compensator_EmitsNode_InParentColumn_BelowSpine()
+    {
+        var steps = new[] { Job("a", 0), JobWithComp("b", 1) };
+
+        var map = Compute(steps);
+
+        var compId = CompensationStepIds.For("b");
+        map.Should().ContainKey(compId, "a step with a compensator emits a compensation-lane node");
+        map[compId].X.Should().Be(map["b"].X, "the compensator sits in its parent's column");
+        map[compId].Y.Should().BeGreaterThan(map["b"].Y, "the compensation lane is below the spine");
+    }
+
+    [Fact]
+    public void Compensator_OnlyEmittedForStepsThatHaveOne()
+    {
+        var steps = new[] { Job("a", 0), JobWithComp("b", 1), Job("c", 2) };
+
+        var map = Compute(steps);
+
+        map.Should().ContainKey(CompensationStepIds.For("b"));
+        map.Should().NotContainKey(CompensationStepIds.For("a"), "no compensator ⇒ no compensation node");
+        map.Should().NotContainKey(CompensationStepIds.For("c"));
+    }
+
+    [Fact]
+    public void CompensationLane_ShiftsOnFailureLaneDown()
+    {
+        // The compensation lane extends the content bounds, so the OnFailure lane (whose Y derives from the
+        // deepest node) shifts down automatically — the two lower lanes never collide.
+        var withComp = Compute(new[] { JobWithComp("a", 0) }, new[] { Job("f1", 0) });
+        var noComp = Compute(new[] { Job("a", 0) }, new[] { Job("f1", 0) });
+
+        var compId = CompensationStepIds.For("a");
+        withComp[compId].Y.Should().BeLessThan(withComp["f1"].Y,
+            "the compensation lane sits above the OnFailure lane");
+        withComp["f1"].Y.Should().BeGreaterThan(noComp["f1"].Y,
+            "adding a compensator pushes the OnFailure lane further down (content-derived)");
+    }
+
+    [Fact]
+    public void NoCompensators_OnFailureLanePlacement_Unchanged()
+    {
+        // Additive guard: a definition with no compensators lays out exactly as before the feature.
+        var steps = new[] { Job("a", 0), Job("b", 1) };
+        var onFailure = new[] { Job("f1", 0) };
+
+        var map = Compute(steps, onFailure);
+
+        map.Keys.Should().NotContain(k => k.EndsWith(":comp", StringComparison.Ordinal),
+            "no compensators ⇒ no compensation-lane nodes");
+        map["f1"].Y.Should().Be(map["a"].Y + 300, "the OnFailure lane keeps its pre-feature floor (FailureLaneDy)");
+    }
 }

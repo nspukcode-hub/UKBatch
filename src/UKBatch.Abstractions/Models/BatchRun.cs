@@ -24,7 +24,9 @@ namespace UKBatch.Abstractions.Models;
 /// SignalR batch-completion path, independent of this store).</para>
 /// <para><b>Forward compatibility:</b> later releases extend this record with OPTIONAL
 /// (non-<c>required</c>, defaulted) fields only — the durable-resume cursor
-/// (<see cref="CurrentStepIndex"/>) arrived this way, so existing producers keep compiling unchanged.</para>
+/// (<see cref="CurrentStepIndex"/>), the reverse-unwind cursor (<see cref="CompensationStepIndex"/>), and
+/// the retry lineage link (<see cref="RetryOfBatchId"/>) arrived this way, so existing producers keep
+/// compiling unchanged.</para>
 /// </remarks>
 public sealed record class BatchRun
 {
@@ -94,6 +96,26 @@ public sealed record class BatchRun
     /// JSON-serializable; an adapter MUST round-trip this field verbatim.
     /// </summary>
     public IReadOnlyDictionary<string, object?>? ForwardedState { get; init; }
+
+    /// <summary>
+    /// Reverse-unwind (saga compensation) cursor. <c>null</c> means the run never entered compensation. A value
+    /// <c>k &gt; 0</c> means an unwind is in progress and compensators for step indices <c>[0, k)</c> remain to
+    /// run (in descending index order); the failed step's own index was the initial value, so the failed step is
+    /// never compensated. A value <c>0</c> means the reverse unwind finished and only the batch-level failure
+    /// chain (if any) remains. It is NEVER reset to <c>null</c> on a happy path (a terminal run is not resumed),
+    /// so a consumer asking "is this run compensating?" MUST also check <see cref="Status"/> is <c>null</c>.
+    /// Additive (non-<c>required</c>, default <c>null</c>): producers that never set it keep compiling, and a
+    /// store that cannot persist it degrades to "restart the unwind from the beginning" — never double-compensate.
+    /// </summary>
+    public int? CompensationStepIndex { get; init; }
+
+    /// <summary>
+    /// When this run was created by retrying a Failed run from its failed step, the id of the run this
+    /// retry was created FROM (its immediate predecessor — a retry of a retry links one hop back, so the
+    /// full lineage is the chain of these links). <c>null</c> for a normally-triggered run. The predecessor
+    /// keeps its <see cref="Status"/> Failed (history is honest). Additive (non-<c>required</c>, default <c>null</c>).
+    /// </summary>
+    public string? RetryOfBatchId { get; init; }
 }
 
 /// <summary>

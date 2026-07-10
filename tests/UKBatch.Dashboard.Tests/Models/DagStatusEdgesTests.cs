@@ -289,4 +289,90 @@ public sealed class DagStatusEdgesTests
             ("ap", "j2", "Sequential", false),
         }, "an ApprovalGate is a single spine node — both endpoints are its real StepId");
     }
+
+    // ── compensation edges: dashed parent → {parent}:comp ────────────────────────
+
+    private static BatchStep JobComp(string id, int order, string jobName = "JobX", string compJob = "Undo") => new()
+    {
+        StepId = id,
+        Order = order,
+        StepType = BatchStepType.Job,
+        Job = new JobStepData { JobName = jobName },
+        Compensation = new CompensationStepData { JobName = compJob },
+    };
+
+    [Fact]
+    public void Build_StepWithCompensator_EmitsDashedParentToDerivedEdge()
+    {
+        var steps = new[] { Job("a", 0, "A"), JobComp("b", 1, "B") };
+
+        var edges = BuildFor(steps).Select(Tuple).ToList();
+
+        var compId = CompensationStepIds.For("b");
+        edges.Should().ContainEquivalentOf(("b", compId, "Compensation", false),
+            "a step with a compensator emits a dashed parent → {parent}:comp edge");
+    }
+
+    [Fact]
+    public void Build_CompensationEdge_SurvivesRenderedSetGuard()
+    {
+        // The compensator's derived id ("{parent}:comp") is NOT in DagLayout.Nodes (DagLayout is untouched),
+        // yet the compensation edge MUST NOT be dropped by the rendered-set guard — the edge builder
+        // registers the derived id as rendered-by-construction. Prove the layout genuinely lacks the id, then
+        // prove the edge still survives.
+        var steps = new[] { JobComp("a", 0, "A") };
+        var layout = Layout(steps, Array.Empty<BatchStep>());
+        var compId = CompensationStepIds.For("a");
+
+        layout.Nodes.Select(n => n.StepId).Should().NotContain(compId,
+            "DagLayout does not synthesize compensation nodes (the canvas appends them)");
+
+        var edges = DagStatusEdges.Build(steps, Array.Empty<BatchStep>(), layout).Select(Tuple).ToList();
+
+        edges.Should().Contain(e => e.To == compId && e.Kind == "Compensation",
+            "the compensation edge target is rendered-by-construction, so the guard must not drop it");
+    }
+
+    [Fact]
+    public void Build_GroupCompensator_FansInFromAllRenderedChildren()
+    {
+        // A ParallelGroup's own StepId is NOT a rendered node — its children are. A group-level compensator
+        // therefore anchors from EVERY rendered child (fan-in style, matching the OnFailure-after-group rule),
+        // NEVER from the group's own id.
+        var group = new BatchStep
+        {
+            StepId = "pg",
+            Order = 0,
+            StepType = BatchStepType.ParallelGroup,
+            ParallelGroup = new ParallelGroupData
+            {
+                Steps = new[] { Job("x", 0, "X"), Job("y", 1, "Y") },
+                JoinPolicy = ParallelJoinPolicy.WaitAll,
+            },
+            Compensation = new CompensationStepData { JobName = "UndoGroup" },
+        };
+
+        var edges = BuildFor(new[] { group }).Select(Tuple).ToList();
+        var compId = CompensationStepIds.For("pg");
+
+        var compEdges = edges.Where(e => e.Kind == "Compensation").ToList();
+        compEdges.Should().BeEquivalentTo(new[]
+        {
+            ("x", compId, "Compensation", false),
+            ("y", compId, "Compensation", false),
+        }, "a group compensator fans in from all rendered children");
+        compEdges.Should().NotContain(e => e.From == "pg",
+            "the group's own (non-rendered) stepId must never be a compensation-edge source");
+    }
+
+    [Fact]
+    public void Build_NoCompensator_NoCompensationEdges()
+    {
+        var steps = new[] { Job("a", 0, "A"), Job("b", 1, "B") };
+
+        var edges = BuildFor(steps);
+
+        edges.Where(e => e.Kind == "Compensation").Should().BeEmpty(
+            "no compensators ⇒ no compensation edges (additive)");
+    }
 }

@@ -191,6 +191,58 @@ public abstract class BatchRunStoreParityTestBase : IAsyncLifetime
         (await Store.GetAsync("ghost", CancellationToken.None)).Should().BeNull("the absent id must not be inserted");
     }
 
+    // ===== update compensation cursor: reverse-unwind marker round-trip =====
+
+    [Fact]
+    public async Task CreatedRun_CompensationCursorAndRetryLink_DefaultToNull()
+    {
+        await SeedAsync(TestData.BatchRun("r1", stepCount: 3));
+
+        var fetched = (await Store.GetAsync("r1", CancellationToken.None))!;
+        fetched.CompensationStepIndex.Should().BeNull("a freshly created run never entered compensation");
+        fetched.RetryOfBatchId.Should().BeNull("a normally-triggered run has no retry lineage");
+    }
+
+    [Fact]
+    public async Task CreateThenGet_RoundTripsCompensationCursorAndRetryOfBatchId()
+    {
+        await SeedAsync(TestData.BatchRun("r2", stepCount: 4, compensationStepIndex: 2, retryOfBatchId: "r-original"));
+
+        var fetched = (await Store.GetAsync("r2", CancellationToken.None))!;
+        fetched.CompensationStepIndex.Should().Be(2, "the unwind cursor set at create time round-trips on every provider");
+        fetched.RetryOfBatchId.Should().Be("r-original", "the retry lineage link round-trips on every provider");
+    }
+
+    [Fact]
+    public async Task UpdateCompensationCursorAsync_SetsOverwritesClearsNull_AbsentNoOp()
+    {
+        await SeedAsync(TestData.BatchRun("r1", batchDefinitionId: "def-A", batchName: "Invoices", stepCount: 3, currentStepIndex: 2));
+
+        // Set: the initial unwind marker (the failed step's index) round-trips.
+        await Store.UpdateCompensationCursorAsync("r1", 2, CancellationToken.None);
+        var afterSet = (await Store.GetAsync("r1", CancellationToken.None))!;
+        afterSet.CompensationStepIndex.Should().Be(2, "the unwind cursor round-trips on every provider");
+        afterSet.Status.Should().BeNull("writing the unwind cursor must not terminate the run");
+        afterSet.CurrentStepIndex.Should().Be(2, "the unwind cursor must not disturb the forward cursor");
+        afterSet.BatchDefinitionId.Should().Be("def-A", "an unwind-cursor write must not disturb create-time fields");
+        afterSet.BatchName.Should().Be("Invoices");
+        afterSet.StepCount.Should().Be(3);
+
+        // Overwrite: the cursor descends as each compensator finishes; last write wins.
+        await Store.UpdateCompensationCursorAsync("r1", 1, CancellationToken.None);
+        (await Store.GetAsync("r1", CancellationToken.None))!.CompensationStepIndex.Should().Be(1);
+
+        // Clear to null: an explicit restart policy abandons the unwind.
+        await Store.UpdateCompensationCursorAsync("r1", null, CancellationToken.None);
+        (await Store.GetAsync("r1", CancellationToken.None))!.CompensationStepIndex.Should().BeNull(
+            "a null write clears the unwind cursor on every provider");
+
+        // Absent id: no-op, no insert (mirrors the forward-cursor contract).
+        var act = async () => await Store.UpdateCompensationCursorAsync("ghost", 1, CancellationToken.None);
+        await act.Should().NotThrowAsync("an unwind-cursor write on a missing row must be a no-op on every provider");
+        (await Store.GetAsync("ghost", CancellationToken.None)).Should().BeNull("the absent id must not be inserted");
+    }
+
     // ===== update forwarded state: durable resume payload round-trip =====
 
     /// <summary>

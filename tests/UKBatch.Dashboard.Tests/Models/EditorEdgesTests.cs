@@ -234,4 +234,48 @@ public sealed class EditorEdgesTests
         ((Action)(() => EditorEdges.Build(steps, null!)))
             .Should().Throw<ArgumentNullException>();
     }
+
+    // ── per-step compensator edges ────────────────────────────────────────────────
+
+    [Fact]
+    public void Build_StepWithCompensator_EmitsParentToDerivedIdEdge()
+    {
+        var withComp = Job("s1", "DoWork");
+        withComp.Compensation = new CompensationDraft { JobName = "UndoWork" };
+        var steps = new[] { withComp, Job("s2", "Next") };
+
+        var edges = EditorEdges.Build(steps, Array.Empty<WizardStepDraft>()).Select(Tuple).ToList();
+
+        edges.Should().Contain(("s1", CompensationStepIds.For("s1"), "OnFailure"),
+            "a compensator renders as its own node hanging off the step it undoes — parent → derived id");
+        edges.Should().Contain(("s1", "s2", "Sequential"), "the main flow is unaffected");
+        edges.Should().HaveCount(2, "no batch-level chain here — one sequential + one compensator edge");
+    }
+
+    [Fact]
+    public void Build_CompensatorEdges_CoexistWithFailureChain_AnchoredDifferently()
+    {
+        var withComp = Job("s1", "DoWork");
+        withComp.Compensation = new CompensationDraft { JobName = "UndoWork" };
+        var steps = new[] { withComp, Job("s2", "Last") };
+        var chain = new[] { Job("f1", "NotifyOps") };
+
+        var edges = EditorEdges.Build(steps, chain).Select(Tuple).ToList();
+
+        edges.Should().Contain(("s1", CompensationStepIds.For("s1"), "OnFailure"),
+            "the per-step compensator anchors on ITS OWN step");
+        edges.Should().Contain(("s2", "f1", "OnFailure"),
+            "the batch-level chain still anchors on the spine EXIT — the two mechanisms stay visually distinct");
+    }
+
+    [Fact]
+    public void Build_NoCompensators_EmitsNoDerivedIdEdges()
+    {
+        var steps = new[] { Job("s1"), Job("s2") };
+
+        var edges = EditorEdges.Build(steps, Array.Empty<WizardStepDraft>()).Select(Tuple).ToList();
+
+        edges.Should().OnlyContain(e => !e.To.EndsWith(CompensationStepIds.Suffix),
+            "compensator edges appear only when a step declares a compensator");
+    }
 }

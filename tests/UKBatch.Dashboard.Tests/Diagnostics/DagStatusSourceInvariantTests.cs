@@ -216,6 +216,21 @@ public sealed class DagStatusSourceInvariantTests
             .Select(m => m.Groups["name"].Value)
             .ToHashSet(StringComparer.Ordinal);
 
+    [Fact]
+    public void DagStatus_CompensationKindToken_LockedInEdgesAndCanvas()
+    {
+        // The "Compensation" node/edge kind is a rendering contract: the CSS selectors key off the
+        // lowercased kind token, and the canvas synthesizes compensator nodes with it. Renaming the
+        // token in one place silently unstyles the compensation lane, so lock it at both emit sites.
+        var edges = File.ReadAllText(ResolveRepoPath("src/UKBatch.Dashboard/Models/DagStatus/DagStatusEdges.cs"));
+        edges.Should().Contain("\"Compensation\"",
+            "the compensation edge kind token feeds the dashed parent-to-compensator styling");
+
+        var canvas = File.ReadAllText(ResolveRepoPath(DagStatusCanvasRelativePath));
+        canvas.Should().Contain("Compensation",
+            "the canvas must synthesize compensator nodes with the Compensation kind (and list them in the zero-JS fallback)");
+    }
+
     // ── source-root resolution (mirrors DragEditorSourceInvariantTests) ──────────
 
     private static string ResolveRepoPath(string relativePath)

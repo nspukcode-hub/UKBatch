@@ -20,6 +20,10 @@
                  @onclick="@(() => OnSelect.InvokeAsync(step.StepId))">
                 <span class="dag-ed-rail__num">@(idx + 1)</span>
                 <span class="dag-ed-rail__name">@ChipLabel(step)</span>
+                @if (step.Compensation is not null)
+                {
+                    <span class="dag-ed-rail__comp material-symbols-outlined" title="Has a compensator">undo</span>
+                }
                 <span class="dag-ed-rail__ctrls">
                     <button class="btn--icon btn--sm" aria-label="Move earlier" disabled="@(idx == 0)"
                             @onclick:stopPropagation="true"

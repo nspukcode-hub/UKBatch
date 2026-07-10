@@ -181,6 +181,27 @@ public sealed class MigrationSchemaTests
     }
 
     [Fact]
+    public async Task SqliteMigration_BatchRunsCompensationColumns_ExistAndAreNullable()
+    {
+        // The saga columns must exist on a really-migrated database AND be nullable: every pre-existing
+        // run row (and every run that never enters compensation / is not a retry) stores NULL in both.
+        await using var harness = await SqliteStoreHarness.CreateAsync();
+        await using var db = await harness.NewContextAsync();
+
+        var columns = await db.Database
+            .SqlQueryRaw<string>("SELECT name FROM pragma_table_info('BatchRuns')")
+            .ToListAsync();
+        columns.Should().Contain(new[] { "CompensationStepIndex", "RetryOfBatchId" },
+            "the additive migration adds the unwind cursor and the retry lineage link");
+
+        var nullableColumns = await db.Database
+            .SqlQueryRaw<string>("SELECT name FROM pragma_table_info('BatchRuns') WHERE \"notnull\" = 0")
+            .ToListAsync();
+        nullableColumns.Should().Contain(new[] { "CompensationStepIndex", "RetryOfBatchId" },
+            "both saga columns must be nullable so pre-existing rows and non-compensating runs are valid");
+    }
+
+    [Fact]
     public async Task SqliteMigration_HasMigrationHistoryTable_NotEnsureCreated()
     {
         // The adapter uses migrations (not EnsureCreated) — the __EFMigrationsHistory table must exist.

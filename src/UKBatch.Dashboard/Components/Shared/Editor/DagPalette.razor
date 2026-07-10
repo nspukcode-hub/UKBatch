@@ -27,8 +27,9 @@
        Job draft with the onFailure LANE flag set (it is NOT a BatchStepType). 'undo' icon = roll-back /
        compensate semantics; accent = --color-status-failed (matches the red-dashed branch). *@
     <div class="dag-ed-palette__tile dag-ed-palette__tile--failure" draggable="true"
+         title="Adds a step to the batch-level failure chain (runs after any failure). To attach a compensator to ONE specific step, open that step's Edit dialog and enable 'Add compensator'."
          ondragstart="event.dataTransfer.setData('application/x-ukbatch-step','OnFailure'); event.dataTransfer.effectAllowed='copy';">
         <span class="material-symbols-outlined">undo</span>
-        <span>Compensation</span>
+        <span>Failure chain</span>
     </div>
 </div>

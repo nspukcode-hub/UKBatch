@@ -415,6 +415,63 @@ internal static class BatchesEndpoints
             .WithUKBatchName(operationIdPrefix, "CancelBatchRun")
             .WithSummary("Cancels an in-flight batch RUN (the id returned from /run). Idempotent — returns 204 even if the run is unknown or already finished. Administrative override, independent of approval-gate roles.");
 
+        // POST /batches/{batchRunId}/retry — retries a FAILED run from the step it failed on, as a NEW
+        // run that carries the failed run's forwarded state so completed steps are not re-run. Run-keyed
+        // (mirrors /cancel). The runtime owns every precondition (Failed-only, not compensated, cursor
+        // provable, no definition drift); the endpoint just maps its typed rejections.
+        batches.MapPost("/{batchRunId}/retry", async (
+                string batchRunId,
+                IJobRunner runner,
+                CancellationToken ct) =>
+            {
+                ArgumentException.ThrowIfNullOrEmpty(batchRunId);
+                try
+                {
+                    var newRunId = await runner.RetryBatchAsync(batchRunId, ct).ConfigureAwait(false);
+                    return Results.Accepted(
+                        $"/batches/{newRunId}/status",
+                        new BatchRunResponse { BatchId = newRunId });
+                }
+                catch (BatchRunNotFoundException ex)
+                {
+                    return Results.Problem(
+                        type: ProblemDetailsConventions.BatchRunNotFound,
+                        statusCode: StatusCodes.Status404NotFound,
+                        title: "Batch run not found",
+                        detail: ex.Message);
+                }
+                catch (BatchRunNotRetryableException ex)
+                {
+                    return Results.Problem(
+                        type: ProblemDetailsConventions.BatchRunNotRetryable,
+                        statusCode: StatusCodes.Status409Conflict,
+                        title: "Batch run cannot be retried",
+                        detail: ex.Message);
+                }
+                catch (BatchDefinitionNotFoundException ex)
+                {
+                    return Results.Problem(
+                        type: ProblemDetailsConventions.BatchDefinitionNotFound,
+                        statusCode: StatusCodes.Status404NotFound,
+                        title: "Batch definition not found",
+                        detail: ex.Message);
+                }
+                catch (BatchTriggerValidationException ex)
+                {
+                    return Results.Problem(
+                        type: ProblemDetailsConventions.BatchTriggerValidation,
+                        statusCode: StatusCodes.Status400BadRequest,
+                        title: "Batch cannot be retried",
+                        detail: ex.Message,
+                        extensions: new Dictionary<string, object?>
+                        {
+                            ["errors"] = ex.Errors.Select(e => new { e.Path, e.Message }).ToArray(),
+                        });
+                }
+            })
+            .WithUKBatchName(operationIdPrefix, "RetryBatchRun")
+            .WithSummary("Retries a FAILED run from the step it failed on, as a new run carrying the failed run's forwarded state. Returns 202 with the NEW run id. 404 if unknown; 409 if the run is not Failed, was compensated, or the definition changed since the run started.");
+
         // POST /batches/by-id/{id}/pause — suspends the batch's schedule WITHOUT removing its cron, so the
         // operator can resume it later unchanged. Definition-keyed (mirrors the by-id update/delete routes);
         // distinct from the run-keyed /{batchRunId}/cancel which kills a single in-flight run. The manual

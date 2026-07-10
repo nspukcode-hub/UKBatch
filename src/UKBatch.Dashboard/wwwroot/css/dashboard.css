@@ -925,6 +925,8 @@ code, .mono { font-family: var(--font-mono); }
 .dag-ed-rail__chip--selected { border-color: var(--color-primary); background: var(--color-primary-container); color: var(--color-on-primary-container); }
 .dag-ed-rail__num { display: inline-flex; align-items: center; justify-content: center; min-width: 1.4em; height: 1.4em; padding: 0 0.3em; background: var(--color-primary); color: var(--color-on-primary); border-radius: var(--radius-full); font-size: var(--font-label-md-size); font-weight: var(--font-label-md-weight); }
 .dag-ed-rail__name { font-size: var(--font-body-md-size); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* "has a compensator" marker on a rail chip (compensators are edited in the modal, not shown as canvas nodes) */
+.dag-ed-rail__comp { font-size: 16px; color: var(--color-status-failed); flex: 0 0 auto; }
 .dag-ed-rail__ctrls { display: inline-flex; align-items: center; }
 .dag-ed-rail__arrow { color: var(--color-text-tertiary); font-size: 18px; }
 
@@ -1071,6 +1073,9 @@ code, .mono { font-family: var(--font-mono); }
 .dag-st-node--approval { border-left-color: var(--color-status-approval); }
 .dag-st-node--approval .dag-st-node__kindico { color: var(--color-status-approval); font-size: 16px; }
 .dag-st-node--unknown { border-style: dashed; opacity: 0.85; }
+/* compensation (reverse-unwind) node — a dashed accent in the failure colour, on its own lower lane */
+.dag-st-node--compensation { border-left-color: var(--color-status-failed); border-left-style: dashed; }
+.dag-st-node--compensation .dag-st-node__kindico { color: var(--color-status-failed); font-size: 16px; }
 
 .dag-st-node__head { display: flex; align-items: center; gap: var(--space-xs); }
 .dag-st-node__title { flex: 1 1 auto; min-width: 0; font-size: var(--font-body-md-size); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1149,6 +1154,8 @@ code, .mono { font-family: var(--font-mono); }
 /* connection flow lines — subtle stroke + arrowhead; status tint via [data-status] (set by the JS bridge) */
 .dag-status-canvas .drawflow .connection .main-path { stroke: var(--color-border-strong); stroke-width: 2px; fill: none; marker-end: url(#ukbatch-arrow); }
 .dag-status-canvas .drawflow .connection[data-kind="OnFailure"] .main-path { stroke: var(--color-status-failed); stroke-dasharray: 6 4; }
+/* compensation edge — dashed, failure-coloured, tighter dash than the OnFailure chain to read distinctly */
+.dag-status-canvas .drawflow .connection[data-kind="Compensation"] .main-path { stroke: var(--color-status-failed); stroke-dasharray: 2 4; }
 .dag-status-canvas .drawflow .connection[data-status="running"] .main-path { stroke: var(--color-status-running); }
 .dag-status-canvas .drawflow .connection[data-status="completed"] .main-path { stroke: var(--color-status-completed); }
 .dag-status-canvas .drawflow .connection[data-status="failed"] .main-path { stroke: var(--color-status-failed); }
@@ -1349,6 +1356,9 @@ code, .mono { font-family: var(--font-mono); }
 }
 .batch-step-list__detail { color: var(--color-text-primary); }
 .batch-step-list__children { margin-top: var(--space-xxs); display: flex; flex-direction: column; gap: var(--space-xxs); }
+/* per-step compensator annotation ("compensated by {job}") in the read-only step list */
+.batch-step-list__comp { display: flex; align-items: center; gap: var(--space-xxs); margin-top: 2px; color: var(--color-text-tertiary); font-size: var(--font-body-sm-size); }
+.batch-step-list__comp-icon { font-size: 15px; color: var(--color-status-failed); }
 
 /* Workers panel header + chips (the online/offline .worker-badge pill is defined earlier). */
 .workers-header {

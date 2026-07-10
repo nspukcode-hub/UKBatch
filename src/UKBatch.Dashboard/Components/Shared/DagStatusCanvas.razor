@@ -33,6 +33,22 @@ else if (_jsFailed)
                 }
             </li>
         }
+        @* Compensator nodes are synthesized outside the base layout, so the fallback must list them
+           explicitly — otherwise a JS-asset failure hides the compensation lane while the OnFailure
+           chain (which IS in the layout) stays visible. Clicking one opens the PARENT step's inspector
+           (the derived id resolves through the same selection path as the canvas). *@
+        @foreach (var s in Steps.Where(s => s.Compensation is not null))
+        {
+            var compId = CompensationStepIds.For(s.StepId);
+            <li class="dag-status-fallback__item dag-status-fallback__item--@FallbackStatusForId(compId)"
+                @key="compId" @onclick="@(() => SelectAsync(compId))">
+                <span class="dag-status-fallback__title mono">@s.Compensation!.JobName</span>
+                @if (StatusByStepId is not null && StatusFor(compId) is { } st)
+                {
+                    <JobStatusBadge Status="st" />
+                }
+            </li>
+        }
     </ul>
 }
 else
@@ -229,6 +245,13 @@ else
         var nodeClasses = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var n in _layout.Nodes)
             nodeClasses[n.StepId] = DagStatusClasses.NodeClass(n, StatusByStepId);
+        // Synthesized compensator nodes (absent from _layout.Nodes) must also receive live status ticks.
+        foreach (var step in Steps)
+        {
+            if (step.Compensation is null) continue;
+            var derivedId = CompensationStepIds.For(step.StepId);
+            nodeClasses[derivedId] = DagStatusClasses.NodeClassForStepId(derivedId, StatusByStepId);
+        }
 
         var edgeClasses = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var e in _structuralEdges)
@@ -314,6 +337,29 @@ else
             StatusClass = DagStatusClasses.NodeClass(n, StatusByStepId),
         }).ToList();
 
+        // Compensator nodes are NOT in DagLayout.Nodes — DagLayout is shared with the visual editor + SVG
+        // topology and stays untouched, so the run-status canvas synthesizes them here. Each top-level step
+        // with a compensator gets one node on the compensation lane, stamped with the derived correlation id
+        // ("{parent}:comp") that its execution row carries, so live status paints it like any other node.
+        foreach (var step in Steps)
+        {
+            if (step.Compensation is not { } comp) continue;
+            var derivedId = CompensationStepIds.For(step.StepId);
+            if (!pos.TryGetValue(derivedId, out var cp)) continue;   // defensive — layout always emits it
+            nodes.Add(new DagStatusNode
+            {
+                StepId = derivedId,
+                Kind = "Compensation",
+                Title = comp.JobName,
+                Subtitle = "compensation",
+                TargetService = string.IsNullOrWhiteSpace(comp.TargetService) ? null : comp.TargetService,
+                X = cp.X,
+                Y = cp.Y,
+                IsFailureBranch = true,
+                StatusClass = DagStatusClasses.NodeClassForStepId(derivedId, StatusByStepId),
+            });
+        }
+
         _structuralEdges = DagStatusEdges.Build(Steps, OnFailureSteps, _layout);
         var edges = _structuralEdges.Select(e => new DagStatusEdge
         {
@@ -333,19 +379,30 @@ else
     // Fallback-list status token (mirrors DagStatusClasses.NodeClass; "muted" when no entry).
     private string FallbackStatus(DagLayoutNode n) => DagStatusClasses.NodeClass(n, StatusByStepId) is { Length: > 0 } c ? c : "none";
 
+    // Fallback-list status token for a node known only by id (a compensator's derived id).
+    private string FallbackStatusForId(string stepId)
+        => DagStatusClasses.NodeClassForStepId(stepId, StatusByStepId) is { Length: > 0 } c ? c : "none";
+
     private BatchStep? FindStep(string stepId)
     {
+        // A compensator node carries a DERIVED id ("{parent}:comp") and is not a real BatchStep. Strip the
+        // suffix so a click on a compensator opens the PARENT step's inspector (the panel shows the parent
+        // plus its compensator info). A non-derived id resolves unchanged.
+        var resolved = stepId.EndsWith(CompensationStepIds.Suffix, StringComparison.Ordinal)
+            ? stepId[..^CompensationStepIds.Suffix.Length]
+            : stepId;
+
         foreach (var s in Steps)
         {
-            if (string.Equals(s.StepId, stepId, StringComparison.Ordinal)) return s;
+            if (string.Equals(s.StepId, resolved, StringComparison.Ordinal)) return s;
             if (s is { StepType: BatchStepType.ParallelGroup, ParallelGroup: { } pg })
             {
                 foreach (var c in pg.Steps)
-                    if (string.Equals(c.StepId, stepId, StringComparison.Ordinal)) return c;
+                    if (string.Equals(c.StepId, resolved, StringComparison.Ordinal)) return c;
             }
         }
         foreach (var s in OnFailureSteps)
-            if (string.Equals(s.StepId, stepId, StringComparison.Ordinal)) return s;
+            if (string.Equals(s.StepId, resolved, StringComparison.Ordinal)) return s;
         return null;
     }
 

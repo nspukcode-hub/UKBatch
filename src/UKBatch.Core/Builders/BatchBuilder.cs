@@ -42,6 +42,7 @@ public sealed class BatchBuilder
             },
             ParallelGroup = null,
             Approval = null,
+            Compensation = stepBuilder.Compensation,
             Metadata = null,
         });
         return this;
@@ -91,6 +92,7 @@ public sealed class BatchBuilder
             },
             ParallelGroup = null,
             Approval = null,
+            Compensation = stepBuilder.Compensation,
             Metadata = null,
         });
         return this;
@@ -132,6 +134,7 @@ public sealed class BatchBuilder
             Job = null,
             ParallelGroup = data,
             Approval = null,
+            Compensation = group.Compensation,
             Metadata = null,
         });
         return this;

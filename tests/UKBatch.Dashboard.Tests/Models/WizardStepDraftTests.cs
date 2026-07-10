@@ -141,6 +141,119 @@ public sealed class WizardStepDraftTests
         step.Approval!.TimeoutAfter.Should().BeNull("an empty/zero timeout maps to no timeout");
     }
 
+    // ── compensation round-trip (the load-bearing edit-safety change) ────────────────────
+    // Loading a builder-authored batch and re-saving it MUST preserve its compensators exactly; the
+    // earlier FromBatchStep ignored Compensation, so an edit silently stripped every compensator.
+
+    private static readonly string[] CompParamKeys = { "reason", "ref" };
+
+    private static BatchStep JobWithCompensation(
+        string jobName = "PlaceOrder",
+        string compJob = "CancelOrder",
+        string? compTarget = null) => new()
+    {
+        StepId = "s1",
+        Order = 0,
+        StepType = BatchStepType.Job,
+        Job = new JobStepData { JobName = jobName },
+        Compensation = new CompensationStepData
+        {
+            JobName = compJob,
+            TargetService = compTarget,
+            Parameters = new Dictionary<string, object?>(StringComparer.Ordinal) { ["reason"] = "rollback", ["ref"] = "42" },
+            MaxRetries = 3,
+            TimeoutSeconds = 90,
+        },
+    };
+
+    [Fact]
+    public void FromBatchStep_Job_RehydratesCompensation()
+    {
+        var draft = WizardStepDraft.FromBatchStep(JobWithCompensation(compTarget: "billing"));
+
+        draft.Compensation.Should().NotBeNull("edit-load MUST NOT drop a builder-authored compensator");
+        draft.Compensation!.JobName.Should().Be("CancelOrder");
+        draft.Compensation.TargetService.Should().Be("billing", "a cross-service compensator's target round-trips");
+        draft.Compensation.MaxRetries.Should().Be(3);
+        draft.Compensation.TimeoutSeconds.Should().Be(90);
+        draft.Compensation.Parameters.Select(p => p.Key).Should().BeEquivalentTo(CompParamKeys);
+    }
+
+    [Fact]
+    public void Compensation_RoundTrip_Job_PreservesCompensatorByteForByte()
+    {
+        var original = JobWithCompensation(compTarget: "billing");
+
+        // load → save must reproduce the compensator exactly (the lossy-edit regression guard).
+        var reprojected = WizardStepDraft.FromBatchStep(original).ToBatchStep(0);
+
+        reprojected.Compensation.Should().BeEquivalentTo(original.Compensation,
+            "a compensator must survive an edit-load + re-save unchanged");
+    }
+
+    [Fact]
+    public void Compensation_RoundTrip_ParallelGroup_PreservesGroupLevelCompensator()
+    {
+        var original = new BatchStep
+        {
+            StepId = "pg",
+            Order = 0,
+            StepType = BatchStepType.ParallelGroup,
+            ParallelGroup = new ParallelGroupData
+            {
+                JoinPolicy = ParallelJoinPolicy.WaitAll,
+                Steps = new[]
+                {
+                    new BatchStep { StepId = "c1", Order = 0, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "A" } },
+                    new BatchStep { StepId = "c2", Order = 1, StepType = BatchStepType.Job, Job = new JobStepData { JobName = "B" } },
+                },
+            },
+            Compensation = new CompensationStepData { JobName = "UndoBoth", TargetService = null, MaxRetries = 1 },
+        };
+
+        var reprojected = WizardStepDraft.FromBatchStep(original).ToBatchStep(0);
+
+        reprojected.Compensation.Should().BeEquivalentTo(original.Compensation,
+            "a group-level compensator must survive an edit-load + re-save unchanged");
+    }
+
+    [Fact]
+    public void ToBatchStep_NoCompensation_EmitsNullCompensation()
+    {
+        // A step without a compensator must emit null (additive: a definition with no compensators is
+        // byte-identical to before the feature).
+        var step = JobWithNoParameters().ToBatchStep(0);
+
+        step.Compensation.Should().BeNull("a step with no compensator draft emits no Compensation");
+    }
+
+    [Fact]
+    public void ToBatchStep_BlankCompensatorJobName_EmitsNullCompensation()
+    {
+        // Render-safe: an enabled-but-unfinished compensator (blank job name) is dropped rather than
+        // emitting an unrunnable step (mirrors the blank-parameter-row handling); the client validator
+        // surfaces the blank up front so the operator finishes it before submit.
+        var draft = JobWithNoParameters();
+        draft.Compensation = new CompensationDraft { JobName = "   " };
+
+        draft.ToBatchStep(0).Compensation.Should().BeNull("a blank compensator job name emits no Compensation");
+    }
+
+    [Fact]
+    public void FromBatchStep_ApprovalGate_LeavesCompensationNull()
+    {
+        var gate = new BatchStep
+        {
+            StepId = "g1",
+            Order = 0,
+            StepType = BatchStepType.ApprovalGate,
+            Approval = new ApprovalGateConfig { Title = "Confirm", AllowedRoles = new[] { "ops" }, OnTimeout = ApprovalTimeoutAction.Fail },
+        };
+
+        WizardStepDraft.FromBatchStep(gate).Compensation.Should().BeNull(
+            "an ApprovalGate step never carries a compensator");
+    }
+
     [Fact]
     public void FromBatchStep_ApprovalTimeoutAfter_HydratesTimeoutSeconds()
     {

@@ -28,12 +28,42 @@
             @(_cancelInFlight ? "Cancelling…" : "Cancel run")
         </button>
     }
+    @* Retry-from-failed-step — ONLY for a Failed run that was NOT compensated (an unwind already undid
+       its completed steps, so continuing forward would replay work on a rolled-back state). The server
+       re-checks every precondition; a 409 surfaces in the banner below. Gated on the persisted run row,
+       not the live summary, because the compensation cursor lives on the row. *@
+    @if (_loadedRun is { Status: JobStatus.Failed, CompensationStepIndex: null })
+    {
+        <button class="btn btn--secondary btn--sm" @onclick="@(() => _confirmRetryOpen = true)" disabled="@_retryInFlight">
+            <span class="material-symbols-outlined">replay</span>
+            @(_retryInFlight ? "Retrying…" : "Retry from failed step")
+        </button>
+    }
 </div>
 
 @if (_cancelError is { } cancelErr)
 {
     <ErrorBanner Message="@cancelErr" />
 }
+
+@if (_retryError is { } retryErr)
+{
+    <ErrorBanner Message="@retryErr" />
+}
+
+<ConfirmDialog IsVisible="@_confirmRetryOpen"
+               Title="Retry from failed step?"
+               ConfirmLabel="Retry"
+               CancelLabel="Keep as is"
+               IsDestructive="false"
+               OnConfirm="ConfirmRetryAsync"
+               OnCancel="@(() => { _confirmRetryOpen = false; return Task.CompletedTask; })">
+    <Body>
+        <p>This starts a NEW run that continues from the step where run
+           <span class="mono">@IdDisplay.Shorten(BatchRunId)</span> failed. Steps that already completed
+           are NOT re-run — their outputs carry over. This run stays Failed as history.</p>
+    </Body>
+</ConfirmDialog>
 
 <ConfirmDialog IsVisible="@_confirmCancelOpen"
                Title="Cancel run?"
@@ -220,6 +250,10 @@ else
     private bool _confirmCancelOpen;             // the "Cancel run?" confirm dialog
     private bool _cancelInFlight;                // true while the cancel REST call is in flight
     private string? _cancelError;                // surfaced in a banner if the cancel request itself fails
+    private BatchRun? _loadedRun;                // this run's persisted row (status + compensation cursor gate the retry CTA)
+    private bool _confirmRetryOpen;              // the "Retry from failed step?" confirm dialog
+    private bool _retryInFlight;                 // true while the retry REST call is in flight
+    private string? _retryError;                 // surfaced in a banner if the retry request fails (404/409)
 
     protected override async Task OnInitializedAsync()
     {
@@ -391,6 +425,7 @@ else
                 _runFetchFailed = true;
                 return;
             }
+            _loadedRun = run;   // the row also gates the retry CTA (Failed + not compensated)
             if (run.ForwardedState is { Count: > 0 } state)
             {
                 _forwardedInitialParameters = AsDictionary(state, ForwardedInitialParametersKey);
@@ -444,7 +479,41 @@ else
         if (summary.BatchId != BatchRunId) return;
         _completion = summary;
         await RefreshGatesAsync();   // final gate resolution — covers a TRAILING gate (no successor event)
+        // Re-fetch the persisted row now that the run is terminal: the pre-completion snapshot predates
+        // the final status AND the compensation cursor, and both gate the retry CTA.
+        _runLoaded = false;
+        _runFetchFailed = false;
+        await TryLoadRunAsync(summary.BatchDefinitionId);
         await _refresh!.RequestAsync();
+    }
+
+    // Starts a NEW run continuing from this run's failed step (this row is history and never mutated).
+    // The server re-validates every precondition; a rejection (already retried semantics do not exist —
+    // not-Failed / compensated / drift) surfaces as a 409 in the banner. On success, navigate straight to
+    // the new run so the operator watches the retry live.
+    private async Task ConfirmRetryAsync()
+    {
+        _confirmRetryOpen = false;
+        if (_client is null || _retryInFlight) return;
+        _retryInFlight = true;
+        _retryError = null;
+        try
+        {
+            var newRunId = await _client.RetryRunAsync(BatchRunId, CancellationToken.None);
+            Nav.NavigateTo($"/dashboard/{Uri.EscapeDataString(ServiceName)}/runs/{Uri.EscapeDataString(newRunId)}", forceLoad: true);
+        }
+        catch (UKBatchClientException ex)
+        {
+            _retryError = $"Could not retry the run: {ex.Message}";
+        }
+        catch (Exception)
+        {
+            _retryError = "Could not retry the run. Please retry.";
+        }
+        finally
+        {
+            _retryInFlight = false;
+        }
     }
 
     private Task OnNodeSelectedAsync(BatchStep step)

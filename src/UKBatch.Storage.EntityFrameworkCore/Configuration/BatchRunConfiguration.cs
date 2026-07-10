@@ -32,6 +32,8 @@ internal sealed class BatchRunConfiguration : IEntityTypeConfiguration<BatchRunE
         b.Property(e => e.Status).HasConversion<string>().HasMaxLength(32);   // nullable enum→string; null column allowed
         b.Property(e => e.TriggeredBy).HasMaxLength(256);
         b.Property(e => e.CurrentStepIndex);                                  // nullable int resume cursor; no index needed
+        b.Property(e => e.CompensationStepIndex);                             // nullable int unwind cursor
+        b.Property(e => e.RetryOfBatchId).HasMaxLength(64);                   // nullable retry lineage link
 
         var (conv, cmp) = JsonColumn.ForDictionary();
         b.Property(e => e.ForwardedState).HasConversion(conv, cmp).HasColumnType(_jsonType).IsRequired(false);

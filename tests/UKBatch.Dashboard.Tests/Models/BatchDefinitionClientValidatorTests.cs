@@ -126,6 +126,18 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
                 Steps = { ApprovalDraftTimeout("ag1", ApprovalTimeoutAction.Hold, timeoutSeconds: null) },
             },
         },
+        new object[]
+        {
+            // A compensation-bearing model that fails for another reason (blank Name): a VALID compensator
+            // must add NO path on either side, so the path-set stays {Name} on both — proving that carrying a
+            // compensator does not desync client and server validation.
+            "blank Name with a valid compensator",
+            new BatchWizardModel
+            {
+                Name = string.Empty,
+                Steps = { JobDraftWithCompensation("s1", "Echo", compJobName: "Undo") },
+            },
+        },
     };
 
     [Theory]
@@ -197,6 +209,63 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
         var errors = BatchDefinitionClientValidator.Validate(model);
 
         errors.Should().NotContainKey("OnFailureSteps[0].Job.JobName");
+    }
+
+    // ── compensation (per-step compensator) — the client surfaces a blank compensator job name up front
+    // so the operator finishes it before submit. The projection drops a blank compensator (render-safe),
+    // so it never reaches the server via the wizard; the server rule is the backstop for other callers,
+    // which is why this path is client-only (like the parameter-key rules) and excluded from the WAF parity
+    // matrix above ─────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Validate_CompensationBlankJobName_ReportsPath()
+    {
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            FailurePolicy = BatchFailurePolicy.Compensate,
+            Steps = { JobDraftWithCompensation("s1", "Echo", compJobName: string.Empty) },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().ContainKey("Steps[0].Compensation.JobName",
+            "a compensator with a blank job name must be surfaced before submit (mirrors the server rule)");
+    }
+
+    [Fact]
+    public void Validate_CompensationValidJobName_ProducesNoCompensationError()
+    {
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            FailurePolicy = BatchFailurePolicy.Compensate,
+            Steps = { JobDraftWithCompensation("s1", "Echo", compJobName: "Undo") },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().NotContainKey("Steps[0].Compensation.JobName",
+            "a valid compensator raises no error");
+    }
+
+    [Fact]
+    public void Validate_GroupLevelCompensationBlankJobName_ReportsPath()
+    {
+        // A group-level compensator is edited on the ParallelGroup step; a blank job name is surfaced too.
+        var group = ParallelDraft("pg", new[] { JobDraft("c1", "A"), JobDraft("c2", "B") });
+        group.Compensation = new CompensationDraft { JobName = string.Empty };
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            FailurePolicy = BatchFailurePolicy.Compensate,
+            Steps = { group },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().ContainKey("Steps[0].Compensation.JobName",
+            "a blank group-level compensator job name must be surfaced");
     }
 
     // ── approval gate on-timeout / timeout consistency (client-only focused cases; the WAF
@@ -478,6 +547,14 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
     };
 
     private static KeyValuePair<string, string> Param(string key, string value) => new(key, value);
+
+    private static WizardStepDraft JobDraftWithCompensation(string id, string jobName, string compJobName) => new()
+    {
+        StepId = id,
+        StepType = BatchStepType.Job,
+        JobName = jobName,
+        Compensation = new CompensationDraft { JobName = compJobName },
+    };
 
     private static WizardStepDraft JobDraftWithParameters(string id, params KeyValuePair<string, string>[] pairs) => new()
     {

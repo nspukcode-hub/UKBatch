@@ -17,6 +17,7 @@ public sealed class OnFailureBuilder
     {
         var stepBuilder = new JobStepBuilder();
         configure?.Invoke(stepBuilder);
+        ThrowIfChainStepHasCompensator(stepBuilder);
         var jobName = typeof(TJob).FullName ?? typeof(TJob).Name;
         _steps.Add(new BatchStep
         {
@@ -52,6 +53,7 @@ public sealed class OnFailureBuilder
         ArgumentException.ThrowIfNullOrEmpty(jobName);
         var stepBuilder = new JobStepBuilder();
         configure?.Invoke(stepBuilder);
+        ThrowIfChainStepHasCompensator(stepBuilder);
         _steps.Add(new BatchStep
         {
             StepId = IdGenerator.NewStepId(),
@@ -91,6 +93,19 @@ public sealed class OnFailureBuilder
     public OnFailureBuilder ThenRunPartitionedJob<TJob>(Action<JobStepBuilder>? configure = null)
         where TJob : class, IPartitionedJobMarker
         => RunPartitionedJob<TJob>(configure);
+
+    /// <summary>
+    /// A failure-chain step cannot carry its own compensator — the chain already IS the failure
+    /// response, and compensating it would recurse (there is no compensation of compensation). Fail
+    /// fast at build time rather than letting the validator reject the definition later.
+    /// </summary>
+    private static void ThrowIfChainStepHasCompensator(JobStepBuilder stepBuilder)
+    {
+        if (stepBuilder.Compensation is not null)
+        {
+            throw new InvalidOperationException("Compensation-chain steps cannot have compensators.");
+        }
+    }
 
     /// <summary>Returns the assembled compensation step list.</summary>
     internal IReadOnlyList<BatchStep> Build() => _steps;

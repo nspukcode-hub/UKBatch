@@ -24,8 +24,22 @@ public static class DagStatusClasses
         IReadOnlyDictionary<string, JobStatus>? statusByStepId)
     {
         ArgumentNullException.ThrowIfNull(node);
+        return NodeClassForStepId(node.StepId, statusByStepId);
+    }
+
+    /// <summary>
+    /// The <c>data-status</c> value for a node addressed by its <see cref="DagLayoutNode.StepId"/> directly.
+    /// Used for synthesized nodes that are NOT <see cref="DagLayoutNode"/>s (the compensator lane, keyed by a
+    /// derived <c>{parent}:comp</c> id). Same semantics as <see cref="NodeClass"/>: <c>""</c> in static mode,
+    /// <c>"muted"</c> when not started, the lower-cased status family otherwise.
+    /// </summary>
+    public static string NodeClassForStepId(
+        string stepId,
+        IReadOnlyDictionary<string, JobStatus>? statusByStepId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(stepId);
         if (statusByStepId is null) return string.Empty;                 // static mode — no status styling
-        if (!statusByStepId.TryGetValue(node.StepId, out var s)) return "muted"; // not started yet
+        if (!statusByStepId.TryGetValue(stepId, out var s)) return "muted"; // not started yet
         return StatusToken(s);
     }
 
