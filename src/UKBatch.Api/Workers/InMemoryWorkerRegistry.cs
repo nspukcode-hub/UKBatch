@@ -107,6 +107,7 @@ internal sealed class InMemoryWorkerRegistry : IWorkerRegistry
             {
                 Name = name,
                 Jobs = entry.Beat.Jobs,
+                JobDescriptors = entry.Beat.JobDescriptors,
                 Tags = entry.Beat.Tags,
                 Status = entry.Beat.Status,
                 LastSeenUtc = entry.LastSeen,

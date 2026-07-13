@@ -109,7 +109,8 @@ internal static class AttributeJobDiscovery
                         : 0,
                     itemErrorPolicy: isPartitioned ? attr.ItemErrorPolicy : ItemErrorPolicy.FailFast,
                     defaultParameters: null,   // no attribute parity for default parameters (a dictionary is not a legal attribute argument)
-                    tags: attr.Tags);
+                    tags: attr.Tags,
+                    declaredParameters: null); // the [Job] attribute cannot carry rich typed parameter defaults
 
                 // Fail-fast on an invalid cron in [Job(Schedule = "...")] — a programmer error, surfaced at
                 // AddUKBatch time exactly like the fluent JobBuilder path (rather than crashing host startup).

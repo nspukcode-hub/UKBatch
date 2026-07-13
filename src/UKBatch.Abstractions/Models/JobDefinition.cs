@@ -42,6 +42,13 @@ public sealed record class JobDefinition
     public required IReadOnlyList<string> Tags { get; init; }
 
     /// <summary>
+    /// Parameters this job announced at registration via <c>WithParameter&lt;T&gt;</c>. Empty when none
+    /// were declared. Announcement metadata — it drives the typed trigger form and per-job schema; it is
+    /// NOT merged into <see cref="DefaultParameters"/> and never rejects an undeclared key.
+    /// </summary>
+    public IReadOnlyList<JobParameterDescriptor> DeclaredParameters { get; init; } = [];
+
+    /// <summary>
     /// Originating service name for cross-service jobs (matches <see cref="Transport.JobMessage.SourceService"/>);
     /// <c>null</c> for local execution.
     /// </summary>

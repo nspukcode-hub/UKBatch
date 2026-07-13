@@ -16,6 +16,12 @@ internal sealed class StubJobDefinitionLookup : IJobDefinitionLookup
         _all = jobNames.Select(Make).ToArray();
     }
 
+    // Full-definition overload so a test can advertise declared parameters through the heartbeat.
+    public StubJobDefinitionLookup(IReadOnlyList<JobDefinition> jobs)
+    {
+        _all = jobs;
+    }
+
     public JobDefinition? TryGet(string jobName)
         => _all.FirstOrDefault(j => string.Equals(j.Name, jobName, StringComparison.Ordinal));
 

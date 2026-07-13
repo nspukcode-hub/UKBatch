@@ -1,6 +1,7 @@
 using Bunit;
 using FluentAssertions;
 using NSubstitute;
+using UKBatch.Abstractions.Jobs;
 using UKBatch.Abstractions.Models;
 using UKBatch.Api.Common;
 using UKBatch.Api.Executions;
@@ -223,5 +224,55 @@ public sealed class JobsDetailTests : TestContext
                 "an event for a different job must not add a row");
             cut.Markup.Should().NotContain("/executions/exec-other");
         });
+    }
+
+    [Fact]
+    public void Trigger_NoDeclaredParameters_KeepsRawJsonTextarea()
+    {
+        var cut = RenderJob(RecentEnvelope(1), out _);
+
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Recent executions"));
+        cut.FindAll("#trigger-params").Should().ContainSingle("a job with no declared parameters keeps the raw JSON textarea");
+        cut.FindAll("#declared-param-extra").Should().BeEmpty("the typed form is not rendered");
+        cut.Markup.Should().NotContain("Declared parameters");
+    }
+
+    [Fact]
+    public void Trigger_WithDeclaredParameters_ShowsTypedForm_ReadOnlyList_AndDisablesRunWhileInvalid()
+    {
+        var definition = Definition() with
+        {
+            DeclaredParameters = new[]
+            {
+                new JobParameterDescriptor { Name = "orderId", Kind = ParameterValueKind.String, Required = true },
+            },
+        };
+        var cut = RenderJobWith(definition, RecentEnvelope(1));
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.FindAll("#trigger-params").Should().BeEmpty("the raw JSON textarea is replaced by the typed form");
+            cut.FindAll("#declared-param-orderId").Should().ContainSingle("the typed input for the declared parameter renders");
+            cut.Markup.Should().Contain("Declared parameters", "the read-only declared-parameters section renders");
+            cut.Find("button.btn--primary").HasAttribute("disabled").Should().BeTrue("Run Now is disabled while a required field is empty");
+        });
+    }
+
+    private IRenderedComponent<Detail> RenderJobWith(JobDefinitionDto definition, PageEnvelope<JobExecution> envelope)
+    {
+        var svc = PageTestHelpers.Descriptor("svc");
+        var registry = PageTestHelpers.RegistryWith(svc);
+        var client = PageTestHelpers.BuildClient();
+        client.GetJobAsync(JobName, Arg.Any<CancellationToken>()).Returns(definition);
+        client.QueryExecutionsAsync(Arg.Any<JobQueryRequest>(), Arg.Any<CancellationToken>()).Returns(envelope);
+
+        Services.AddSingleton(registry);
+        Services.AddSingleton(PageTestHelpers.FactoryFor(svc.Name, client));
+        Services.AddSingleton(PageTestHelpers.NewState());
+        Services.AddSingleton(PageTestHelpers.NewNotifications());
+
+        return RenderComponent<Detail>(p => p
+            .Add(d => d.ServiceName, svc.Name)
+            .Add(d => d.Name, JobName));
     }
 }

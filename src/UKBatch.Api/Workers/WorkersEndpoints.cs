@@ -36,6 +36,15 @@ internal static class WorkersEndpoints
     /// <summary>Largest accepted Tags array.</summary>
     private const int MaxTagsCount = 100;
 
+    /// <summary>Largest accepted JobDescriptors array (mirrors <see cref="MaxJobsCount"/>).</summary>
+    private const int MaxJobDescriptorsCount = 1000;
+
+    /// <summary>Maximum declared parameters carried by a single job descriptor.</summary>
+    private const int MaxParametersPerDescriptor = 200;
+
+    /// <summary>Maximum length of a declared parameter description.</summary>
+    private const int MaxDescriptionLength = 500;
+
     public static void Map(RouteGroupBuilder group, string? operationIdPrefix)
     {
         ArgumentNullException.ThrowIfNull(group);
@@ -100,8 +109,55 @@ internal static class WorkersEndpoints
                     }
                 }
 
+                // {"jobDescriptors":null} deserializes the property to null; a null element or a null
+                // Parameters list ({"parameters":null}) would also slip past the init-default. Guard all
+                // three so a malformed beat returns a clear 400 rather than a 500.
+                var jobDescriptors = body.JobDescriptors ?? [];
+                if (jobDescriptors.Count > MaxJobDescriptorsCount)
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]>
+                    {
+                        ["JobDescriptors"] = [$"JobDescriptors <= {MaxJobDescriptorsCount}."],
+                    });
+                }
+                foreach (var descriptor in jobDescriptors)
+                {
+                    if (descriptor is null || string.IsNullOrWhiteSpace(descriptor.Name) || descriptor.Name.Length > MaxNameLength)
+                    {
+                        return Results.ValidationProblem(new Dictionary<string, string[]>
+                        {
+                            ["JobDescriptors"] = [$"Each descriptor Name must be non-empty and <= {MaxNameLength} chars."],
+                        });
+                    }
+                    var descriptorParams = descriptor.Parameters ?? [];
+                    if (descriptorParams.Count > MaxParametersPerDescriptor)
+                    {
+                        return Results.ValidationProblem(new Dictionary<string, string[]>
+                        {
+                            ["JobDescriptors"] = [$"Each descriptor carries <= {MaxParametersPerDescriptor} parameters."],
+                        });
+                    }
+                    foreach (var declared in descriptorParams)
+                    {
+                        if (declared is null || string.IsNullOrWhiteSpace(declared.Name) || declared.Name.Length > MaxNameLength
+                            || (declared.Description is { Length: var dl } && dl > MaxDescriptionLength))
+                        {
+                            return Results.ValidationProblem(new Dictionary<string, string[]>
+                            {
+                                ["JobDescriptors"] = [$"Each parameter Name must be non-empty and <= {MaxNameLength}; Description <= {MaxDescriptionLength}."],
+                            });
+                        }
+                    }
+                }
+
+                // Normalize each descriptor's Parameters to a non-null list so the registry and the list
+                // snapshot never see null (an explicit {"parameters":null} slips past the init-default).
+                var normalizedDescriptors = jobDescriptors
+                    .Select(d => d with { Parameters = d.Parameters ?? [] })
+                    .ToArray();
+
                 // Store a beat with non-null lists so the registry and the list snapshot never see null.
-                var normalized = body with { Jobs = jobs, Tags = tags };
+                var normalized = body with { Jobs = jobs, Tags = tags, JobDescriptors = normalizedDescriptors };
                 registry.Upsert(normalized, clock.GetUtcNow());
                 return Results.Accepted();
             })

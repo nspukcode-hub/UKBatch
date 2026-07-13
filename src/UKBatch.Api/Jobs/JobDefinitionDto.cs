@@ -1,3 +1,4 @@
+using UKBatch.Abstractions.Jobs;
 using UKBatch.Abstractions.Models;
 
 namespace UKBatch.Api.Jobs;
@@ -38,6 +39,9 @@ public sealed record class JobDefinitionDto
     /// <summary>User-supplied tags for grouping / filtering.</summary>
     public required IReadOnlyList<string> Tags { get; init; }
 
+    /// <summary>Parameters this job declared at registration. Empty when none.</summary>
+    public IReadOnlyList<JobParameterDescriptor> DeclaredParameters { get; init; } = [];
+
     /// <summary>Maps from a <see cref="JobDefinition"/> to the wire DTO.</summary>
     public static JobDefinitionDto FromModel(JobDefinition def)
     {
@@ -52,6 +56,7 @@ public sealed record class JobDefinitionDto
             PartitionWorkerCount = def.PartitionWorkerCount,
             DefaultParameters = def.DefaultParameters,
             Tags = def.Tags,
+            DeclaredParameters = def.DeclaredParameters,
         };
     }
 }

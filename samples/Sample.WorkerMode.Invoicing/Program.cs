@@ -14,8 +14,13 @@ builder.AddUKBatchAspNetCore(b =>
     b.Configure(o => o.MaxDegreeOfParallelism = 4);
 
     // The job's routing name is "GenerateInvoice" via [Job(Name = "GenerateInvoice")]; the server's
-    // batch definition references it as the step JobName + OnService("invoicing").
-    b.AddJob<GenerateInvoiceJob>();
+    // batch definition references it as the step JobName + OnService("invoicing"). The declared
+    // parameters are advertised to the server on the heartbeat, so the orchestrator can see what this
+    // remote job expects (GET /api/workers -> jobDescriptors).
+    b.AddJob<GenerateInvoiceJob>()
+        .WithParameter<string>("customer", defaultValue: "Acme Corporation", description: "Billing customer.")
+        .WithParameter<decimal>("amount", defaultValue: 1499.90m, description: "Invoice amount.")
+        .WithParameter<bool>("fail", defaultValue: false, description: "Inject a failure to exercise compensation.");
     b.AddJob<CancelInvoiceJob>();
 
     // Intra-job parallelism demo: an IPartitionedJob<InvoiceRow> — "SELECT, then process

@@ -1,0 +1,44 @@
+# Standalone embedded-mode demo for DECLARED JOB PARAMETERS — kept separate from the main
+# server+workers stack (distinct container name + host port 5080) so it never clashes.
+#
+# One container: REST API + Blazor Dashboard + local jobs, in-memory storage (no Postgres/RabbitMQ).
+#
+#   docker compose -f docker-compose.declared-params.yml up --build
+#
+# Try it:
+#   - Typed Trigger form:  http://localhost:5080/dashboard/self/jobs/Sample.Dashboard.Jobs.ParameterizedJob
+#       (text / number / checkbox / datetime-local / JSON fields, pre-filled from declared defaults;
+#        "Run Now" stays disabled until the required orderId is filled)
+#   - Per-job schema (REST):  curl -s http://localhost:5080/api/jobs/Sample.Dashboard.Jobs.ParameterizedJob | jq .declaredParameters
+#   - Server enforcement (400 on missing required):
+#       curl -s -o /dev/null -w '%{http_code}\n' -XPOST http://localhost:5080/api/jobs/Sample.Dashboard.Jobs.ParameterizedJob/trigger \
+#            -H 'content-type: application/json' -d '{"parameters":{}}'          # -> 400
+#       curl -s -o /dev/null -w '%{http_code}\n' -XPOST http://localhost:5080/api/jobs/Sample.Dashboard.Jobs.ParameterizedJob/trigger \
+#            -H 'content-type: application/json' -d '{"parameters":{"orderId":"A-1"}}'   # -> 202
+#   - OpenAPI document:  http://localhost:5080/openapi/v1.json
+#
+# Isolated compose project ('name:' below) so it never touches the main server+workers stack — teardown
+# with:  docker compose -f docker-compose.declared-params.yml down
+name: ukbatch-declared-params-demo
+services:
+  declared-params-demo:
+    image: ukbatch/sample-declared-params:local
+    container_name: ukbatch-declared-params-demo
+    build:
+      context: .
+      dockerfile: samples/Sample.Dashboard/Dockerfile
+    environment:
+      # Development so the sample's header-trusting DevAuth scheme is allowed (it refuses in Production).
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      # The embedded dashboard's loopback client calls its own /api. TRAILING SLASH MANDATORY
+      # (HttpClient strips the last path segment per RFC 3986). Overrides the appsettings :5057 value
+      # to the in-container port.
+      UKBatch__Dashboard__Services__0__BaseUrl: "http://localhost:8080/api/"
+    ports:
+      - "5080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10

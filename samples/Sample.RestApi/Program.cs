@@ -25,6 +25,10 @@ builder.AddUKBatchAspNetCore(b =>
     b.AddJob<EmailNotificationJob>();
     b.AddJob<ArchiveJob>();
     b.AddJob<RollbackJob>();
+    b.AddJob<ParameterizedJob>()
+        .WithParameter<string>("orderId", required: true, description: "The order to process.")
+        .WithParameter<int>("retries", defaultValue: 3, description: "Retry budget for downstream calls.")
+        .WithParameter<bool>("dryRun", defaultValue: false, description: "Log only; do not commit.");
     // Fixture — a partitioned job for pagination tests.
     b.AddPartitionedJob<BulkArchiveJob, string>();
     b.AddBatch(InvoicePipelineName, batch => batch

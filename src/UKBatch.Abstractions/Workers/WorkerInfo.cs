@@ -19,6 +19,9 @@ public sealed record class WorkerInfo
     /// <summary>Names of the jobs this worker advertised on its last beat.</summary>
     public IReadOnlyList<string> Jobs { get; init; } = [];
 
+    /// <summary>Declared-parameter descriptors this worker advertised on its last beat.</summary>
+    public IReadOnlyList<WorkerJobDescriptor> JobDescriptors { get; init; } = [];
+
     /// <summary>Free-form tags this worker advertised on its last beat.</summary>
     public IReadOnlyList<string> Tags { get; init; } = [];
 

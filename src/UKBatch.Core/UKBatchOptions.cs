@@ -142,4 +142,19 @@ public sealed class UKBatchOptions
     /// batches) in which case empty <c>ThisServiceName</c> is fine.</para>
     /// </remarks>
     public string? ThisServiceName { get; set; }
+
+    /// <summary>
+    /// When true (default), the single-job REST trigger (<c>POST /jobs/{name}/trigger</c>) rejects a
+    /// call that omits a required declared parameter with a 400
+    /// (<c>ukbatch:job-parameter-validation</c>). Set false to disable server-side enforcement (the
+    /// typed dashboard form still validates client-side).
+    /// </summary>
+    /// <remarks>
+    /// Batch steps are never pre-flight-rejected — a step's parameter may arrive via a forwarded output,
+    /// so a missing required value surfaces at execution through
+    /// <c>JobParameters.GetRequired&lt;T&gt;</c>. Cron-fired triggers likewise bypass this check (the
+    /// scheduler can only supply <c>DefaultParameters</c>); a required-without-default cron job surfaces
+    /// the same way at execution.
+    /// </remarks>
+    public bool EnforceDeclaredParameters { get; set; } = true;
 }

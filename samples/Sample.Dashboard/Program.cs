@@ -32,6 +32,16 @@ builder.AddUKBatchAspNetCore(b =>
     b.AddJob<PrepareOrderJob>();
     b.AddJob<ProcessInvoiceJob>();
     b.AddJob<FinalizeOrderJob>();
+    // Declared parameters demo: the job announces its expected parameters, so the dashboard Trigger
+    // screen renders a typed form (text/number/checkbox/datetime-local/JSON) instead of a raw JSON box,
+    // and the single-job REST trigger rejects a missing required 'orderId' with a 400.
+    b.AddJob<ParameterizedJob>()
+        .WithParameter<string>("orderId", required: true, description: "The order to process.")
+        .WithParameter<int>("retries", defaultValue: 3, description: "Retry budget for downstream calls.")
+        .WithParameter<decimal>("amount", defaultValue: 99.90m, description: "Order amount.")
+        .WithParameter<bool>("dryRun", defaultValue: false, description: "Log only; do not commit.")
+        .WithParameter<DateTime?>("scheduledFor", description: "Optional run time.")
+        .WithParameter<DemoOrder>("metadata", description: "Optional structured metadata (JSON).");
     b.AddBatch(InvoicePipelineName, batch => batch
         .RunJob<InvoiceGenerationJob>()
         .ThenInParallel(p => p
