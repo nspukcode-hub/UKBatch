@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text.Json;
 using FluentAssertions;
+using UKBatch.Abstractions.Jobs;
+using UKBatch.Abstractions.Models;
 using UKBatch.Abstractions.Workers;
 using UKBatch.Worker.Tests.Common;
 using Xunit;
@@ -199,5 +201,36 @@ public sealed class WorkerHeartbeatServiceTests
         Func<Task> act = () => h.Service.StopAsync(cancelled.Token);
         await act.Should().NotThrowAsync(
  " the graceful Offline beat swallows everything (incl. OperationCanceledException) so host shutdown is never disturbed");
+    }
+
+    [Fact]
+    public async Task Beat_IncludesDeclaredParameterDescriptors()
+    {
+        var job = new JobDefinition
+        {
+            Name = "RemoteJob",
+            IsPartitioned = false,
+            MaxRetries = 0,
+            TimeoutSeconds = 0,
+            DefaultParameters = new Dictionary<string, object?>(),
+            Tags = [],
+            DeclaredParameters = [new JobParameterDescriptor { Name = "orderId", Kind = ParameterValueKind.String, Required = true }],
+        };
+        await using var h = HeartbeatHarness.Build(ValidOptions(), jobs: new[] { job });
+
+        await h.Service.StartAsync(CancellationToken.None);
+        await AdvanceUntilAsync(h, TimeSpan.FromSeconds(2), () => h.Handler.CallCount >= 1);
+
+        var beat = h.Handler.Beats.Last();
+        using var doc = JsonDocument.Parse(beat.Body);
+        var descriptors = doc.RootElement.GetProperty("jobDescriptors").EnumerateArray().ToList();
+        descriptors.Should().ContainSingle("the beat advertises one job's declared parameters");
+        descriptors[0].GetProperty("name").GetString().Should().Be("RemoteJob");
+        var declared = descriptors[0].GetProperty("parameters").EnumerateArray().Single();
+        declared.GetProperty("name").GetString().Should().Be("orderId");
+        declared.GetProperty("kind").GetString().Should().Be("String", "kind crosses the wire as its string name");
+        declared.GetProperty("required").GetBoolean().Should().BeTrue();
+
+        await h.Service.StopAsync(CancellationToken.None);
     }
 }

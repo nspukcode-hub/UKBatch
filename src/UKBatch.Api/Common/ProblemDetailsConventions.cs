@@ -53,4 +53,7 @@ public static class ProblemDetailsConventions
 
     /// <summary><c>ukbatch:batch-run-not-retryable</c> — the run exists but cannot be retried from its failed step (409).</summary>
     public const string BatchRunNotRetryable = TypePrefix + "batch-run-not-retryable";
+
+    /// <summary><c>ukbatch:job-parameter-validation</c> — 400.</summary>
+    public const string JobParameterValidation = TypePrefix + "job-parameter-validation";
 }

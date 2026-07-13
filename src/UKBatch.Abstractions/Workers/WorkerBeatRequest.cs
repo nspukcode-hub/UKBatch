@@ -22,6 +22,12 @@ public sealed record class WorkerBeatRequest
     /// <summary>Names of the jobs this worker has registered. Empty when the worker hosts no jobs.</summary>
     public IReadOnlyList<string> Jobs { get; init; } = [];
 
+    /// <summary>
+    /// Declared-parameter descriptors for each advertised job. Empty when a worker declares none.
+    /// Additive to <see cref="Jobs"/>; an older server that does not know this field simply ignores it.
+    /// </summary>
+    public IReadOnlyList<WorkerJobDescriptor> JobDescriptors { get; init; } = [];
+
     /// <summary>Free-form tags surfaced in the dashboard Workers panel (e.g. <c>["eu-west","gpu"]</c>).</summary>
     public IReadOnlyList<string> Tags { get; init; } = [];
 

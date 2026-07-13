@@ -32,7 +32,8 @@ internal static class JobDefinitionFactory
         int partitionWorkerCount,
         ItemErrorPolicy itemErrorPolicy,
         IReadOnlyDictionary<string, object?>? defaultParameters,
-        IReadOnlyList<string>? tags)
+        IReadOnlyList<string>? tags,
+        IReadOnlyList<JobParameterDescriptor>? declaredParameters = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(name);
         ArgumentNullException.ThrowIfNull(implementationType);
@@ -44,6 +45,10 @@ internal static class JobDefinitionFactory
         var copiedTags = tags is null || tags.Count == 0
             ? (IReadOnlyList<string>)Array.Empty<string>()
             : tags.ToArray();
+
+        var copiedDeclared = declaredParameters is null || declaredParameters.Count == 0
+            ? (IReadOnlyList<JobParameterDescriptor>)Array.Empty<JobParameterDescriptor>()
+            : declaredParameters.ToArray();
 
         return new JobDefinition
         {
@@ -58,6 +63,7 @@ internal static class JobDefinitionFactory
             DefaultParameters = copiedParams,
             Tags = copiedTags,
             SourceService = null,
+            DeclaredParameters = copiedDeclared,
         };
     }
 

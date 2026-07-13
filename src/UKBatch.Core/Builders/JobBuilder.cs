@@ -32,6 +32,7 @@ public sealed class JobBuilder
     private ItemErrorPolicy _itemErrorPolicy;
     private string[]? _tags;
     private IReadOnlyDictionary<string, object?>? _defaultParameters;
+    private List<JobParameterDescriptor>? _declaredParameters;
 
     internal JobBuilder(
         IServiceCollection services,
@@ -153,6 +154,26 @@ public sealed class JobBuilder
     }
 
     /// <summary>
+    /// Declares a parameter this job expects. Announcement metadata: it powers the typed dashboard
+    /// trigger form and the per-job REST/OpenAPI schema. It does NOT restrict which keys may be passed
+    /// (undeclared keys stay permissive) and <paramref name="defaultValue"/> is NOT merged into the
+    /// dispatch parameters — it is a form pre-fill / schema default only. When <paramref name="required"/>
+    /// is true, the single-job REST trigger rejects a call that omits the key (subject to
+    /// <see cref="UKBatchOptions.EnforceDeclaredParameters"/>).
+    /// </summary>
+    public JobBuilder WithParameter<T>(
+        string name,
+        T? defaultValue = default,
+        bool required = false,
+        string? description = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        (_declaredParameters ??= []).Add(
+            JobParameterDescriptor.Create(name, defaultValue, required, description));
+        return this;
+    }
+
+    /// <summary>
     /// Materialises the registration into the registry + DI container using the FINAL options
     /// snapshot produced by <see cref="UKBatchBuilder.Complete"/>. Cron expressions are validated
     /// here (deferred from <see cref="WithSchedule"/>) against
@@ -190,7 +211,8 @@ public sealed class JobBuilder
             partitionWorkerCount: _isPartitioned ? (_partitionWorkerCount ?? finalOptions.DefaultPartitionWorkerCount) : 0,
             itemErrorPolicy: _itemErrorPolicy,
             defaultParameters: _defaultParameters,
-            tags: _tags);
+            tags: _tags,
+            declaredParameters: _declaredParameters);
         var validation = Validation.JobDefinitionValidator.Validate(def);
         if (!validation.IsValid)
         {

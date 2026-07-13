@@ -1,0 +1,70 @@
+# Isolated server + worker demo for DECLARED PARAMETERS ACROSS MICROSERVICES.
+#
+# A job on the invoicing worker declares its parameters (.WithParameter). The worker advertises those
+# descriptors to the server on its heartbeat, so the orchestrator can see what a REMOTE job expects.
+#
+# Fully isolated from the main server+workers stack: distinct compose project (name: below), distinct
+# container names (ukbatch-decl-*), distinct image tags (:declared-params-demo — does NOT overwrite the
+# main stack's :local images), distinct host port (5090). In-memory server storage → NO Postgres, so the
+# main stack's database is never touched.
+#
+#   docker compose -f docker-compose.worker-declared-params.yml up --build
+#
+# Then see the remote job's declared parameters reach the orchestrator:
+#   curl -s http://localhost:5090/api/workers | jq '.[] | {name, jobDescriptors}'
+# and the dashboard Workers panel:  http://localhost:5090/dashboard/self/workers
+name: ukbatch-worker-declared-params
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: ukbatch-decl-rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  server:
+    image: ukbatch/server:declared-params-demo
+    container_name: ukbatch-decl-server
+    build:
+      context: .
+      dockerfile: src/UKBatch.Server/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      UKBATCH_SERVICE_NAME: ukbatch-server
+      # In-memory server state — no Postgres, so this demo never touches the main stack's database.
+      UKBATCH_STORAGE: inmemory
+      UKBATCH_TRANSPORT: rabbitmq
+      UKBatch__Transport__RabbitMQ__HostName: rabbitmq
+      UKBatch__Transport__RabbitMQ__AllowInsecureBroker: "true"
+      UKBATCH_ENABLE_DASHBOARD: "true"
+      UKBATCH_DEV_AUTH: "true"
+      UKBatch__Dashboard__SelfBaseUrl: "http://localhost:8080/api/"
+    ports:
+      - "5090:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker-invoicing:
+    image: ukbatch/sample-worker-invoicing:declared-params-demo
+    container_name: ukbatch-decl-invoicing
+    build:
+      context: .
+      dockerfile: samples/Sample.WorkerMode.Invoicing/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      server:
+        condition: service_started
+    environment:
+      UKBatch__Worker__WorkerName: invoicing
+      UKBatch__Worker__ServerUrl: "http://server:8080"
+      UKBatch__Transport__RabbitMQ__HostName: rabbitmq
+      UKBatch__Transport__RabbitMQ__AllowInsecureBroker: "true"

@@ -81,6 +81,8 @@ internal static class JobsEndpoints
                 string name,
                 JobTriggerRequest? body,
                 IJobRunner runner,
+                IJobDefinitionLookup lookup,
+                IOptions<UKBatchOptions> options,
                 IJobTriggerContext idCtx,
                 IJobTraceContext traceCtx,
                 HttpContext http,
@@ -90,6 +92,45 @@ internal static class JobsEndpoints
                 var parameters = body?.Parameters is { } p
                     ? new JobParameters(p)
                     : JobParameters.Empty;
+
+                // Reject a trigger that omits a required declared parameter before any dispatch
+                // side-effect. An unknown name is left to fall through to the runner's typed
+                // JobNotRegisteredException -> 404 path, so this never turns a not-registered job into a
+                // 400. A present-but-null value does NOT satisfy a required parameter: the job's
+                // GetRequired<T> rejects null at runtime, so it must be rejected here too.
+                if (options.Value.EnforceDeclaredParameters
+                    && lookup.TryGet(name) is { DeclaredParameters.Count: > 0 } def)
+                {
+                    var missing = new List<object>();
+                    foreach (var descriptor in def.DeclaredParameters)
+                    {
+                        if (!descriptor.Required)
+                        {
+                            continue;
+                        }
+                        var satisfied =
+                            (parameters.Values.TryGetValue(descriptor.Name, out var triggerValue) && triggerValue is not null)
+                            || (def.DefaultParameters.TryGetValue(descriptor.Name, out var defaultValue) && defaultValue is not null);
+                        if (!satisfied)
+                        {
+                            missing.Add(new
+                            {
+                                Path = descriptor.Name,
+                                Message = $"required parameter '{descriptor.Name}' was not provided",
+                            });
+                        }
+                    }
+                    if (missing.Count > 0)
+                    {
+                        return Results.Problem(
+                            type: ProblemDetailsConventions.JobParameterValidation,
+                            statusCode: StatusCodes.Status400BadRequest,
+                            title: "Job cannot be triggered",
+                            detail: $"{missing.Count} required parameter(s) missing for job '{name}'.",
+                            extensions: new Dictionary<string, object?> { ["errors"] = missing.ToArray() });
+                    }
+                }
+
                 try
                 {
                     // The single-job trigger is DECOUPLED from the caller's CT to avoid orphaning

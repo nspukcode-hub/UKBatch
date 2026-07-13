@@ -30,7 +30,8 @@ internal sealed class HeartbeatHarness : IAsyncDisposable
     public static HeartbeatHarness Build(
         WorkerOptions options,
         RecordingHttpMessageHandler? handler = null,
-        string[]? jobNames = null)
+        string[]? jobNames = null,
+        IReadOnlyList<UKBatch.Abstractions.Models.JobDefinition>? jobs = null)
     {
         handler ??= new RecordingHttpMessageHandler();
         var time = new FakeTimeProvider();
@@ -52,7 +53,7 @@ internal sealed class HeartbeatHarness : IAsyncDisposable
         var service = new WorkerHeartbeatService(
             sp.GetRequiredService<IHttpClientFactory>(),
             Options.Create(options),
-            new StubJobDefinitionLookup(jobNames ?? []),
+            jobs is not null ? new StubJobDefinitionLookup(jobs) : new StubJobDefinitionLookup(jobNames ?? []),
             time,
             NullLogger<WorkerHeartbeatService>.Instance);
 

@@ -1,0 +1,300 @@
+@* Typed trigger form built from a job's declared parameters. Renders one input per parameter (by kind),
+   pre-fills from the declared default, validates required/parse client-side, and produces a
+   Dictionary<string, object?> ready for the trigger call. An "additional parameters" JSON box keeps
+   undeclared keys permissive. Two-way bound via @bind-Values and @bind-IsValid. *@
+@using System.Globalization
+@using System.Text.Json
+@using UKBatch.Abstractions.Jobs
+@using UKBatch.Dashboard.Models
+
+<div class="declared-param-form">
+    @foreach (var descriptor in Parameters)
+    {
+        var name = descriptor.Name; // capture per row for the input closures
+        <div class="form-field">
+            <label class="form-field__label" for="@FieldId(name)">@name</label>
+            @switch (descriptor.Kind)
+            {
+                case ParameterValueKind.Boolean:
+                    <input id="@FieldId(name)" type="checkbox"
+                           checked="@IsChecked(name)"
+                           @onchange="@(e => SetBool(name, e.Value))" />
+                    break;
+                case ParameterValueKind.Integer:
+                    <input id="@FieldId(name)" class="form-field__input" type="number" step="1"
+                           value="@GetBuffer(name)"
+                           @oninput="@(e => SetBuffer(name, e.Value?.ToString() ?? string.Empty))" />
+                    break;
+                case ParameterValueKind.Number:
+                    <input id="@FieldId(name)" class="form-field__input" type="number" step="any"
+                           value="@GetBuffer(name)"
+                           @oninput="@(e => SetBuffer(name, e.Value?.ToString() ?? string.Empty))" />
+                    break;
+                case ParameterValueKind.DateTime:
+                    <input id="@FieldId(name)" class="form-field__input" type="datetime-local"
+                           value="@GetBuffer(name)"
+                           @oninput="@(e => SetBuffer(name, e.Value?.ToString() ?? string.Empty))" />
+                    break;
+                case ParameterValueKind.Object:
+                    <textarea id="@FieldId(name)" class="form-field__textarea" rows="3"
+                              placeholder='{"key":"value"}'
+                              @oninput="@(e => SetBuffer(name, e.Value?.ToString() ?? string.Empty))">@GetBuffer(name)</textarea>
+                    break;
+                default:
+                    <input id="@FieldId(name)" class="form-field__input" type="text"
+                           value="@GetBuffer(name)"
+                           @oninput="@(e => SetBuffer(name, e.Value?.ToString() ?? string.Empty))" />
+                    break;
+            }
+            <span class="form-field__hint">@BuildHint(descriptor)</span>
+            @if (_errors.TryGetValue(name, out var err) && err is { Length: > 0 })
+            {
+                <span class="form-field__error">@err</span>
+            }
+        </div>
+    }
+
+    <div class="form-field">
+        <label class="form-field__label" for="declared-param-extra">Additional parameters (JSON, optional)</label>
+        <textarea id="declared-param-extra" class="form-field__textarea" rows="3"
+                  placeholder='{"key":"value"}'
+                  @oninput="@(e => SetExtra(e.Value?.ToString() ?? string.Empty))">@_extraJson</textarea>
+        @if (_extraError is { Length: > 0 } ee)
+        {
+            <span class="form-field__error">@ee</span>
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>The job's declared parameters to render. When empty the component renders only the escape hatch.</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<JobParameterDescriptor> Parameters { get; set; } = [];
+
+    /// <summary>Merged trigger values (typed fields + parsed escape-hatch JSON). Pair with <c>@bind-Values</c>.</summary>
+    [Parameter] public Dictionary<string, object?> Values { get; set; } = new(StringComparer.Ordinal);
+    [Parameter] public EventCallback<Dictionary<string, object?>> ValuesChanged { get; set; }
+
+    /// <summary>True when every required field is present and every field parses. Pair with <c>@bind-IsValid</c>.</summary>
+    [Parameter] public bool IsValid { get; set; }
+    [Parameter] public EventCallback<bool> IsValidChanged { get; set; }
+
+    private readonly Dictionary<string, string> _buffers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string?> _errors = new(StringComparer.Ordinal);
+    private string _extraJson = string.Empty;
+    private string? _extraError;
+    private IReadOnlyList<JobParameterDescriptor>? _seededFor;
+
+    protected override void OnParametersSet()
+    {
+        // Seed each buffer from the declared default once per descriptor set. Guarding on the Parameters
+        // reference (not a bare flag) preserves operator edits across ordinary re-renders while still
+        // re-seeding if the parent ever supplies a different parameter set.
+        if (ReferenceEquals(_seededFor, Parameters))
+        {
+            return;
+        }
+        _seededFor = Parameters;
+        _buffers.Clear();
+        foreach (var descriptor in Parameters)
+        {
+            _buffers[descriptor.Name] = InitialBuffer(descriptor);
+        }
+        Recompute();
+    }
+
+    private string GetBuffer(string name) => _buffers.TryGetValue(name, out var b) ? b : string.Empty;
+
+    private bool IsChecked(string name)
+        => _buffers.TryGetValue(name, out var b) && string.Equals(b, bool.TrueString, StringComparison.OrdinalIgnoreCase);
+
+    private void SetBuffer(string name, string value)
+    {
+        _buffers[name] = value;
+        Recompute();
+    }
+
+    private void SetBool(string name, object? value)
+    {
+        var b = value is bool direct ? direct : bool.TryParse(value?.ToString(), out var parsed) && parsed;
+        _buffers[name] = b ? bool.TrueString : bool.FalseString;
+        Recompute();
+    }
+
+    private void SetExtra(string value)
+    {
+        _extraJson = value;
+        Recompute();
+    }
+
+    private void Recompute()
+    {
+        var values = new Dictionary<string, object?>(StringComparer.Ordinal);
+        var valid = true;
+        _errors.Clear();
+
+        foreach (var descriptor in Parameters)
+        {
+            var raw = GetBuffer(descriptor.Name);
+            var (ok, parsed, hasValue, error) = ParseField(descriptor, raw);
+            if (!ok)
+            {
+                _errors[descriptor.Name] = error;
+                valid = false;
+            }
+            else if (hasValue)
+            {
+                values[descriptor.Name] = parsed;
+            }
+        }
+
+        // Escape hatch: merge undeclared keys so callers stay permissive; a typed field wins on collision.
+        if (!string.IsNullOrWhiteSpace(_extraJson))
+        {
+            try
+            {
+                var extra = JsonSerializer.Deserialize<Dictionary<string, object?>>(_extraJson);
+                _extraError = null;
+                if (extra is not null)
+                {
+                    foreach (var kvp in extra)
+                    {
+                        if (!values.ContainsKey(kvp.Key))
+                        {
+                            values[kvp.Key] = kvp.Value;
+                        }
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                _extraError = "Enter valid JSON.";
+                valid = false;
+            }
+        }
+        else
+        {
+            _extraError = null;
+        }
+
+        Values = values;
+        IsValid = valid;
+        _ = ValuesChanged.InvokeAsync(Values);
+        _ = IsValidChanged.InvokeAsync(IsValid);
+    }
+
+    // Returns (parsed OK, CLR value, whether a value should be emitted, error text). A blank non-required
+    // field emits nothing (so it never shadows a static default); a blank required field is an error.
+    private static (bool ok, object? value, bool hasValue, string? error) ParseField(JobParameterDescriptor descriptor, string raw)
+    {
+        if (descriptor.Kind == ParameterValueKind.Boolean)
+        {
+            // A checkbox has no "unset" state, so a boolean always emits its shown value (true/false).
+            // This is deliberate WYSIWYG: if a job also sets a static default for the same key, the
+            // operator-visible checkbox state wins.
+            var b = string.Equals(raw, bool.TrueString, StringComparison.OrdinalIgnoreCase);
+            return (true, b, true, null);
+        }
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return descriptor.Required
+                ? (false, null, false, "This parameter is required.")
+                : (true, null, false, null);
+        }
+
+        switch (descriptor.Kind)
+        {
+            case ParameterValueKind.Integer:
+                return long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var l)
+                    ? (true, l, true, null)
+                    : (false, null, false, "Enter a whole number.");
+            case ParameterValueKind.Number:
+                return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)
+                    ? (true, d, true, null)
+                    : (false, null, false, "Enter a number.");
+            case ParameterValueKind.DateTime:
+                return DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dto)
+                    ? (true, dto, true, null)
+                    : (false, null, false, "Enter a valid date/time.");
+            case ParameterValueKind.Object:
+                try
+                {
+                    return (true, JsonSerializer.Deserialize<JsonElement>(raw), true, null);
+                }
+                catch (JsonException)
+                {
+                    return (false, null, false, "Enter valid JSON.");
+                }
+            default:
+                return (true, raw, true, null);
+        }
+    }
+
+    // Seeds a field's initial text from its declared default. The default arrives as a boxed CLR value or
+    // (from REST deserialization) a JsonElement, so both are handled. A datetime-local input needs the
+    // yyyy-MM-ddTHH:mm shape, which the general formatter does not produce, so it is special-cased.
+    private static string InitialBuffer(JobParameterDescriptor descriptor)
+    {
+        if (descriptor.DefaultValue is null)
+        {
+            return string.Empty;
+        }
+        if (descriptor.Kind == ParameterValueKind.Boolean)
+        {
+            return CoerceBool(descriptor.DefaultValue) ? bool.TrueString : bool.FalseString;
+        }
+        if (descriptor.Kind == ParameterValueKind.DateTime)
+        {
+            return CoerceDateTime(descriptor.DefaultValue) is { } dt
+                ? dt.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture)
+                : string.Empty;
+        }
+        return DictionaryDisplay.Format(descriptor.DefaultValue);
+    }
+
+    private static bool CoerceBool(object? value) => value switch
+    {
+        bool b => b,
+        JsonElement { ValueKind: JsonValueKind.True } => true,
+        JsonElement { ValueKind: JsonValueKind.False } => false,
+        JsonElement { ValueKind: JsonValueKind.String } e when bool.TryParse(e.GetString(), out var pe) => pe,
+        string s when bool.TryParse(s, out var ps) => ps,
+        _ => false,
+    };
+
+    private static DateTimeOffset? CoerceDateTime(object? value) => value switch
+    {
+        DateTimeOffset dto => dto,
+        DateTime dt => new DateTimeOffset(dt),
+        JsonElement { ValueKind: JsonValueKind.String } e
+            when DateTimeOffset.TryParse(e.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var pe) => pe,
+        string s when DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, out var ps) => ps,
+        _ => null,
+    };
+
+    private static string FieldId(string name) => "declared-param-" + name;
+
+    private static string KindLabel(ParameterValueKind kind) => kind switch
+    {
+        ParameterValueKind.Integer => "integer",
+        ParameterValueKind.Number => "number",
+        ParameterValueKind.Boolean => "boolean",
+        ParameterValueKind.DateTime => "date/time",
+        ParameterValueKind.Object => "json",
+        _ => "text",
+    };
+
+    private static string BuildHint(JobParameterDescriptor descriptor)
+    {
+        var hint = KindLabel(descriptor.Kind);
+        if (descriptor.Required)
+        {
+            hint += " · required";
+        }
+        if (!string.IsNullOrEmpty(descriptor.Description))
+        {
+            hint += " · " + descriptor.Description;
+        }
+        return hint;
+    }
+}

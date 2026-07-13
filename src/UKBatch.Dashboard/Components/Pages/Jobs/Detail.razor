@@ -54,25 +54,68 @@ else
         </div>
     </section>
 
+    @if (_definition.DeclaredParameters.Count > 0)
+    {
+        <section class="surface-card">
+            <div class="surface-card__header">
+                <h2 class="surface-card__title">Declared parameters</h2>
+            </div>
+            <div class="surface-card__body">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th class="data-table__header">Name</th>
+                            <th class="data-table__header">Type</th>
+                            <th class="data-table__header">Required</th>
+                            <th class="data-table__header">Default</th>
+                            <th class="data-table__header">Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var p in _definition.DeclaredParameters)
+                        {
+                            <tr class="data-table__row" @key="p.Name">
+                                <td class="data-table__cell mono">@p.Name</td>
+                                <td class="data-table__cell">@p.Kind.ToString().ToLowerInvariant()</td>
+                                <td class="data-table__cell">@(p.Required ? "yes" : "no")</td>
+                                <td class="data-table__cell mono">@(p.DefaultValue is null ? "—" : DictionaryDisplay.Format(p.DefaultValue))</td>
+                                <td class="data-table__cell">@(string.IsNullOrEmpty(p.Description) ? "—" : p.Description)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+
     <section class="surface-card">
         <div class="surface-card__header">
             <h2 class="surface-card__title">Trigger</h2>
-            <button class="btn btn--primary" @onclick="TriggerAsync" disabled="@_triggerInFlight">
+            <button class="btn btn--primary" @onclick="TriggerAsync"
+                    disabled="@(_triggerInFlight || (_definition.DeclaredParameters.Count > 0 && !_typedValid))">
                 <span class="material-symbols-outlined">play_arrow</span>
                 @(_triggerInFlight ? "Triggering…" : "Run Now")
             </button>
         </div>
         <div class="surface-card__body">
-            <div class="form-field">
-                <label class="form-field__label" for="trigger-params">Parameters (JSON, optional)</label>
-                <textarea id="trigger-params" class="form-field__textarea" rows="4"
-                          placeholder='{"key":"value"}'
-                          @bind="_paramsJson" @bind:event="oninput"></textarea>
-                @if (_triggerError is { } te)
-                {
-                    <span class="form-field__error">@te</span>
-                }
-            </div>
+            @if (_definition.DeclaredParameters.Count > 0)
+            {
+                <DeclaredParameterForm Parameters="_definition.DeclaredParameters"
+                                       @bind-Values="_typedValues" @bind-IsValid="_typedValid" />
+            }
+            else
+            {
+                <div class="form-field">
+                    <label class="form-field__label" for="trigger-params">Parameters (JSON, optional)</label>
+                    <textarea id="trigger-params" class="form-field__textarea" rows="4"
+                              placeholder='{"key":"value"}'
+                              @bind="_paramsJson" @bind:event="oninput"></textarea>
+                </div>
+            }
+            @if (_triggerError is { } te)
+            {
+                <span class="form-field__error">@te</span>
+            }
         </div>
     </section>
 
@@ -138,6 +181,8 @@ else
     private bool _redirected;
     private bool _subscribed;
     private string _paramsJson = string.Empty;
+    private Dictionary<string, object?> _typedValues = new(StringComparer.Ordinal);
+    private bool _typedValid;
     private bool _triggerInFlight;
     private string? _triggerError;
 
@@ -198,21 +243,32 @@ else
     private async Task TriggerAsync()
     {
         if (_client is null || _definition is null || _triggerInFlight) return;
+        // When the job declares parameters, do not trigger with an invalid typed form.
+        if (_definition.DeclaredParameters.Count > 0 && !_typedValid) return;
         _triggerInFlight = true;
         _triggerError = null;
         try
         {
-            IReadOnlyDictionary<string, object?>? parameters = null;
-            if (!string.IsNullOrWhiteSpace(_paramsJson))
+            IReadOnlyDictionary<string, object?>? parameters;
+            if (_definition.DeclaredParameters.Count > 0)
             {
-                try
+                // The typed form has already parsed each field into its CLR value.
+                parameters = _typedValues;
+            }
+            else
+            {
+                parameters = null;
+                if (!string.IsNullOrWhiteSpace(_paramsJson))
                 {
-                    parameters = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(_paramsJson);
-                }
-                catch (System.Text.Json.JsonException jx)
-                {
-                    _triggerError = $"Invalid JSON: {jx.Message}";
-                    return;
+                    try
+                    {
+                        parameters = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(_paramsJson);
+                    }
+                    catch (System.Text.Json.JsonException jx)
+                    {
+                        _triggerError = $"Invalid JSON: {jx.Message}";
+                        return;
+                    }
                 }
             }
 

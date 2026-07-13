@@ -71,8 +71,12 @@ internal sealed class WorkerHeartbeatService : BackgroundService
             return;
         }
 
-        // Snapshot job names ONCE — the registration set is immutable after AddUKBatch.
+        // Snapshot job names + declared-parameter descriptors ONCE — the registration set is immutable
+        // after AddUKBatch.
         var jobNames = _jobs.All().Select(j => j.Name).ToArray();
+        var jobDescriptors = _jobs.All()
+            .Select(j => new WorkerJobDescriptor { Name = j.Name, Parameters = j.DeclaredParameters })
+            .ToArray();
 
         // Small startup jitter so a fleet of N workers booting together does not thundering-herd the
         // server's /beat endpoint on the exact same tick.
@@ -89,12 +93,12 @@ internal sealed class WorkerHeartbeatService : BackgroundService
         using var timer = new PeriodicTimer(opts.HeartbeatInterval, _timeProvider);
 
         // Fire one immediate beat, then on each tick.
-        await BeatOnceAsync(opts, jobNames, WorkerStatus.Online, stoppingToken).ConfigureAwait(false);
+        await BeatOnceAsync(opts, jobNames, jobDescriptors, WorkerStatus.Online, stoppingToken).ConfigureAwait(false);
         try
         {
             while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
             {
-                await BeatOnceAsync(opts, jobNames, WorkerStatus.Online, stoppingToken).ConfigureAwait(false);
+                await BeatOnceAsync(opts, jobNames, jobDescriptors, WorkerStatus.Online, stoppingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -108,12 +112,12 @@ internal sealed class WorkerHeartbeatService : BackgroundService
     /// server, but RETHROWS an <see cref="OperationCanceledException"/> tied to <paramref name="ct"/> so
     /// the steady-state loop honors host shutdown promptly.
     /// </summary>
-    private async Task BeatOnceAsync(WorkerOptions opts, string[] jobNames, WorkerStatus status, CancellationToken ct)
+    private async Task BeatOnceAsync(WorkerOptions opts, string[] jobNames, WorkerJobDescriptor[] jobDescriptors, WorkerStatus status, CancellationToken ct)
     {
         try
         {
             var client = _httpFactory.CreateClient(HttpClientName);
-            var payload = BuildBeat(opts, jobNames, status);
+            var payload = BuildBeat(opts, jobNames, jobDescriptors, status);
             using var res = await client
                 .PostAsJsonAsync("api/workers/beat", payload, JsonOptions, ct)
                 .ConfigureAwait(false);
@@ -153,8 +157,11 @@ internal sealed class WorkerHeartbeatService : BackgroundService
             try
             {
                 var jobNames = _jobs.All().Select(j => j.Name).ToArray();
+                var jobDescriptors = _jobs.All()
+                    .Select(j => new WorkerJobDescriptor { Name = j.Name, Parameters = j.DeclaredParameters })
+                    .ToArray();
                 var client = _httpFactory.CreateClient(HttpClientName);
-                var payload = BuildBeat(opts, jobNames, WorkerStatus.Offline);
+                var payload = BuildBeat(opts, jobNames, jobDescriptors, WorkerStatus.Offline);
                 using var res = await client
                     .PostAsJsonAsync("api/workers/beat", payload, JsonOptions, timeoutCts.Token)
                     .ConfigureAwait(false);
@@ -173,13 +180,14 @@ internal sealed class WorkerHeartbeatService : BackgroundService
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static WorkerBeatRequest BuildBeat(WorkerOptions opts, string[] jobNames, WorkerStatus status) => new()
+    private static WorkerBeatRequest BuildBeat(WorkerOptions opts, string[] jobNames, WorkerJobDescriptor[] jobDescriptors, WorkerStatus status) => new()
     {
         Name = opts.WorkerName,
         Jobs = jobNames,
+        JobDescriptors = jobDescriptors,
         Tags = opts.Tags ?? Array.Empty<string>(),
         Status = status,
-        InFlight = 0, // v0.1: not wired to dispatcher counters (v0.2). Always 0.
-        Capacity = 0, // v0.1: reserved (0 = "unknown/unbounded").
+        InFlight = 0, // not yet wired to dispatcher counters. Always 0.
+        Capacity = 0, // reserved (0 = "unknown/unbounded").
     };
 }
