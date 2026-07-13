@@ -13,6 +13,9 @@ public sealed class ParallelGroupBuilder
     /// <summary>Group-level compensator, copied onto the group's step by the parent batch builder.</summary>
     internal CompensationStepData? Compensation { get; private set; }
 
+    /// <summary>Group-level run-if condition, copied onto the group's step by the parent batch builder.</summary>
+    internal StepCondition? Condition { get; private set; }
+
     /// <summary>Adds a child job step (only Job steps are allowed inside a parallel group — nesting forbidden).</summary>
     public ParallelGroupBuilder RunJob<TJob>(Action<JobStepBuilder>? configure = null)
         where TJob : class, IJob
@@ -20,6 +23,7 @@ public sealed class ParallelGroupBuilder
         var stepBuilder = new JobStepBuilder();
         configure?.Invoke(stepBuilder);
         ThrowIfChildHasCompensator(stepBuilder);
+        ThrowIfChildHasCondition(stepBuilder);
         var jobName = typeof(TJob).FullName ?? typeof(TJob).Name;
         _children.Add(new BatchStep
         {
@@ -51,6 +55,7 @@ public sealed class ParallelGroupBuilder
         var stepBuilder = new JobStepBuilder();
         configure?.Invoke(stepBuilder);
         ThrowIfChildHasCompensator(stepBuilder);
+        ThrowIfChildHasCondition(stepBuilder);
         _children.Add(new BatchStep
         {
             StepId = IdGenerator.NewStepId(),
@@ -117,6 +122,18 @@ public sealed class ParallelGroupBuilder
     }
 
     /// <summary>
+    /// Guards the WHOLE group with a run-if condition: the group is skipped as one unit (no child runs) when
+    /// the value at <paramref name="parameterKey"/> does not satisfy <paramref name="op"/> against
+    /// <paramref name="value"/>. Put the condition on the group, not on a child — a parallel child cannot
+    /// carry its own condition.
+    /// </summary>
+    public ParallelGroupBuilder RunIf(string parameterKey, ConditionOperator op, object? value = null)
+    {
+        Condition = JobStepBuilder.BuildCondition(parameterKey, op, value);
+        return this;
+    }
+
+    /// <summary>
     /// A parallel-group CHILD cannot carry its own compensator — the group is the atomic unit of
     /// compensation (concurrent children have no defined order to unwind in). Fail fast at build time
     /// rather than letting the validator reject the definition later.
@@ -127,6 +144,19 @@ public sealed class ParallelGroupBuilder
         {
             throw new InvalidOperationException(
                 "Parallel-group children cannot have compensators; attach the compensator to the group.");
+        }
+    }
+
+    /// <summary>
+    /// A parallel-group CHILD cannot carry its own run-if condition — the group is the atomic unit that a
+    /// condition guards. Fail fast at build time rather than letting the validator reject it later.
+    /// </summary>
+    private static void ThrowIfChildHasCondition(JobStepBuilder stepBuilder)
+    {
+        if (stepBuilder.Condition is not null)
+        {
+            throw new InvalidOperationException(
+                "Parallel-group children cannot have run-if conditions; put the condition on the group.");
         }
     }
 

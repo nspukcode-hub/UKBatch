@@ -12,7 +12,7 @@ namespace UKBatch.Abstractions.Models;
 /// <para>Key invariants:
 /// <list type="bullet">
 ///   <item><c>Scheduled</c> has NO outgoing transitions (v0.1 forward-compat reserved).</item>
-///   <item><c>Completed</c> / <c>Failed</c> / <c>Cancelled</c> are terminal.</item>
+///   <item><c>Completed</c> / <c>Failed</c> / <c>Cancelled</c> / <c>Skipped</c> are terminal (<c>Skipped</c> is written only at insert time for an unmet run-if guard — it has no incoming transition edge).</item>
 ///   <item>All cancellations flow through <c>Cancelling</c>; no direct edge to <c>Cancelled</c> from any other state.</item>
 ///   <item>Self-loops are disallowed (idempotent updates must be explicit at higher layers).</item>
 ///   <item><c>Pending -&gt; Failed</c> allowed for validation short-circuit.</item>
@@ -39,9 +39,9 @@ public static class JobStatusTransitions
         }
     }
 
-    /// <summary><c>true</c> iff <paramref name="status"/> is terminal (Completed / Failed / Cancelled).</summary>
+    /// <summary><c>true</c> iff <paramref name="status"/> is terminal (Completed / Failed / Cancelled / Skipped).</summary>
     public static bool IsTerminal(JobStatus status) =>
-        status is JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled;
+        status is JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled or JobStatus.Skipped;
 
     private static bool[,] BuildMatrix()
     {

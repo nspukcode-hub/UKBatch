@@ -1108,4 +1108,50 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
             }
         }
     }
+
+    /// <inheritdoc/>
+    public async Task RecordSkippedStepAsync(
+        string batchId,
+        BatchStep step,
+        string? batchDefinitionId,
+        string? triggeredBy,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+        ArgumentNullException.ThrowIfNull(step);
+        // Store-guard mirror of the cross-service shadow path: only IJobStoreInternal can carry
+        // BatchId/BatchStepId/BatchDefinitionId at insert time. A non-internal store silently disables skip
+        // visibility; correctness does not depend on it (the executor's in-memory fresh-unwind skip set
+        // still excludes the step from compensation, and a run on a non-internal store is never resumed).
+        if (_jobStore is not IJobStoreInternal storeInternal)
+        {
+            return;
+        }
+
+        var now = _clock.GetUtcNow();
+        var skipped = new JobExecution
+        {
+            ExecutionId = IdGenerator.NewExecutionId(),
+            JobName = step.Job?.JobName ?? step.StepId,   // step id placeholder for group/gate steps (no single job name)
+            BatchId = batchId,
+            BatchStepId = step.StepId,
+            BatchDefinitionId = batchDefinitionId,
+            Status = JobStatus.Skipped,
+            Parameters = JobParameters.Empty.Values,   // never dispatched → received no parameters
+            EnqueuedAtUtc = now,
+            StartedAtUtc = null,      // never started
+            CompletedAtUtc = now,     // terminal at insert time
+            AttemptNumber = 1,
+            MaxRetries = 0,
+            LastError = step.Condition is { } c
+                ? $"Skipped: run-if condition on '{c.ParameterKey}' ({c.Operator}) was not met."
+                : "Skipped: run-if condition was not met.",
+            Processed = 0,
+            Failed = 0,
+            Total = null,
+            TriggeredBy = triggeredBy,
+            WorkerName = step.Job?.TargetService,   // cross-service target for a skipped remote step; null local
+        };
+        await storeInternal.InsertAsync(skipped, cancellationToken).ConfigureAwait(false);
+    }
 }

@@ -146,6 +146,7 @@ else
                          Step="SelectedDraft()"
                          AllowTargetService="@(!IsSelectedOnFailure())"
                          AllowCompensation="@(!IsSelectedOnFailure())"
+                         AllowCondition="@(!IsSelectedOnFailure())"
                          JobNames="_jobNames" JobCatalog="_jobCatalog" Services="_services"
                          OnChanged="HandlePropertyChangedAsync"
                          OnCompensationEnabled="EnsureCompensatePolicyAsync"
@@ -810,25 +811,27 @@ else
         var compensatorMark = step.Compensation is { } comp
             ? "↩ " + (string.IsNullOrWhiteSpace(comp.JobName) ? "compensator" : comp.JobName.Split('.')[^1])
             : null;
+        // A run-if condition rides the subtitle too (short "if {key}" only; the node dialog shows the
+        // operator + comparand), so a conditional step is recognisable on the canvas without opening it.
+        var conditionMark = step.Condition is { ParameterKey: { Length: > 0 } } cond
+            ? $"if {cond.ParameterKey}"
+            : null;
         // A ParallelGroup has no read-only layout node (DagLayout fans its children out instead of
         // emitting a container node), so n is null and n?.Subtitle would be null — give the group a
         // "Parallel · {JoinPolicy}" subheading for the branches block (mirrors Wizard.StepSummary).
         var baseSubtitle = n?.Subtitle ?? (step.StepType == BatchStepType.ParallelGroup
             ? $"Parallel · {step.JoinPolicy}"
             : null);
+        // Compose the subtitle from whichever parts are present: base · compensator · condition.
+        var subtitle = string.Join(" · ", new[] { baseSubtitle, compensatorMark, conditionMark }
+            .Where(s => !string.IsNullOrEmpty(s)));
 
         return new DagNodeSpec
         {
             StepId = step.StepId,
             Kind = step.StepType.ToString(),
             Title = n?.Title ?? NodeTitle(step),
-            Subtitle = (baseSubtitle, compensatorMark) switch
-            {
-                (null, null) => null,
-                (null, _) => compensatorMark,
-                (_, null) => baseSubtitle,
-                _ => $"{baseSubtitle} · {compensatorMark}",
-            },
+            Subtitle = string.IsNullOrEmpty(subtitle) ? null : subtitle,
             OrderBadge = (index + 1).ToString(CultureInfo.InvariantCulture),
             TargetService = n?.TargetService ?? (step.StepType == BatchStepType.Job ? step.TargetService : null),
             // A ParallelGroup renders its children as branch chips INSIDE the node (display-only;

@@ -83,6 +83,8 @@ public class ParallelGroupRunnerResumeSkipTests
             Interlocked.Increment(ref _queries);
             return _inner.TryGetCompletedStatusAsync(batchId, stepId, cancellationToken);
         }
+        public Task<IReadOnlySet<string>> GetSkippedStepIdsAsync(string batchId, CancellationToken cancellationToken)
+            => _inner.GetSkippedStepIdsAsync(batchId, cancellationToken);
     }
 
     private static async Task<BatchRun> AwaitRunTerminalAsync(IBatchRunStore store, string runId)

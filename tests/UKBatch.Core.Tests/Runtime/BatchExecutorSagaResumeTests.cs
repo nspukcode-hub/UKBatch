@@ -580,4 +580,71 @@ public class BatchExecutorSagaResumeTests
             await TestHostBuilder.StopGracefullyAsync(host);
         }
     }
+
+    // ===== resume-forward skip-exclusion =====
+
+    [Fact]
+    public async Task Resume_Forward_SkippedStep_NotCompensated()
+    {
+        // The resume-FORWARD twin of the trigger-path SkippedStep_IsNotCompensated_DuringUnwind: a step
+        // skipped by a run-if condition on the ORIGINAL attempt lives only in the durable Skipped row (the
+        // fresh RunAsync starts with an empty in-memory skip set). When a LATER step fails on the resumed
+        // forward run, the unwind walks the full prior range — so the skip set MUST be rebuilt from the store,
+        // or the skipped step's compensator would wrongly run (e.g. "refund a card that was never charged").
+        ResetSequence();
+        var host = await TestHostBuilder.StartAsync(b =>
+        {
+            b.AddJob<OkStepJob>();
+            b.AddJob<FailingStepJob>();
+            b.AddJob<CompProbeJob>();
+            b.AddBatch("saga.resume.forward.skip", x => x
+                .RunJob<OkStepJob>(s => s.CompensateWith<CompProbeJob>())      // step 0: skipped on the original attempt
+                .ThenRunJob<OkStepJob>(s => s.CompensateWith<CompProbeJob>())  // step 1: completed on the original attempt
+                .ThenRunJob<FailingStepJob>()                                  // step 2: resumes here and fails → unwind
+                .FailurePolicy(BatchFailurePolicy.Compensate));
+        });
+        try
+        {
+            var runner = host.Services.GetRequiredService<IJobRunner>();
+            var runStore = host.Services.GetRequiredService<IBatchRunStore>();
+            var jobStore = host.Services.GetRequiredService<IJobStore>();
+            var def = host.Services.GetRequiredService<IBatchDefinitionLookup>().TryGetByName("saga.resume.forward.skip")!;
+
+            // Original attempt state persisted before a crash: step 0 SKIPPED, step 1 COMPLETED, forward
+            // cursor at step 2, no unwind started (compensation cursor null). StepCount = 3 main + 2 comps = 5.
+            var runId = IdNew();
+            await runStore.CreateAsync(new BatchRun
+            {
+                BatchId = runId,
+                BatchDefinitionId = def.Id,
+                BatchName = def.Name,
+                Status = null,
+                TriggeredBy = "tester",
+                StartedAtUtc = DateTimeOffset.UtcNow,
+                CompletedAtUtc = null,
+                StepCount = 5,
+                Total = 0,
+                Succeeded = 0,
+                Failed = 0,
+                Cancelled = 0,
+                CurrentStepIndex = 2,       // resume forward at step 2
+                CompensationStepIndex = null,   // forward crash — no unwind was in progress
+            }, CancellationToken.None);
+            await SeedExecutionRowAsync(jobStore, runId, def.Steps[0].StepId, JobStatus.Skipped);
+            await SeedExecutionRowAsync(jobStore, runId, def.Steps[1].StepId, JobStatus.Completed);
+
+            await runner.ResumeBatchAsync(runId, ResumePolicy.ResumeForward, CancellationToken.None);
+
+            var run = await AwaitRunTerminalAsync(runStore, runId);
+            run.Status.Should().Be(JobStatus.Failed, "step 2 fails on the resumed forward run, triggering the unwind");
+            CompensatorEntries().Should().Equal(
+                new[] { CompensationStepIds.For(def.Steps[1].StepId) },
+                "only the COMPLETED step (1) is compensated; the step SKIPPED on the original attempt (0) must NOT be — " +
+                "its durable Skipped row excludes it from the resumed unwind");
+        }
+        finally
+        {
+            await TestHostBuilder.StopGracefullyAsync(host);
+        }
+    }
 }

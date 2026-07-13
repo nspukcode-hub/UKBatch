@@ -69,6 +69,13 @@
     /// </summary>
     [Parameter] public bool AllowCompensation { get; set; }
 
+    /// <summary>
+    /// When true, a top-level Job / ParallelGroup / ApprovalGate step renders the run-if condition editor.
+    /// Default <c>false</c> (additive): parallel-group children and compensation-chain (OnFailure) steps pass
+    /// <c>false</c> — a run-if condition is only honored on a top-level step.
+    /// </summary>
+    [Parameter] public bool AllowCondition { get; set; }
+
     /// <summary>Raised when a compensator is ENABLED so the parent can flip the batch policy to Compensate.</summary>
     [Parameter] public EventCallback OnCompensationEnabled { get; set; }
 
@@ -210,6 +217,10 @@
             <CompensationEditor Step="step" JobCatalog="JobCatalog" Services="Services"
                                 OnChanged="OnChanged" OnCompensationChanged="OnCompensationEnabled" />
         }
+        @if (AllowCondition)
+        {
+            <ConditionEditor Step="step" OnChanged="OnChanged" />
+        }
     </div>;
 
     // ── ParallelGroup ────────────────────────────────────────────────────────────
@@ -248,7 +259,7 @@
                        Job editor markup stays single-source. JobCatalog threads through so the child
                        picker is worker-aware too. *@
                     <StepDraftEditor Step="child" JobNames="JobNames" JobCatalog="JobCatalog" Services="Services"
-                                     AllowTargetService="true" AllowCompensation="false" OnChanged="OnChanged" />
+                                     AllowTargetService="true" AllowCompensation="false" AllowCondition="false" OnChanged="OnChanged" />
                 </div>
             }
         </div>
@@ -260,6 +271,11 @@
             @* Group-level compensator: a parallel group compensates as ONE unit (not per child). *@
             <CompensationEditor Step="step" JobCatalog="JobCatalog" Services="Services"
                                 OnChanged="OnChanged" OnCompensationChanged="OnCompensationEnabled" />
+        }
+        @if (AllowCondition)
+        {
+            @* Group-level run-if guard: the whole group is skipped as one unit when it does not hold. *@
+            <ConditionEditor Step="step" OnChanged="OnChanged" />
         }
     </div>;
 
@@ -319,6 +335,11 @@
                 </select>
             </div>
         </div>
+        @if (AllowCondition)
+        {
+            @* A conditional approval gate: skip the gate entirely when the condition does not hold. *@
+            <ConditionEditor Step="step" OnChanged="OnChanged" />
+        }
     </div>;
 
     // ── code-path mutations (each ends with OnChanged so the parent re-renders) ──

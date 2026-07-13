@@ -98,12 +98,14 @@ create_batch() {
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 trigger_batch() {
   local name="$1" http
+  local body="${2:-}"
+  [ -z "$body" ] && body='{}'
   echo
-  echo "==> Triggering a run: POST ${BASE}/batches/by-name/${name}/run"
+  echo "==> Triggering a run: POST ${BASE}/batches/by-name/${name}/run  (body ${body})"
   http=$(curl -sS -o /tmp/ukbatch-seed-trigger.json -w '%{http_code}' \
     -X POST "${BASE}/batches/by-name/${name}/run" \
     -H 'Content-Type: application/json' \
-    -d '{}')
+    -d "${body}")
   echo "    HTTP ${http}"
   cat /tmp/ukbatch-seed-trigger.json; echo
   if [ "${http}" != "202" ]; then
@@ -246,8 +248,56 @@ seed_approval_parallel_demo() {
   fi
 }
 
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# Demo 3 — conditional shipping. GenerateInvoice forwards an "amount" output; ShipOrder carries a
+# run-if condition (amount > 1000). Triggered twice: a low amount SKIPS the ship step (a grey Skipped
+# node in the DAG), a high amount runs it — the batch continues to notify either way.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+seed_conditional_demo() {
+  local name="conditional-ship-demo"
+  create_batch "${name}" '{
+    "name": "'"${name}"'",
+    "source": "Api",
+    "failurePolicy": "StopOnFailure",
+    "steps": [
+      {
+        "stepId": "step-1-invoice",
+        "order": 0,
+        "stepType": "Job",
+        "job": { "jobName": "GenerateInvoice", "targetService": "invoicing" }
+      },
+      {
+        "stepId": "step-2-ship",
+        "order": 1,
+        "stepType": "Job",
+        "job": { "jobName": "ShipOrder", "targetService": "shipping" },
+        "condition": { "parameterKey": "amount", "operator": "GreaterThan", "value": "1000" }
+      },
+      {
+        "stepId": "step-3-notify",
+        "order": 2,
+        "stepType": "Job",
+        "job": { "jobName": "SendNotification", "targetService": "notification" }
+      }
+    ]
+  }'
+  echo
+  echo "==> Conditional run A — amount=500 (below 1000): the ship step should be SKIPPED."
+  trigger_batch "${name}" '{"initialParameters":{"amount":500}}'
+  echo
+  echo "==> Conditional run B — amount=5000 (above 1000): the ship step should RUN."
+  trigger_batch "${name}" '{"initialParameters":{"amount":5000}}'
+  echo
+  echo "==> Conditional demo triggered twice. Watch both runs at http://localhost:5070/dashboard/self —"
+  echo "    run A shows ShipOrder as a grey 'Skipped' node; run B ships it green."
+}
+
 seed_simple_demo
 echo
 echo "═════════════════════════════════════════════════════════════════════════════════════════════"
 echo
 seed_approval_parallel_demo
+echo
+echo "═════════════════════════════════════════════════════════════════════════════════════════════"
+echo
+seed_conditional_demo

@@ -277,4 +277,66 @@ public sealed class WizardStepDraftTests
         draft.TimeoutSecondsApproval.Should().Be(30, "edit-load must not lose the configured timeout");
         draft.OnTimeout.Should().Be(ApprovalTimeoutAction.AutoApprove);
     }
+
+    // ── run-if condition round-trip (mirrors the compensation tests: edit-load must not drop it) ──
+
+    private static BatchStep JobWithCondition() => new()
+    {
+        StepId = "s1",
+        Order = 0,
+        StepType = BatchStepType.Job,
+        Job = new JobStepData { JobName = "Ship" },
+        Condition = new StepCondition { ParameterKey = "amount", Operator = ConditionOperator.GreaterThan, Value = "1000" },
+    };
+
+    [Fact]
+    public void FromBatchStep_Job_RehydratesCondition()
+    {
+        var draft = WizardStepDraft.FromBatchStep(JobWithCondition());
+        draft.Condition.Should().NotBeNull("edit-load MUST NOT drop a builder-authored condition");
+        draft.Condition!.ParameterKey.Should().Be("amount");
+        draft.Condition.Operator.Should().Be(ConditionOperator.GreaterThan);
+        draft.Condition.Value.Should().Be("1000");
+    }
+
+    [Fact]
+    public void Condition_RoundTrip_Job_PreservesByteForByte()
+    {
+        var original = JobWithCondition();
+        var reprojected = WizardStepDraft.FromBatchStep(original).ToBatchStep(0);
+        reprojected.Condition.Should().BeEquivalentTo(original.Condition,
+            "a round-trip through the draft must not alter the condition");
+    }
+
+    [Fact]
+    public void Condition_RoundTrip_ApprovalGate_PreservesCondition()
+    {
+        // Unlike compensation, a condition IS allowed on an ApprovalGate (a conditional approval), so it
+        // must survive edit-load round-trip.
+        var gate = new BatchStep
+        {
+            StepId = "g1",
+            Order = 0,
+            StepType = BatchStepType.ApprovalGate,
+            Approval = new ApprovalGateConfig { Title = "Confirm", AllowedRoles = new[] { "ops" } },
+            Condition = new StepCondition { ParameterKey = "amount", Operator = ConditionOperator.GreaterThanOrEqual, Value = "10000" },
+        };
+        var reprojected = WizardStepDraft.FromBatchStep(gate).ToBatchStep(0);
+        reprojected.Condition.Should().BeEquivalentTo(gate.Condition);
+    }
+
+    [Fact]
+    public void ToBatchStep_NoCondition_EmitsNullCondition()
+    {
+        var draft = new WizardStepDraft { StepType = BatchStepType.Job, JobName = "Ship" };
+        draft.ToBatchStep(0).Condition.Should().BeNull("a step with no condition draft emits no Condition");
+    }
+
+    [Fact]
+    public void ToBatchStep_BlankParameterKey_EmitsNullCondition()
+    {
+        var draft = new WizardStepDraft { StepType = BatchStepType.Job, JobName = "Ship" };
+        draft.Condition = new ConditionDraft { ParameterKey = "   ", Operator = ConditionOperator.Exists };
+        draft.ToBatchStep(0).Condition.Should().BeNull("a blank parameter key emits no Condition");
+    }
 }

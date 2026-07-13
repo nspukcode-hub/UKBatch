@@ -104,6 +104,23 @@ public sealed class OrphanedExecutionReaperTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Sweep1_SkippedRow_NeverReaped()
+    {
+        // A run-if skip is a terminal outcome, NOT an interrupted orphan. Reaping it to Failed would corrupt
+        // history AND erase the durable rows a resumed saga unwind reads to exclude a skipped step from
+        // compensation — after which the skipped step's compensator would wrongly run.
+        await _jobStore.InsertAsync(
+            TestData.Execution("skipped", status: JobStatus.Skipped, enqueuedAtUtc: LongAgo, lastError: "Skipped: run-if condition not met"),
+            CancellationToken.None);
+
+        await NewReaper().StartAsync(CancellationToken.None);
+
+        var skipped = await _jobStore.GetAsync("skipped", CancellationToken.None);
+        skipped!.Status.Should().Be(JobStatus.Skipped, "a Skipped row is terminal and must survive the reaper sweep");
+        skipped.LastError.Should().Be("Skipped: run-if condition not met", "a skipped row's audit note is not overwritten");
+    }
+
+    [Fact]
     public async Task GracePeriodZero_DisablesBothSweeps()
     {
         await _jobStore.InsertAsync(TestData.Execution("running", status: JobStatus.Running, enqueuedAtUtc: LongAgo), CancellationToken.None);

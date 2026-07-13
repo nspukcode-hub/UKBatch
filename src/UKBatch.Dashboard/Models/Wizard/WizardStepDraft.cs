@@ -46,6 +46,14 @@ public sealed class WizardStepDraft
     /// </summary>
     public CompensationDraft? Compensation { get; set; }
 
+    // ── Condition (run-if guard; top-level Job / ParallelGroup / ApprovalGate) ──
+    /// <summary>
+    /// Optional run-if condition for a top-level step; <c>null</c> = the step always runs. Ignored (never
+    /// emitted) for parallel-group children and compensation-chain steps. Round-tripped through edit-load so
+    /// a builder-authored condition is not lost when the batch is re-saved from the UI.
+    /// </summary>
+    public ConditionDraft? Condition { get; set; }
+
     // ── ParallelGroup ──
     /// <summary>Fan-in join semantics.</summary>
     public ParallelJoinPolicy JoinPolicy { get; set; } = ParallelJoinPolicy.WaitAll;
@@ -97,6 +105,7 @@ public sealed class WizardStepDraft
                 TimeoutSeconds = TimeoutSeconds,
             },
             Compensation = BuildCompensation(),
+            Condition = BuildCondition(),
         },
         BatchStepType.ParallelGroup => new BatchStep
         {
@@ -107,6 +116,7 @@ public sealed class WizardStepDraft
                 Steps = Children.Select((c, i) => c.ToBatchStep(i)).ToList(),
             },
             Compensation = BuildCompensation(),
+            Condition = BuildCondition(),
         },
         BatchStepType.ApprovalGate => new BatchStep
         {
@@ -121,6 +131,7 @@ public sealed class WizardStepDraft
                 TimeoutAfter = TimeoutSecondsApproval is { } s and > 0 ? TimeSpan.FromSeconds(s) : null,
                 OnTimeout = OnTimeout,
             },
+            Condition = BuildCondition(),
         },
         _ => throw new InvalidOperationException($"Unsupported draft type {StepType}"),
     };
@@ -144,6 +155,7 @@ public sealed class WizardStepDraft
                         .ToList();
                 }
                 draft.Compensation = ToCompensationDraft(step.Compensation);
+                draft.Condition = ToConditionDraft(step.Condition);
                 break;
             case BatchStepType.ParallelGroup:
                 draft.JoinPolicy = step.ParallelGroup?.JoinPolicy ?? ParallelJoinPolicy.WaitAll;
@@ -152,6 +164,7 @@ public sealed class WizardStepDraft
                     .Select(FromBatchStep)
                     .ToList() ?? new();
                 draft.Compensation = ToCompensationDraft(step.Compensation);
+                draft.Condition = ToConditionDraft(step.Condition);
                 break;
             case BatchStepType.ApprovalGate:
                 draft.ApprovalTitle = step.Approval?.Title ?? string.Empty;
@@ -163,6 +176,7 @@ public sealed class WizardStepDraft
                     : roles.Where(r => !string.IsNullOrWhiteSpace(r)).ToList();
                 draft.TimeoutSecondsApproval = step.Approval?.TimeoutAfter is { } t ? (int)t.TotalSeconds : null;
                 draft.OnTimeout = step.Approval?.OnTimeout ?? ApprovalTimeoutAction.Fail;
+                draft.Condition = ToConditionDraft(step.Condition);
                 break;
             default:
                 // Unknown future step type — mark unsupported so the wizard blocks editing.
@@ -231,6 +245,37 @@ public sealed class WizardStepDraft
             Parameters = comp.Parameters?
                 .Select(kv => new KeyValuePair<string, string>(kv.Key, StringifyValue(kv.Value)))
                 .ToList() ?? new(),
+        };
+    }
+
+    /// <summary>
+    /// Projects the condition draft into a <see cref="StepCondition"/>. Render-safe (mirrors
+    /// <see cref="BuildCompensation"/>): never throws, so a preview render on an in-progress draft is safe.
+    /// Returns <c>null</c> when there is no condition or its parameter key is blank (treated as "no
+    /// condition" rather than emitting an invalid one). A blank comparand becomes <c>null</c>; the validator
+    /// flags a comparison operator that needs one.
+    /// </summary>
+    private StepCondition? BuildCondition()
+    {
+        if (Condition is not { } c || string.IsNullOrWhiteSpace(c.ParameterKey)) return null;
+        return new StepCondition
+        {
+            ParameterKey = c.ParameterKey.Trim(),
+            Operator = c.Operator,
+            Value = string.IsNullOrEmpty(c.Value) ? null : c.Value,
+        };
+    }
+
+    // Inverse of BuildCondition: rehydrates a mutable condition draft from a fetched step so an edit
+    // round-trips a builder-authored condition instead of silently dropping it.
+    private static ConditionDraft? ToConditionDraft(StepCondition? cond)
+    {
+        if (cond is null) return null;
+        return new ConditionDraft
+        {
+            ParameterKey = cond.ParameterKey,
+            Operator = cond.Operator,
+            Value = cond.Value ?? string.Empty,
         };
     }
 

@@ -138,6 +138,34 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
                 Steps = { JobDraftWithCompensation("s1", "Echo", compJobName: "Undo") },
             },
         },
+        new object[]
+        {
+            // A comparison operator with no comparand: both validators must flag Condition.Value (and no more).
+            "condition comparison operator missing its value",
+            new BatchWizardModel
+            {
+                Name = "ok",
+                Steps =
+                {
+                    JobDraftWithCondition("s1", "Echo",
+                        new ConditionDraft { ParameterKey = "amount", Operator = ConditionOperator.GreaterThan, Value = string.Empty }),
+                },
+            },
+        },
+        new object[]
+        {
+            // An ordering operator with a non-numeric comparand: both validators must flag Condition.Value.
+            "condition ordering operator with a non-numeric value",
+            new BatchWizardModel
+            {
+                Name = "ok",
+                Steps =
+                {
+                    JobDraftWithCondition("s1", "Echo",
+                        new ConditionDraft { ParameterKey = "amount", Operator = ConditionOperator.GreaterThan, Value = "notanumber" }),
+                },
+            },
+        },
     };
 
     [Theory]
@@ -209,6 +237,28 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
         var errors = BatchDefinitionClientValidator.Validate(model);
 
         errors.Should().NotContainKey("OnFailureSteps[0].Job.JobName");
+    }
+
+    [Fact]
+    public void Validate_Condition_BlankParameterKey_ReportsPath()
+    {
+        // Client-only (mirrors the blank-compensator-JobName asymmetry): the render-safe projection drops a
+        // condition with a blank key, so the server never sees it — the wizard surfaces it up front instead,
+        // which is why this is a client-only assertion rather than a parity-matrix row.
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Steps =
+            {
+                JobDraftWithCondition("s1", "Echo",
+                    new ConditionDraft { ParameterKey = string.Empty, Operator = ConditionOperator.Exists }),
+            },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().ContainKey("Steps[0].Condition.ParameterKey",
+            "the wizard surfaces a blank condition key up front (the projection would otherwise silently drop it)");
     }
 
     // ── compensation (per-step compensator) — the client surfaces a blank compensator job name up front
@@ -554,6 +604,14 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
         StepType = BatchStepType.Job,
         JobName = jobName,
         Compensation = new CompensationDraft { JobName = compJobName },
+    };
+
+    private static WizardStepDraft JobDraftWithCondition(string id, string jobName, ConditionDraft condition) => new()
+    {
+        StepId = id,
+        StepType = BatchStepType.Job,
+        JobName = jobName,
+        Condition = condition,
     };
 
     private static WizardStepDraft JobDraftWithParameters(string id, params KeyValuePair<string, string>[] pairs) => new()
