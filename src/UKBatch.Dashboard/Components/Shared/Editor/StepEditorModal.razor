@@ -25,7 +25,7 @@
             </div>
             <div class="modal-card__body dag-ed-modal__body">
                 <StepDraftEditor Step="Step" JobNames="JobNames" JobCatalog="JobCatalog" Services="Services"
-                                 AllowTargetService="AllowTargetService" AllowCompensation="AllowCompensation"
+                                 AllowTargetService="AllowTargetService" AllowCompensation="AllowCompensation" AllowCondition="AllowCondition"
                                  OnCompensationEnabled="OnCompensationEnabled" OnChanged="OnChanged" />
             </div>
             <div class="modal-card__actions">
@@ -63,6 +63,9 @@
     /// compensator. The Editor passes <c>false</c> for compensation-chain (OnFailure) nodes. Default <c>false</c>.
     /// </summary>
     [Parameter] public bool AllowCompensation { get; set; }
+
+    /// <summary>Forwarded to <c>StepDraftEditor</c>: whether a top-level step renders the run-if condition editor.</summary>
+    [Parameter] public bool AllowCondition { get; set; }
 
     /// <summary>Raised when a compensator is enabled so the Editor can flip the batch policy to Compensate.</summary>
     [Parameter] public EventCallback OnCompensationEnabled { get; set; }

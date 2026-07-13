@@ -95,10 +95,16 @@ internal sealed class OrphanedExecutionReaper : IHostedService
     // --- Sweep 1: orphaned executions. Direct Status write — the ONE sanctioned bypass. ---
     private async Task SweepExecutionsAsync(UKBatchDbContext db, DateTimeOffset cutoff, DateTimeOffset now, CancellationToken ct)
     {
+        // Exclude every terminal status (kept in sync with JobStatusTransitions.IsTerminal — expressed
+        // inline because the predicate must translate to SQL). Skipped is terminal and insert-only: a
+        // run-if skip is a real outcome, NOT an interrupted orphan. Reaping it would corrupt history AND
+        // erase the durable rows a resumed saga unwind reads to know a step was skipped — after which the
+        // skipped step's compensator would wrongly run.
         var orphans = await db.JobExecutions
             .Where(e => e.Status != JobStatus.Completed
                         && e.Status != JobStatus.Failed
                         && e.Status != JobStatus.Cancelled
+                        && e.Status != JobStatus.Skipped
                         && e.EnqueuedAtUtc < cutoff)
             .ToListAsync(ct).ConfigureAwait(false);
 

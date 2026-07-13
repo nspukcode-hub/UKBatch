@@ -54,6 +54,10 @@ public sealed class GenerateInvoiceJob : IJob
         var invoice = new Invoice(invoiceId, "Acme Corporation", 1499.90m);
         context.Outputs.Set("invoiceId", invoiceId);
         context.Outputs.Set("invoice", invoice);
+        // Forward the amount as a top-level scalar so a later step can guard on it with a run-if condition
+        // (nested keys like "invoice.amount" are not addressable). A trigger parameter overrides the invoice's
+        // own amount, so a demo can drive the shipping step's condition either way (skip vs run).
+        context.Outputs.Set("amount", context.Parameters.GetOrDefault<decimal>("amount", invoice.Amount));
 
         _logger.LogInformation(
             "GenerateInvoiceJob (invoicing worker): completed — produced invoiceId={InvoiceId} for {Customer} (amount {Amount:C}); returning it to the server via direct-reply-to.",

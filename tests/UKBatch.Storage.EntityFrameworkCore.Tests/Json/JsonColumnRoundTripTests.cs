@@ -173,6 +173,42 @@ public sealed class JsonColumnRoundTripTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task JsonColumn_RoundTrips_BatchStep_Condition()
+    {
+        // A run-if condition rides inside the existing Steps JSON column (no schema change), and its
+        // operator is written as an enum NAME (not an ordinal) for forward-compat.
+        var step = TestData.JobStep("s1", 0, "Ship.Job") with
+        {
+            Condition = new StepCondition
+            {
+                ParameterKey = "amount",
+                Operator = ConditionOperator.GreaterThan,
+                Value = "1000",
+            },
+        };
+        await _batchStore.CreateAsync(TestData.BatchDef("def-1", "batch", steps: new[] { step }), CancellationToken.None);
+
+        var fetched = await _batchStore.GetAsync("def-1", CancellationToken.None);
+        var cond = fetched!.Steps.Single().Condition;
+        cond.Should().NotBeNull();
+        cond!.ParameterKey.Should().Be("amount");
+        cond.Operator.Should().Be(ConditionOperator.GreaterThan);
+        cond.Value.Should().Be("1000");
+    }
+
+    [Fact]
+    public async Task Steps_NullCondition_RoundTripsAsNull()
+    {
+        // The default (no condition) must stay null through the JSON column — a step written by an older
+        // producer must not gain a phantom condition on read.
+        var step = TestData.JobStep("s1", 0, "Job.One");   // Condition null
+        await _batchStore.CreateAsync(TestData.BatchDef("def-1", "batch", steps: new[] { step }), CancellationToken.None);
+
+        var fetched = await _batchStore.GetAsync("def-1", CancellationToken.None);
+        fetched!.Steps.Single().Condition.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Steps_Metadata_RoundTripsVerbatim_ForwardCompat()
     {
         // BatchStep.Metadata is the v0.2 forward-compat seam — a v0.1 read-write cycle must not destroy it.

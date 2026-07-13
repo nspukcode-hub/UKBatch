@@ -775,6 +775,7 @@ code, .mono { font-family: var(--font-mono); }
 .dag-node--failed    { border-color: var(--color-status-failed);    border-left-color: var(--color-status-failed); }
 .dag-node--completed { border-color: var(--color-status-completed); border-left-color: var(--color-status-completed); }
 .dag-node--cancelled { border-color: var(--color-status-cancelled); border-left-color: var(--color-status-cancelled); }
+.dag-node--skipped { border-color: var(--color-border-strong); border-left-color: var(--color-text-tertiary); border-left-style: dashed; opacity: 0.72; }
 .dag-node--muted     { opacity: 0.5; }
 .dag-node--unknown   { border-style: dashed; opacity: 0.7; }
 .dag-node--selected  { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 35%, transparent), var(--shadow-modal); border-color: var(--color-primary); }
@@ -796,6 +797,7 @@ code, .mono { font-family: var(--font-mono); }
 .dag-edge--completed { stroke: var(--color-status-completed); }
 .dag-edge--failed { stroke: var(--color-status-failed); }
 .dag-edge--cancelled { stroke: var(--color-status-cancelled); }
+.dag-edge--skipped { stroke: var(--color-text-tertiary); }
 
 /* ── Workers panel online/offline pill (.worker-badge*) ─────────────────────────────────────────────
    GLOBAL (not scoped to Workers.razor) so the served stylesheet is decoupled from the page scope
@@ -1094,6 +1096,7 @@ code, .mono { font-family: var(--font-mono); }
 .dag-st-node[data-status="completed"] { border-color: var(--color-status-completed); border-left-color: var(--color-status-completed); }
 .dag-st-node[data-status="failed"] { border-color: var(--color-status-failed); border-left-color: var(--color-status-failed); }
 .dag-st-node[data-status="cancelled"] { border-color: var(--color-status-cancelled); border-left-color: var(--color-status-cancelled); }
+.dag-st-node[data-status="skipped"] { border-color: var(--color-border-strong); border-left-color: var(--color-text-tertiary); border-left-style: dashed; opacity: 0.72; }
 
 /* per-node running indicator (the "her birinin yanında running" requirement) — a spinning glyph */
 .dag-st-node[data-status="running"] .dag-st-node__notice { color: var(--color-status-running); }
@@ -1105,6 +1108,8 @@ code, .mono { font-family: var(--font-mono); }
 .dag-st-node[data-status="failed"] .dag-st-node__notice::before { content: "error"; }
 .dag-st-node[data-status="cancelled"] .dag-st-node__notice { color: var(--color-status-cancelled); }
 .dag-st-node[data-status="cancelled"] .dag-st-node__notice::before { content: "block"; }
+.dag-st-node[data-status="skipped"] .dag-st-node__notice { color: var(--color-text-tertiary); }
+.dag-st-node[data-status="skipped"] .dag-st-node__notice::before { content: "skip_next"; }
 @media (prefers-reduced-motion: reduce) { .dag-st-node[data-status="running"] .dag-st-node__notice::before { animation: none; } }
 
 /* selected affordance (rail/inspector → canvas link) */
@@ -1160,6 +1165,7 @@ code, .mono { font-family: var(--font-mono); }
 .dag-status-canvas .drawflow .connection[data-status="completed"] .main-path { stroke: var(--color-status-completed); }
 .dag-status-canvas .drawflow .connection[data-status="failed"] .main-path { stroke: var(--color-status-failed); }
 .dag-status-canvas .drawflow .connection[data-status="cancelled"] .main-path { stroke: var(--color-status-cancelled); }
+.dag-status-canvas .drawflow .connection[data-status="skipped"] .main-path { stroke: var(--color-text-tertiary); }
 /* non-interactive ports (operator cannot drag-create a connection; programmatic addConnection still draws) */
 .dag-status-canvas .drawflow .drawflow-node .input,
 .dag-status-canvas .drawflow .drawflow-node .output {

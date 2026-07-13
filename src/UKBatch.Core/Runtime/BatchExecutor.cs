@@ -150,12 +150,40 @@ internal sealed class BatchExecutor
         var accumulatedOutputs = resumeOutputs is { Count: > 0 }
             ? new Dictionary<string, object?>(resumeOutputs, StringComparer.Ordinal)
             : new Dictionary<string, object?>(StringComparer.Ordinal);
+        // Indices skipped by an unmet run-if condition. Threaded into a Compensate-policy unwind so a
+        // skipped step (which never ran) is never compensated. Empty on the trigger path (feature inert). On a
+        // resume-forward (startStepIndex > 0) it is rehydrated from the durable Skipped rows — a step skipped
+        // on the ORIGINAL attempt lives only in the store, and the unwind walks the full prior range, so
+        // without this a resumed run would wrongly compensate a step that never ran. The probe is null on the
+        // trigger path, so this stays a no-op (empty set) there and on stores that cannot record skips.
+        var skippedIndices = startStepIndex > 0
+            ? new HashSet<int>(await ResolveSkippedIndicesAsync(batchId, orderedSteps, cancellationToken).ConfigureAwait(false))
+            : new HashSet<int>();
 
         for (var i = startStepIndex; i < orderedSteps.Count; i++)
         {
             var step = orderedSteps[i];
             try
             {
+                // Run-if guard: evaluate the step's condition against the same parameters it would receive at
+                // dispatch (initial + forwarded outputs + the step's own static params). When it does not
+                // hold, record a Skipped row, advance the resume cursor, and move on — the step never runs,
+                // produces no output, and leaves the accumulator untouched. A step with no condition takes
+                // none of this branch (the path stays byte-for-byte).
+                if (step.Condition is not null &&
+                    !StepConditionEvaluator.Evaluate(
+                        step.Condition,
+                        ParallelGroupRunner.MergeParameters(initial, accumulatedOutputs, StepParametersOf(step))))
+                {
+                    skippedIndices.Add(i);
+                    await _runner.RecordSkippedStepAsync(batchId, step, def.Id, triggeredBy, cancellationToken).ConfigureAwait(false);
+                    if (_onStepCompleted is not null)
+                    {
+                        await _onStepCompleted(i + 1, BuildForwardedState(initial, accumulatedOutputs), cancellationToken).ConfigureAwait(false);
+                    }
+                    continue;
+                }
+
                 var stepOutputs = await RunStepAsync(def, batchId, step, initial, accumulatedOutputs, triggeredBy, cancellationToken).ConfigureAwait(false);
                 if (stepOutputs is { Count: > 0 })
                 {
@@ -184,7 +212,7 @@ internal sealed class BatchExecutor
             catch (BatchStepFailureException stepFailure)
             {
                 var compensation = RouteStepFailureAsync(
-                    def, batchId, step, stepFailure, initial, accumulatedOutputs, triggeredBy, orderedSteps, i, cancellationToken,
+                    def, batchId, step, stepFailure, initial, accumulatedOutputs, triggeredBy, orderedSteps, i, skippedIndices, cancellationToken,
                     ref firstFailure, out var continueLoop);
                 if (compensation is not null)
                 {
@@ -205,7 +233,7 @@ internal sealed class BatchExecutor
                 // policy switch has a single descriptive failure type while preserving the original cause.
                 var wrapped = new BatchStepFailureException($"Step {step.StepId} failed: {ex.Message}", ex);
                 var compensation = RouteStepFailureAsync(
-                    def, batchId, step, wrapped, initial, accumulatedOutputs, triggeredBy, orderedSteps, i, cancellationToken,
+                    def, batchId, step, wrapped, initial, accumulatedOutputs, triggeredBy, orderedSteps, i, skippedIndices, cancellationToken,
                     ref firstFailure, out var continueLoop);
                 if (compensation is not null)
                 {
@@ -240,6 +268,7 @@ internal sealed class BatchExecutor
         string? triggeredBy,
         List<BatchStep> orderedSteps,
         int failedStepIndex,
+        IReadOnlySet<int> skippedIndices,
         CancellationToken cancellationToken,
         ref Exception? firstFailure,
         out bool continueLoop)
@@ -274,7 +303,7 @@ internal sealed class BatchExecutor
                     return null;   // nothing to compensate AND no failure chain → behaves exactly like StopOnFailure
                 }
                 return RunCompensationAsync(
-                    def, batchId, initial, accumulatedOutputs, triggeredBy, orderedSteps, failedStepIndex, cancellationToken);
+                    def, batchId, initial, accumulatedOutputs, triggeredBy, orderedSteps, failedStepIndex, skippedIndices, cancellationToken);
 
             default:
                 return null;
@@ -431,6 +460,7 @@ internal sealed class BatchExecutor
         string? triggeredBy,
         List<BatchStep> orderedSteps,
         int failedStepIndex,
+        IReadOnlySet<int> skippedIndices,
         CancellationToken cancellationToken)
     {
         // Mark the unwind as started BEFORE the first compensator, at the failed step's index. On a crash
@@ -441,7 +471,7 @@ internal sealed class BatchExecutor
         }
 
         await UnwindRangeAsync(
-            def, batchId, initial, accumulatedOutputs, triggeredBy, orderedSteps, failedStepIndex, cancellationToken)
+            def, batchId, initial, accumulatedOutputs, triggeredBy, orderedSteps, failedStepIndex, skippedIndices, cancellationToken)
             .ConfigureAwait(false);
 
         // Unwind finished → chain phase. (No-op cursor write when the seam is unbound.)
@@ -490,7 +520,11 @@ internal sealed class BatchExecutor
         var k = Math.Clamp(compensationStepIndex, 0, orderedSteps.Count);
         if (k > 0)
         {
-            await UnwindRangeAsync(def, batchId, initial, accumulatedOutputs, triggeredBy, orderedSteps, k, cancellationToken)
+            // A fresh unwind carries its skipped indices in memory; a resumed one rebuilds them from the
+            // durable Skipped rows, so a step skipped by an unmet condition on the original run is still
+            // excluded from compensation. Empty when nothing was skipped (or no probe is bound).
+            var skippedIndices = await ResolveSkippedIndicesAsync(batchId, orderedSteps, cancellationToken).ConfigureAwait(false);
+            await UnwindRangeAsync(def, batchId, initial, accumulatedOutputs, triggeredBy, orderedSteps, k, skippedIndices, cancellationToken)
                 .ConfigureAwait(false);
             if (_onCompensationProgress is not null)
             {
@@ -519,14 +553,17 @@ internal sealed class BatchExecutor
         string? triggeredBy,
         List<BatchStep> orderedSteps,
         int fromExclusive,
+        IReadOnlySet<int> skippedIndices,
         CancellationToken cancellationToken)
     {
         for (var j = fromExclusive - 1; j >= 0; j--)
         {
             var parent = orderedSteps[j];
-            if (parent.Compensation is null)
+            if (parent.Compensation is null || skippedIndices.Contains(j))
             {
-                continue;   // no compensator for this step — nothing to undo (no row, no cursor write)
+                // No compensator, OR the step was skipped by an unmet run-if condition — a skipped step never
+                // ran, so there is nothing to undo (no row, no cursor write).
+                continue;
             }
 
             var compensatorStep = BuildCompensatorStep(parent);
@@ -651,4 +688,43 @@ internal sealed class BatchExecutor
             [ForwardedStateKeys.InitialParameters] = initial.Values,
             [ForwardedStateKeys.ForwardedOutputs] = new Dictionary<string, object?>(accumulated, StringComparer.Ordinal),
         };
+
+    /// <summary>Shared empty skipped-index set for the common no-conditions path (avoids a per-call allocation).</summary>
+    private static readonly IReadOnlySet<int> EmptyIndexSet = new HashSet<int>();
+
+    /// <summary>
+    /// The static parameters a step carries into its run-if evaluation. Only a Job step has its own static
+    /// parameters; a ParallelGroup or ApprovalGate contributes none, so the condition sees just the initial
+    /// parameters plus the forwarded outputs — the same data the step would receive at dispatch.
+    /// </summary>
+    private static IReadOnlyDictionary<string, object?>? StepParametersOf(BatchStep step) =>
+        step.StepType == BatchStepType.Job ? step.Job?.Parameters : null;
+
+    /// <summary>
+    /// Rebuilds the skipped-index set for a resumed unwind by mapping the run's durable
+    /// <see cref="JobStatus.Skipped"/> step rows back to their ordered-step positions. Returns an empty set
+    /// when no resume probe is bound or nothing was skipped.
+    /// </summary>
+    private async Task<IReadOnlySet<int>> ResolveSkippedIndicesAsync(
+        string batchId, List<BatchStep> orderedSteps, CancellationToken cancellationToken)
+    {
+        if (_resumeShadowProbe is null)
+        {
+            return EmptyIndexSet;
+        }
+        var skippedStepIds = await _resumeShadowProbe.GetSkippedStepIdsAsync(batchId, cancellationToken).ConfigureAwait(false);
+        if (skippedStepIds.Count == 0)
+        {
+            return EmptyIndexSet;
+        }
+        var indices = new HashSet<int>();
+        for (var i = 0; i < orderedSteps.Count; i++)
+        {
+            if (skippedStepIds.Contains(orderedSteps[i].StepId))
+            {
+                indices.Add(i);
+            }
+        }
+        return indices;
+    }
 }

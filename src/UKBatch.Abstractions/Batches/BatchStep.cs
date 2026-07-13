@@ -43,6 +43,16 @@ public sealed record class BatchStep
     public CompensationStepData? Compensation { get; init; }
 
     /// <summary>
+    /// Optional run-if guard: the step runs only when this condition holds at dispatch time; otherwise it is
+    /// skipped (recorded as <see cref="Models.JobStatus.Skipped"/>) and the batch proceeds to the next step.
+    /// <c>null</c> means the step always runs (unchanged default behavior). Honored on a top-level Job,
+    /// ParallelGroup (the whole group is skipped as one unit), or ApprovalGate step; forbidden on
+    /// parallel-group children and OnFailure steps — the validator rejects those. A skipped step is never
+    /// compensated during a saga unwind.
+    /// </summary>
+    public StepCondition? Condition { get; init; }
+
+    /// <summary>
     /// Storage-adapter opaque metadata. Round-tripped verbatim by adapters; reserved for future
     /// step-type payloads and per-step annotations. Consumers in v0.1 SHOULD NOT depend on keys here.
     /// </summary>

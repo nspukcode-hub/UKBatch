@@ -72,6 +72,7 @@ public static class DagStatusClasses
         JobStatus.Completed => "completed",
         JobStatus.Failed => "failed",
         JobStatus.Cancelled or JobStatus.Cancelling => "cancelled",
+        JobStatus.Skipped => "skipped",
         _ => string.Empty,
     };
 }

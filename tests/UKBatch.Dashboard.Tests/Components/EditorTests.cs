@@ -493,7 +493,7 @@ public sealed class EditorTests : TestContext
         cut.FindAll("span.dag-ed-rail__comp").Should().BeEmpty("a fresh step has no compensator yet");
 
         // Toggle the compensation editor's checkbox inside the modal.
-        var toggle = cut.FindAll("div.dag-ed-modal input[type=checkbox]").Last();
+        var toggle = cut.Find("div.dag-ed-modal .compensation-editor__toggle input[type=checkbox]");
         await cut.InvokeAsync(() => toggle.Change(true));
 
         cut.FindAll("span.dag-ed-rail__comp").Should().ContainSingle(
@@ -514,7 +514,7 @@ public sealed class EditorTests : TestContext
         await cut.InvokeAsync(() => canvas.Instance.OnNodeDroppedCb.InvokeAsync(
             new NodeDropIntent(BatchStepType.Job, 12, 8)));
         var parentId = canvas.Instance.Graph.Nodes.Single().StepId;
-        var toggle = cut.FindAll("div.dag-ed-modal input[type=checkbox]").Last();
+        var toggle = cut.Find("div.dag-ed-modal .compensation-editor__toggle input[type=checkbox]");
         await cut.InvokeAsync(() => toggle.Change(true));
         cut.FindAll("span.dag-ed-rail__comp").Should().ContainSingle("precondition: compensator attached");
 

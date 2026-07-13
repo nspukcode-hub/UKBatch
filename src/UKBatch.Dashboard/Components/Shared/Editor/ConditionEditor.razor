@@ -1,0 +1,82 @@
+@* Per-step run-if condition editor. Guards a top-level Job / ParallelGroup / ApprovalGate step: the step
+   runs only when the condition on a forwarded output or trigger parameter holds; otherwise it is skipped
+   and the batch proceeds to the next step. Every mutation raises OnChanged so the parent refreshes its
+   summary and validation. The comparand field hides for the presence/boolean operators that need none. *@
+@using UKBatch.Abstractions.Batches
+@using UKBatch.Dashboard.Models.Wizard
+
+<div class="form-field condition-editor__toggle">
+    <label class="form-field__label">
+        <input type="checkbox" checked="@(Step.Condition is not null)" @onchange="ToggleAsync" />
+        Add run-if condition
+    </label>
+    <span class="form-field__hint">The step runs only when this condition holds; otherwise it is skipped.
+        A condition can test an earlier step's forwarded output or a trigger parameter.</span>
+</div>
+
+@if (Step.Condition is { } cond)
+{
+    <div class="wizard-pane condition-editor">
+        <div class="form-field">
+            <label class="form-field__label">Parameter key</label>
+            <input class="form-field__input" @bind="cond.ParameterKey" @bind:event="oninput" @bind:after="OnChanged.InvokeAsync"
+                   placeholder="e.g. amount, invoiceId, tier" />
+            <span class="form-field__hint">A forwarded output from an earlier step, or a trigger parameter.</span>
+        </div>
+        <div class="form-field">
+            <label class="form-field__label">Operator</label>
+            <select class="form-field__select" @bind="cond.Operator" @bind:after="OnChanged.InvokeAsync">
+                @foreach (var op in Operators)
+                {
+                    <option @key="op" value="@op">@OperatorLabel(op)</option>
+                }
+            </select>
+        </div>
+        @if (NeedsValue(cond.Operator))
+        {
+            <div class="form-field">
+                <label class="form-field__label">Value</label>
+                <input class="form-field__input" @bind="cond.Value" @bind:event="oninput" @bind:after="OnChanged.InvokeAsync" />
+                <span class="form-field__hint">Compared culture-invariantly — numbers use '.', booleans are true/false.</span>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    /// <summary>The step whose run-if condition is being edited (binds <see cref="WizardStepDraft.Condition"/>).</summary>
+    [Parameter, EditorRequired] public WizardStepDraft Step { get; set; } = default!;
+
+    /// <summary>Raised after any mutation so the parent refreshes its summary / validation.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private static readonly ConditionOperator[] Operators = Enum.GetValues<ConditionOperator>();
+
+    private async Task ToggleAsync(ChangeEventArgs e)
+    {
+        var enabled = e.Value is true || string.Equals(e.Value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+        Step.Condition = enabled ? Step.Condition ?? new ConditionDraft() : null;
+        await OnChanged.InvokeAsync();
+    }
+
+    // Presence/boolean operators inspect only the key or the value's truthiness — no comparand needed.
+    private static bool NeedsValue(ConditionOperator op) => op is not (
+        ConditionOperator.Exists or ConditionOperator.NotExists or
+        ConditionOperator.IsTrue or ConditionOperator.IsFalse);
+
+    private static string OperatorLabel(ConditionOperator op) => op switch
+    {
+        ConditionOperator.Equals => "equals",
+        ConditionOperator.NotEquals => "not equals",
+        ConditionOperator.GreaterThan => "greater than",
+        ConditionOperator.GreaterThanOrEqual => "greater than or equal",
+        ConditionOperator.LessThan => "less than",
+        ConditionOperator.LessThanOrEqual => "less than or equal",
+        ConditionOperator.Exists => "exists",
+        ConditionOperator.NotExists => "does not exist",
+        ConditionOperator.IsTrue => "is true",
+        ConditionOperator.IsFalse => "is false",
+        ConditionOperator.Contains => "contains",
+        _ => op.ToString(),
+    };
+}

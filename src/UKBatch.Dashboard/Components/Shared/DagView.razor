@@ -250,6 +250,7 @@ else
             JobStatus.Failed => "dag-node--failed",
             JobStatus.Completed => "dag-node--completed",
             JobStatus.Cancelled or JobStatus.Cancelling => "dag-node--cancelled",
+            JobStatus.Skipped => "dag-node--skipped",
             _ => string.Empty,
         };
     }
@@ -282,6 +283,7 @@ else
             JobStatus.Completed => "dag-edge--completed",
             JobStatus.Failed => "dag-edge--failed",
             JobStatus.Cancelled or JobStatus.Cancelling => "dag-edge--cancelled",
+            JobStatus.Skipped => "dag-edge--skipped",
             _ => string.Empty,
         };
     }

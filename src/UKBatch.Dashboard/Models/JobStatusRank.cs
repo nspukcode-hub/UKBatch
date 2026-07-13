@@ -27,6 +27,7 @@ public static class JobStatusRank
         JobStatus.Completed => 3,
         JobStatus.Failed => 3,
         JobStatus.Cancelled => 3,
+        JobStatus.Skipped => 3,
         _ => -1,
     };
 }

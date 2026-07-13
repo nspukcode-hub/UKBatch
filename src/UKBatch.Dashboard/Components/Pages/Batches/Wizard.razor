@@ -166,7 +166,7 @@ else
                            always cross-service-capable. *@
                         <div class="wizard-step-editor">
                             <StepDraftEditor Step="step" JobNames="_jobNames" JobCatalog="_jobCatalog" Services="_services"
-                                             AllowTargetService="true" AllowCompensation="true"
+                                             AllowTargetService="true" AllowCompensation="true" AllowCondition="true"
                                              OnCompensationEnabled="OnStepCompensationEnabledAsync" OnChanged="@(() => { })" />
                         </div>
                     }
@@ -689,14 +689,40 @@ else
         _ => string.Empty,
     };
 
-    private static string StepSummary(WizardStepDraft step) => step.StepType switch
+    private static string StepSummary(WizardStepDraft step)
     {
-        BatchStepType.Job => string.IsNullOrWhiteSpace(step.JobName)
-            ? "(no job selected)"
-            : step.TargetService is { Length: > 0 } svc ? $"{step.JobName} → {svc}" : step.JobName,
-        BatchStepType.ParallelGroup => $"{step.Children.Count} branches — {step.JoinPolicy}",
-        BatchStepType.ApprovalGate => string.IsNullOrWhiteSpace(step.ApprovalTitle) ? "(no title)" : step.ApprovalTitle,
-        _ => string.Empty,
+        var summary = step.StepType switch
+        {
+            BatchStepType.Job => string.IsNullOrWhiteSpace(step.JobName)
+                ? "(no job selected)"
+                : step.TargetService is { Length: > 0 } svc ? $"{step.JobName} → {svc}" : step.JobName,
+            BatchStepType.ParallelGroup => $"{step.Children.Count} branches — {step.JoinPolicy}",
+            BatchStepType.ApprovalGate => string.IsNullOrWhiteSpace(step.ApprovalTitle) ? "(no title)" : step.ApprovalTitle,
+            _ => string.Empty,
+        };
+        return step.Condition is { ParameterKey: { Length: > 0 } } c ? $"{summary} · {ConditionSummary(c)}" : summary;
+    }
+
+    // Compact human-readable form of a run-if condition for the step summary.
+    private static string ConditionSummary(ConditionDraft c) => c.Operator switch
+    {
+        ConditionOperator.Exists => $"if {c.ParameterKey} exists",
+        ConditionOperator.NotExists => $"if {c.ParameterKey} not set",
+        ConditionOperator.IsTrue => $"if {c.ParameterKey} is true",
+        ConditionOperator.IsFalse => $"if {c.ParameterKey} is false",
+        _ => $"if {c.ParameterKey} {ConditionSymbol(c.Operator)} {c.Value}",
+    };
+
+    private static string ConditionSymbol(ConditionOperator op) => op switch
+    {
+        ConditionOperator.Equals => "=",
+        ConditionOperator.NotEquals => "≠",
+        ConditionOperator.GreaterThan => ">",
+        ConditionOperator.GreaterThanOrEqual => "≥",
+        ConditionOperator.LessThan => "<",
+        ConditionOperator.LessThanOrEqual => "≤",
+        ConditionOperator.Contains => "contains",
+        _ => op.ToString(),
     };
 }
 

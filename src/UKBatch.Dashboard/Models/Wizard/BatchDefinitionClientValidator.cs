@@ -1,3 +1,4 @@
+using System.Globalization;
 using UKBatch.Abstractions.Batches;
 
 namespace UKBatch.Dashboard.Models.Wizard;
@@ -85,7 +86,32 @@ public static class BatchDefinitionClientValidator
         // server (authoritative) and only the blank-JobName case is surfaced here — mirroring the server rule.
         if (step.Compensation is { } comp && string.IsNullOrWhiteSpace(comp.JobName))
             errors.Add(($"{path}.Compensation.JobName", "must be non-empty"));
+
+        // A run-if condition with a blank parameter key, or a comparison operator missing its comparand,
+        // would emit an unusable guard. The wizard only attaches conditions to top-level steps and the
+        // operator is a dropdown (an undefined value is unreachable), so those shape/context rejections stay
+        // on the server; the wizard-emittable cases are surfaced here to match the server's path set.
+        if (step.Condition is { } cond)
+        {
+            if (string.IsNullOrWhiteSpace(cond.ParameterKey))
+                errors.Add(($"{path}.Condition.ParameterKey", "must be non-empty"));
+            if (ConditionOperatorNeedsValue(cond.Operator) && string.IsNullOrEmpty(cond.Value))
+                errors.Add(($"{path}.Condition.Value", $"required for the {cond.Operator} operator"));
+            else if (IsOrderingOperator(cond.Operator)
+                && !double.TryParse(cond.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out _))
+                errors.Add(($"{path}.Condition.Value", $"must be a number for the {cond.Operator} operator"));
+        }
     }
+
+    // Mirror of the server rule: the comparison operators need a comparand; the presence/boolean ones do not.
+    private static bool ConditionOperatorNeedsValue(ConditionOperator op) => op is not (
+        ConditionOperator.Exists or ConditionOperator.NotExists or
+        ConditionOperator.IsTrue or ConditionOperator.IsFalse);
+
+    // Mirror of the server rule: ordering operators require a numeric comparand (else the guard never fires).
+    private static bool IsOrderingOperator(ConditionOperator op) => op is
+        ConditionOperator.GreaterThan or ConditionOperator.GreaterThanOrEqual or
+        ConditionOperator.LessThan or ConditionOperator.LessThanOrEqual;
 
     // The schedule catch-up window is a CLIENT-ONLY check (excluded from server parity, like the
     // parameter-key rules below). A negative magnitude can't express a real window, and a window with no

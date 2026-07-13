@@ -115,8 +115,8 @@ public sealed record class RunSummaryViewModel
         {
             if (e.Status is JobStatus.Failed or JobStatus.Cancelled)
                 anyFailedOrCancelled = true;
-            else if (e.Status is not JobStatus.Completed)
-                anyNonTerminal = true; // Pending / Running / Retrying / AwaitingApproval / Cancelling
+            else if (e.Status is not (JobStatus.Completed or JobStatus.Skipped))
+                anyNonTerminal = true; // Pending / Running / Retrying / AwaitingApproval / Cancelling (Skipped is terminal)
 
             if (e.EnqueuedAtUtc < startedAtUtc)
                 startedAtUtc = e.EnqueuedAtUtc;

@@ -1,3 +1,4 @@
+using System.Globalization;
 using UKBatch.Abstractions.Batches;
 
 namespace UKBatch.Validation;
@@ -44,7 +45,7 @@ internal static class BatchDefinitionValidator
 
         for (var i = 0; i < def.Steps.Count; i++)
         {
-            ValidateStep(def.Steps[i], $"Steps[{i}]", errors, allowParallel: true, allowCompensation: true);
+            ValidateStep(def.Steps[i], $"Steps[{i}]", errors, allowParallel: true, allowCompensation: true, allowCondition: true);
         }
 
         // Compensation steps are persisted verbatim and run via the same step dispatch as the main
@@ -52,7 +53,7 @@ internal static class BatchDefinitionValidator
         // through REST create/update and only surfaces as a silent runtime failure.
         for (var i = 0; i < def.OnFailureSteps.Count; i++)
         {
-            ValidateStep(def.OnFailureSteps[i], $"OnFailureSteps[{i}]", errors, allowParallel: true, allowCompensation: false);
+            ValidateStep(def.OnFailureSteps[i], $"OnFailureSteps[{i}]", errors, allowParallel: true, allowCompensation: false, allowCondition: false);
         }
 
         ValidateStepIdUniqueness(def, errors);
@@ -123,7 +124,7 @@ internal static class BatchDefinitionValidator
         }
     }
 
-    private static void ValidateStep(BatchStep step, string path, List<ValidationError> errors, bool allowParallel, bool allowCompensation)
+    private static void ValidateStep(BatchStep step, string path, List<ValidationError> errors, bool allowParallel, bool allowCompensation, bool allowCondition)
     {
         if (string.IsNullOrWhiteSpace(step.StepId))
         {
@@ -190,7 +191,7 @@ internal static class BatchDefinitionValidator
 
                 for (var j = 0; j < step.ParallelGroup.Steps.Count; j++)
                 {
-                    ValidateStep(step.ParallelGroup.Steps[j], $"{path}.ParallelGroup.Steps[{j}]", errors, allowParallel: false, allowCompensation: false);
+                    ValidateStep(step.ParallelGroup.Steps[j], $"{path}.ParallelGroup.Steps[{j}]", errors, allowParallel: false, allowCompensation: false, allowCondition: false);
                 }
                 break;
 
@@ -245,5 +246,53 @@ internal static class BatchDefinitionValidator
                 errors.Add(new ValidationError($"{path}.Compensation.JobName", "must be non-empty"));
             }
         }
+
+        // A run-if condition is honored only on a top-level step (Job, ParallelGroup, or ApprovalGate). On a
+        // parallel child or an OnFailure step it would be silently ignored, so reject it there — declaring a
+        // guard that never runs is worse than an error.
+        if (step.Condition is { } cond)
+        {
+            if (!allowCondition)
+            {
+                errors.Add(new ValidationError($"{path}.Condition",
+                    "a run-if condition is not allowed here (only on top-level steps)"));
+            }
+            if (string.IsNullOrWhiteSpace(cond.ParameterKey))
+            {
+                errors.Add(new ValidationError($"{path}.Condition.ParameterKey", "must be non-empty"));
+            }
+            if (!Enum.IsDefined(cond.Operator))
+            {
+                errors.Add(new ValidationError($"{path}.Condition.Operator", $"unknown enum value {(int)cond.Operator}"));
+            }
+            else if (ConditionOperatorNeedsValue(cond.Operator) && string.IsNullOrEmpty(cond.Value))
+            {
+                errors.Add(new ValidationError($"{path}.Condition.Value", $"required for the {cond.Operator} operator"));
+            }
+            else if (IsOrderingOperator(cond.Operator)
+                && !double.TryParse(cond.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out _))
+            {
+                // An ordering operator compares numerically; a non-numeric comparand makes the evaluator return
+                // false on every run — a guard that silently never fires. Reject it up front (a broken guard is
+                // worse than an error, and it fails toward "never ship").
+                errors.Add(new ValidationError($"{path}.Condition.Value",
+                    $"must be a number for the {cond.Operator} operator"));
+            }
+        }
     }
+
+    /// <summary>
+    /// The comparison operators test the value against <see cref="StepCondition.Value"/>; the presence and
+    /// boolean operators (Exists / NotExists / IsTrue / IsFalse) do not, so they need no comparand.
+    /// </summary>
+    private static bool ConditionOperatorNeedsValue(ConditionOperator op) => op switch
+    {
+        ConditionOperator.Exists or ConditionOperator.NotExists
+            or ConditionOperator.IsTrue or ConditionOperator.IsFalse => false,
+        _ => true,
+    };
+
+    private static bool IsOrderingOperator(ConditionOperator op) => op is
+        ConditionOperator.GreaterThan or ConditionOperator.GreaterThanOrEqual or
+        ConditionOperator.LessThan or ConditionOperator.LessThanOrEqual;
 }

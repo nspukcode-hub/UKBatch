@@ -55,4 +55,10 @@ public enum JobStatus
 
     /// <summary>Terminal: cancelled before completion.</summary>
     Cancelled = 8,
+
+    /// <summary>
+    /// Terminal: the step's run-if condition was not met, so it was skipped without dispatch. Written
+    /// directly at insert time (there is no incoming transition — a skipped step is never enqueued or run).
+    /// </summary>
+    Skipped = 9,
 }

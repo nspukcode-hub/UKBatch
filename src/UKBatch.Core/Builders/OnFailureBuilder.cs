@@ -18,6 +18,7 @@ public sealed class OnFailureBuilder
         var stepBuilder = new JobStepBuilder();
         configure?.Invoke(stepBuilder);
         ThrowIfChainStepHasCompensator(stepBuilder);
+        ThrowIfChainStepHasCondition(stepBuilder);
         var jobName = typeof(TJob).FullName ?? typeof(TJob).Name;
         _steps.Add(new BatchStep
         {
@@ -54,6 +55,7 @@ public sealed class OnFailureBuilder
         var stepBuilder = new JobStepBuilder();
         configure?.Invoke(stepBuilder);
         ThrowIfChainStepHasCompensator(stepBuilder);
+        ThrowIfChainStepHasCondition(stepBuilder);
         _steps.Add(new BatchStep
         {
             StepId = IdGenerator.NewStepId(),
@@ -104,6 +106,19 @@ public sealed class OnFailureBuilder
         if (stepBuilder.Compensation is not null)
         {
             throw new InvalidOperationException("Compensation-chain steps cannot have compensators.");
+        }
+    }
+
+    /// <summary>
+    /// A failure-chain step cannot carry a run-if condition — the chain runs only in response to a failure,
+    /// and its steps are unconditional cleanup. Fail fast at build time rather than letting the validator
+    /// reject it later.
+    /// </summary>
+    private static void ThrowIfChainStepHasCondition(JobStepBuilder stepBuilder)
+    {
+        if (stepBuilder.Condition is not null)
+        {
+            throw new InvalidOperationException("Compensation-chain steps cannot have run-if conditions.");
         }
     }
 

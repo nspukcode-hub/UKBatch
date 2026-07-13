@@ -1,3 +1,4 @@
+using System.Globalization;
 using UKBatch.Abstractions.Batches;
 using UKBatch.Abstractions.Jobs;
 
@@ -11,6 +12,7 @@ public sealed class JobStepBuilder
     internal IReadOnlyDictionary<string, object?>? Parameters { get; private set; }
     internal string? TargetService { get; private set; }
     internal CompensationStepData? Compensation { get; private set; }
+    internal StepCondition? Condition { get; private set; }
 
     // Set on the INNER builder that configures a compensator, so attaching a compensator to a
     // compensator fails fast (a saga unwind must be acyclic — there is no compensation of compensation).
@@ -51,6 +53,24 @@ public sealed class JobStepBuilder
     {
         ArgumentException.ThrowIfNullOrEmpty(targetService);
         TargetService = targetService;
+        return this;
+    }
+
+    /// <summary>
+    /// Guards this step with a run-if condition: it runs only when the value at
+    /// <paramref name="parameterKey"/> (an earlier step's forwarded output or a trigger parameter)
+    /// satisfies <paramref name="op"/> against <paramref name="value"/>; otherwise the step is skipped and
+    /// the batch proceeds to the next step. <paramref name="value"/> is ignored by the presence and boolean
+    /// operators (Exists / NotExists / IsTrue / IsFalse) and is stored culture-invariantly for the
+    /// comparison operators.
+    /// </summary>
+    public JobStepBuilder RunIf(string parameterKey, ConditionOperator op, object? value = null)
+    {
+        if (_isCompensator)
+        {
+            throw new InvalidOperationException("A compensator cannot have a run-if condition.");
+        }
+        Condition = BuildCondition(parameterKey, op, value);
         return this;
     }
 
@@ -112,4 +132,29 @@ public sealed class JobStepBuilder
             TimeoutSeconds = inner.TimeoutSeconds,
         };
     }
+
+    /// <summary>
+    /// Builds a <see cref="StepCondition"/>, rendering the comparand culture-invariantly so the same string
+    /// is compared whether the condition was authored in code, over REST, or in the dashboard. Shared by the
+    /// job-step and group-level <c>RunIf</c> overloads.
+    /// </summary>
+    internal static StepCondition BuildCondition(string parameterKey, ConditionOperator op, object? value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(parameterKey);
+        return new StepCondition
+        {
+            ParameterKey = parameterKey,
+            Operator = op,
+            Value = FormatConditionValue(value),
+        };
+    }
+
+    private static string? FormatConditionValue(object? value) => value switch
+    {
+        null => null,
+        string s => s,
+        bool b => b ? "true" : "false",
+        IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
+        _ => value.ToString(),
+    };
 }

@@ -64,6 +64,15 @@ internal interface IResumeShadowProbe
     /// of <see cref="IResumeGateProbe"/>, which re-opens a non-decided gate rather than fail-routing it.
     /// </summary>
     Task<ResumeShadowCompletion?> TryGetCompletedStatusAsync(string batchId, string stepId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns the set of step ids in run <paramref name="batchId"/> that were skipped by an unmet run-if
+    /// condition (they have a <see cref="JobStatus.Skipped"/> execution row). A resumed saga unwind uses
+    /// this to exclude skipped steps from compensation — a skipped step never ran, so it must never be
+    /// undone. Empty when nothing was skipped. Consulted only on the resume path; the fresh unwind uses the
+    /// executor's in-memory skip set instead (no store round-trip on the trigger path).
+    /// </summary>
+    Task<IReadOnlySet<string>> GetSkippedStepIdsAsync(string batchId, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -201,5 +210,25 @@ internal sealed class ResumeShadowProbe : IResumeShadowProbe
         }
 
         return null;
+    }
+
+    public async Task<IReadOnlySet<string>> GetSkippedStepIdsAsync(string batchId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(batchId);
+
+        // Same non-invasive post-filter as TryGetCompletedStatusAsync: one BatchId query, in-memory match on
+        // Skipped rows (JobQuery has no BatchStepId/Status-set filter, and the per-run set is small).
+        var rows = await _reader.QueryAsync(
+            new JobQuery { BatchId = batchId, Limit = int.MaxValue, Offset = 0 }, cancellationToken).ConfigureAwait(false);
+
+        var skipped = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var row in rows)
+        {
+            if (row.Status == JobStatus.Skipped && row.BatchStepId is { Length: > 0 } stepId)
+            {
+                skipped.Add(stepId);
+            }
+        }
+        return skipped;
     }
 }

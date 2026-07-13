@@ -1,3 +1,4 @@
+using UKBatch.Abstractions.Batches;
 using UKBatch.Abstractions.Jobs;
 using UKBatch.Abstractions.Models;
 
@@ -61,4 +62,24 @@ internal interface IJobRunnerInternal
     /// <param name="result">The worker's terminal result.</param>
     /// <param name="cancellationToken">Cancellation.</param>
     Task RecordCrossServiceEndAsync(string executionId, JobResult result, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Records a batch step whose run-if <see cref="BatchStep.Condition"/> was not met, so it was skipped
+    /// without dispatch. Inserts a terminal <see cref="JobStatus.Skipped"/> execution row keyed by
+    /// <see cref="BatchStep.StepId"/> so the step is visible in history and the dashboard DAG, and so a
+    /// resumed run's saga unwind can tell the step never ran and must not compensate it. No-op if the
+    /// configured store is not an <see cref="Abstractions.Storage.IJobStoreInternal"/> (skip visibility is
+    /// disabled, but the in-memory fresh-unwind skip set still excludes the step from compensation).
+    /// </summary>
+    /// <param name="batchId">The batch RUN id.</param>
+    /// <param name="step">The skipped step (its <see cref="BatchStep.Condition"/> is used for the audit note).</param>
+    /// <param name="batchDefinitionId">Parent batch DEFINITION id, for dashboard "runs of this definition" queries.</param>
+    /// <param name="triggeredBy">Identity that triggered the run; <c>null</c> when unattributed.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    Task RecordSkippedStepAsync(
+        string batchId,
+        BatchStep step,
+        string? batchDefinitionId,
+        string? triggeredBy,
+        CancellationToken cancellationToken);
 }
