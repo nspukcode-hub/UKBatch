@@ -89,6 +89,8 @@ public static class DagStatusLayout
         foreach (var step in steps.OrderBy(s => s.Order))
         {
             double x = StartX + column * ColStride;
+            // Most steps occupy ONE column; a decision spans TWO (the diamond, then its branch column).
+            int columnSpan = 1;
 
             if (step is { StepType: BatchStepType.ParallelGroup, ParallelGroup: { } pg })
             {
@@ -104,6 +106,23 @@ public static class DagStatusLayout
                     maxMainBottom = Math.Max(maxMainBottom, childCenter + NodeH / 2);
                 }
             }
+            else if (step is { StepType: BatchStepType.Decision, Decision: { } decision })
+            {
+                // The diamond sits on the baseline in THIS column; its branch jobs stack vertically in the
+                // NEXT column (like a PG's children, but one column to the right so the diamond → branch
+                // edges read left-to-right). The whole decision therefore spans two columns.
+                map[step.StepId] = (x, TopFor(MidY));
+                var branches = decision.Branches;
+                int n = branches.Count;
+                double branchX = StartX + (column + 1) * ColStride;
+                for (int i = 0; i < n; i++)
+                {
+                    double branchCenter = MidY + (i - (n - 1) / 2.0) * ChildStride;
+                    map[branches[i].StepId] = (branchX, TopFor(branchCenter));
+                    maxMainBottom = Math.Max(maxMainBottom, branchCenter + NodeH / 2);
+                }
+                columnSpan = 2;
+            }
             else
             {
                 // Job / ApprovalGate / Unknown — one node centred on the baseline.
@@ -115,8 +134,9 @@ public static class DagStatusLayout
                 compensators.Add((CompensationStepIds.For(step.StepId), column));
             }
 
-            // The column advances by ONE regardless of how many child nodes the group expanded to.
-            column++;
+            // The column advances by ONE for a single-node step (a PG collapses its stacked children into
+            // one column), or by TWO past a decision's diamond + branch columns.
+            column += columnSpan;
         }
 
         // Compensation lane: one node per compensator, in the PARENT's column, on a row below the spine's

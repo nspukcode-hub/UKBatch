@@ -38,4 +38,17 @@ public sealed class JobStatusBadgeTests : TestContext
         cut.Markup.Should().Contain("FAILED");
         cut.Markup.Should().Contain(">error</span>");
     }
+
+    [Fact]
+    public void Skipped_RendersSkippedCssClassAndIcon()
+    {
+        // A skipped step (a losing decision branch, or a run-if guard that did not hold) has its own badge
+        // arm — previously it fell through to the generic "pending" class + "help" icon.
+        var cut = RenderComponent<JobStatusBadge>(p => p.Add(b => b.Status, JobStatus.Skipped));
+
+        cut.Markup.Should().Contain("status-badge--skipped");
+        cut.Markup.Should().Contain("SKIPPED");
+        cut.Markup.Should().Contain("skip_next");
+        cut.Markup.Should().NotContain(">help</span>", "Skipped no longer falls through to the default help icon");
+    }
 }

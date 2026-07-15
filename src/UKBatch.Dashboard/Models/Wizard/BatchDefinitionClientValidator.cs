@@ -68,6 +68,10 @@ public static class BatchDefinitionClientValidator
                     ValidateStep(step.Children[j], $"{path}.ParallelGroup.Steps[{j}]", errors, allowParallel: false);
                 break;
 
+            case BatchStepType.Decision:
+                ValidateDecision(step, path, errors);
+                break;
+
             case BatchStepType.ApprovalGate:
                 if (string.IsNullOrWhiteSpace(step.ApprovalTitle))
                     errors.Add(($"{path}.Approval.Title", "must be non-empty"));
@@ -100,6 +104,52 @@ public static class BatchDefinitionClientValidator
             else if (IsOrderingOperator(cond.Operator)
                 && !double.TryParse(cond.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out _))
                 errors.Add(($"{path}.Condition.Value", $"must be a number for the {cond.Operator} operator"));
+        }
+    }
+
+    // Mirrors the server's Decision arm path-set for wizard-emittable models: at least one branch, a
+    // non-blank branch job name, the else ordering rules (at most one else, must be last), and each real
+    // branch condition's comparand shape. The wizard mints branch StepIds and always emits a Job payload, so
+    // the server-only StepId-blank/reserved-suffix and null-Job paths never arise here (as with the top-level
+    // step rules). A branch whose condition has a blank parameter key projects to the else/default branch
+    // (mirroring BuildBranch), so the else rules run on THAT projected shape — never on the raw draft.
+    private static void ValidateDecision(WizardStepDraft step, string path, List<(string, string)> errors)
+    {
+        if (step.DecisionBranches.Count < 1)
+            errors.Add(($"{path}.Decision.Branches", "Decision must contain at least one branch"));
+
+        var elseSeen = false;
+        for (var b = 0; b < step.DecisionBranches.Count; b++)
+        {
+            var branch = step.DecisionBranches[b];
+            var branchPath = $"{path}.Decision.Branches[{b}]";
+
+            if (string.IsNullOrWhiteSpace(branch.StepId))
+                errors.Add(($"{branchPath}.StepId", "must be non-empty"));
+
+            if (string.IsNullOrWhiteSpace(branch.JobName))
+                errors.Add(($"{branchPath}.Job.JobName", "must be non-empty"));
+
+            // A branch with no condition, or a blank/whitespace parameter key, projects to the else/default
+            // branch (mirrors BuildBranch) — validate the else rules on THAT projected shape.
+            var isElse = branch.When is null || string.IsNullOrWhiteSpace(branch.When.ParameterKey);
+            if (isElse)
+            {
+                if (elseSeen)
+                    errors.Add(($"{branchPath}.When", "a Decision may have at most one else (unconditional) branch"));
+                elseSeen = true;
+            }
+            else
+            {
+                if (elseSeen)
+                    errors.Add(($"{branchPath}.When", "the else (unconditional) branch must be the last branch"));
+                var cond = branch.When!;
+                if (ConditionOperatorNeedsValue(cond.Operator) && string.IsNullOrEmpty(cond.Value))
+                    errors.Add(($"{branchPath}.When.Value", $"required for the {cond.Operator} operator"));
+                else if (IsOrderingOperator(cond.Operator)
+                    && !double.TryParse(cond.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out _))
+                    errors.Add(($"{branchPath}.When.Value", $"must be a number for the {cond.Operator} operator"));
+            }
         }
     }
 

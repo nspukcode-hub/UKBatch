@@ -386,8 +386,9 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
 
     /// <summary>
     /// Walks every Job-bearing step of a definition: the main <see cref="BatchDefinition.Steps"/>,
-    /// the children of each <see cref="BatchStepType.ParallelGroup"/>, and the
-    /// <see cref="BatchDefinition.OnFailureSteps"/> compensation chain.
+    /// the children of each <see cref="BatchStepType.ParallelGroup"/>, the branch jobs of each
+    /// <see cref="BatchStepType.Decision"/> (as synthesized Job steps so a local branch job gets the same
+    /// registration pre-flight), and the <see cref="BatchDefinition.OnFailureSteps"/> compensation chain.
     /// </summary>
     private static IEnumerable<BatchStep> EnumerateJobSteps(BatchDefinition def)
     {
@@ -399,6 +400,22 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
                 foreach (var child in children)
                 {
                     yield return child;
+                }
+            }
+            else if (step.Decision is { Branches: { } branches })
+            {
+                foreach (var branch in branches)
+                {
+                    // Surface each branch's job as a Job step so the local-branch registration check fires
+                    // with parity to Job steps and parallel children; a cross-service branch is skipped like
+                    // any remote step (its TargetService rides the synthesized payload).
+                    yield return new BatchStep
+                    {
+                        StepId = branch.StepId,
+                        Order = step.Order,
+                        StepType = BatchStepType.Job,
+                        Job = branch.Job,
+                    };
                 }
             }
         }
@@ -493,7 +510,8 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
 
     /// <summary>
     /// Counts the steps of a definition for the run record's <c>StepCount</c>: each Job step, each
-    /// ParallelGroup CHILD (the group is a grouping, not a step in its own right), each ApprovalGate
+    /// ParallelGroup CHILD (the group is a grouping, not a step in its own right), each Decision BRANCH
+    /// (a decision emits one execution row per branch — the winner plus the skipped rest), each ApprovalGate
     /// step, each per-step compensator (a distinct executable step, so the drift tripwire notices a
     /// compensator being added or removed), and each OnFailureSteps compensation step. A topology
     /// number, distinct from the executed-row total.
@@ -503,7 +521,9 @@ internal sealed class JobRunner : IJobRunner, IJobRunnerInternal
         var count = 0;
         foreach (var step in def.Steps)
         {
-            count += step.ParallelGroup is { Steps: { } children } ? children.Count : 1;
+            count += step.Decision is { Branches: { } dbr } ? dbr.Count
+                   : step.ParallelGroup is { Steps: { } children } ? children.Count
+                   : 1;
             if (step.Compensation is not null) { count++; }   // each compensator is a distinct executable step
         }
         return count + def.OnFailureSteps.Count;

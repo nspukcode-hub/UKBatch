@@ -11,6 +11,25 @@
     --color-status-failed: #EF4444;
     --color-status-cancelled: #F59E0B;
     --color-status-approval: #A855F7;
+    --color-status-decision: #EAB308;
+
+    /* Decision branch identity colors (editor canvas ONLY). A branch's slot colors three surfaces at once —
+       its chip inside the diamond, its edge, and the card it lands on — which is what pairs them, since the
+       editor prints no text on edges. Cycles after 6; `else` is neutral grey, never a slot, so the default
+       branch reads as the fallback it is.
+       Slot 1 is green because it paints the FIRST condition — the "if" arm most decisions are read as, so
+       the taken-condition arm reads as the affirmative one and its `else` as the grey fallback beside it.
+       These are their own hexes, never aliases of the status ramp: the two never meet (the editor canvas
+       has no run status to paint, and the run view has no branch identity), but keeping them independent
+       means restyling one can never silently restyle the other. Slot 3 stays clear of slot 1's hue — two
+       greens side by side would defeat the pairing these colors exist for. */
+    --color-branch-1: #4ADE80;
+    --color-branch-2: #F472B6;
+    --color-branch-3: #38BDF8;
+    --color-branch-4: #FB923C;
+    --color-branch-5: #C084FC;
+    --color-branch-6: #A78BFA;
+    --color-branch-else: #94A3B8;
 
     /* Service health colors */
     --color-health-connected: var(--color-status-completed);
@@ -770,6 +789,15 @@ code, .mono { font-family: var(--font-mono); }
 }
 .dag-node--approval .dag-node__title { color: var(--color-status-approval); }
 
+/* Decision node — RECTANGLE variant, amber accent + call_split icon (NOT an SVG polygon diamond: a
+   non-rectangle foreignObject mis-places under the canvas transform, the same reason the approval gate is
+   a rectangle). Declared BEFORE the live-status modifiers so a derived status (running/completed/…) wins
+   on the border by source order — a resting decision diamond shows the amber accent. */
+.dag-node--decision {
+    border-left-color: var(--color-status-decision);
+}
+.dag-node--decision .dag-node__icon { color: var(--color-status-decision); }
+
 /* Live-status modifiers (live mode only) */
 .dag-node--running   { border-color: var(--color-status-running);   border-left-color: var(--color-status-running);   animation: dag-pulse var(--motion-pulse) ease-in-out infinite; }
 .dag-node--failed    { border-color: var(--color-status-failed);    border-left-color: var(--color-status-failed); }
@@ -788,7 +816,10 @@ code, .mono { font-family: var(--font-mono); }
 /* Edges */
 .dag-edge { stroke: var(--color-border-strong); stroke-width: 2; fill: none; }
 .dag-edge--parallel { stroke: var(--color-border-strong); }
+.dag-edge--decision { stroke: var(--color-status-decision); }
 .dag-edge--on-failure { stroke: var(--color-status-failed); stroke-dasharray: 6 4; }
+/* Decision branch label at the edge midpoint (the condition text). */
+.dag-edge__label { fill: var(--color-text-secondary); font-size: 11px; font-family: var(--font-mono, monospace); paint-order: stroke; stroke: var(--color-surface-container-lowest); stroke-width: 3px; }
 
 /* Live edge tint — follows the DESTINATION node's status. Placed AFTER
    the kind rules above so the status stroke wins by source order (equal specificity). OnFailure
@@ -862,6 +893,20 @@ code, .mono { font-family: var(--font-mono); }
 .dag-node-detail__chip { padding: 2px var(--space-xs); background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-full); font-size: var(--font-body-sm-size); }
 .dag-node-detail__decision { display: flex; flex-direction: column; gap: var(--space-xs); }
 .dag-node-detail__decision .material-symbols-outlined.spin-animation { animation: spin 1s linear infinite; }
+/* decision inspector — one row per branch: condition → job (+ optional cross-service chip) */
+.dag-node-detail__branches { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-xs); }
+.dag-node-detail__branch { display: flex; align-items: center; gap: var(--space-xs); flex-wrap: wrap; }
+.dag-node-detail__branch-cond { padding: 2px var(--space-xs); background: color-mix(in srgb, var(--color-status-decision) 16%, transparent); color: var(--color-status-decision); border-radius: var(--radius-full); font-size: var(--font-body-sm-size); }
+.dag-node-detail__branch-arrow { color: var(--color-text-tertiary); font-size: 16px; }
+.dag-node-detail__branch-job { font-size: var(--font-body-sm-size); }
+
+/* decision branch editor (DecisionEditor) — one card per branch (condition + job) */
+.decision-editor { display: flex; flex-direction: column; gap: var(--space-md); }
+.decision-editor__branch { display: flex; flex-direction: column; gap: var(--space-sm); padding: var(--space-md); background: var(--color-surface-container-high); border: 1px solid var(--color-border-strong); border-left: 3px solid var(--color-status-decision); border-radius: var(--radius-lg); }
+.decision-editor__branch-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); }
+.decision-editor__branch-title { display: inline-flex; align-items: center; gap: var(--space-xxs); font-weight: 600; color: var(--color-status-decision); }
+.decision-editor__branch-title .material-symbols-outlined { font-size: 18px; }
+.decision-editor__branch-ctrls { display: inline-flex; gap: var(--space-xxs); }
 
 /* Detail page topology layout — canvas + right panel side by side */
 .dag-layout { display: flex; gap: var(--space-md); align-items: flex-start; }
@@ -892,11 +937,13 @@ code, .mono { font-family: var(--font-mono); }
 .wizard-step-row { display: flex; align-items: flex-start; gap: var(--space-sm); padding: var(--space-md); background: var(--color-surface); border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); }
 .wizard-step-row--parallel { background: var(--color-surface-container-high); border-style: dashed; border-color: color-mix(in srgb, var(--color-primary) 30%, var(--color-border-strong)); }
 .wizard-step-row--approval { border-color: color-mix(in srgb, var(--color-status-approval) 40%, var(--color-border-strong)); }
+.wizard-step-row--decision { border-color: color-mix(in srgb, var(--color-status-decision) 40%, var(--color-border-strong)); }
 .wizard-step-row__main { flex: 1 1 auto; min-width: 0; }
 .wizard-step-row__type { display: inline-flex; align-items: center; gap: var(--space-xxs); font-size: var(--font-label-md-size); font-weight: var(--font-label-md-weight); text-transform: uppercase; letter-spacing: var(--font-label-md-tracking); }
 .wizard-step-row__type--job { color: var(--color-primary); }
 .wizard-step-row__type--parallel { color: var(--color-tertiary); }
 .wizard-step-row__type--approval { color: var(--color-status-approval); }
+.wizard-step-row__type--decision { color: var(--color-status-decision); }
 .wizard-step-row__summary { color: var(--color-text-secondary); font-size: var(--font-body-md-size); margin-top: var(--space-xxs); }
 .wizard-step-row__controls { display: flex; align-items: center; gap: var(--space-xxs); }
 .wizard-step-editor { margin-top: var(--space-sm); padding-top: var(--space-sm); border-top: 1px dashed var(--color-border-subtle); display: flex; flex-direction: column; gap: var(--space-sm); }
@@ -940,6 +987,7 @@ code, .mono { font-family: var(--font-mono); }
 .dag-ed-palette__tile--job { border-left: 3px solid var(--color-primary); }
 .dag-ed-palette__tile--parallel { border-left: 3px solid var(--color-tertiary); }
 .dag-ed-palette__tile--approval { border-left: 3px solid var(--color-status-approval); }
+.dag-ed-palette__tile--decision { border-left: 3px solid var(--color-status-decision); }
 .dag-ed-palette__tile--failure { border-left: 3px solid var(--color-status-failed); }
 
 /* canvas (Drawflow container). n8n-style: near-black bg + dotted grid. cursor:grab — the empty canvas
@@ -962,6 +1010,17 @@ code, .mono { font-family: var(--font-mono); }
 .dag-ed-node--job { border-left-color: var(--color-primary); }
 .dag-ed-node--parallelgroup { border-left-color: var(--color-tertiary); border-top-style: dashed; border-right-style: dashed; border-bottom-style: dashed; }
 .dag-ed-node--approvalgate { border-left-color: var(--color-status-approval); }
+/* decision node — amber accent + one chip per branch inside, each spelling its routing condition out in
+   full and tinted with that branch's colour. The branches ALSO render as their own cards a column to the
+   right (see --branch-color); the chips stay because a condition is only readable here, not on an edge. */
+.dag-ed-node--decision { border-left-color: var(--color-status-decision); border-top-style: dashed; border-right-style: dashed; border-bottom-style: dashed; }
+/* A decision BRANCH card takes its branch's colour on the left accent, matching its chip and its edge. The
+   card is display-only (it projects one entry of the parent's branch list), hence the dashed outline —
+   the same "not a plain step" cue the group/decision cards use. */
+.dag-ed-node[data-branch] { border-left-color: var(--branch-color); border-top-style: dashed; border-right-style: dashed; border-bottom-style: dashed; }
+/* Delete-protected cards have no Delete button (dag-editor.js omits it); also hide Drawflow's own
+   right-click "x", which it appends to the WRAPPER — otherwise the guard silently refuses a visible button. */
+.dag-ed-canvas .drawflow-node.dag-ed-nodelete .drawflow-delete { display: none; }
 /* compensation (onFailure) node — outer Drawflow class stays dag-ed-job (Job-only modal); this inner
    modifier paints the red/dashed accent so the lower lane reads as the compensation branch. */
 .dag-ed-node--failure { border-left-color: var(--color-status-failed); border-style: dashed; }
@@ -986,6 +1045,10 @@ code, .mono { font-family: var(--font-mono); }
 .dag-ed-node__branches { display: flex; flex-direction: column; gap: var(--space-xxs); margin-top: var(--space-xs); padding-top: var(--space-xs); padding-left: var(--space-xs); border-top: 1px dashed var(--color-border-subtle); border-left: 2px solid var(--color-tertiary); }
 .dag-ed-node__branch { display: flex; align-items: center; gap: var(--space-xxs); min-width: 0; font-size: var(--font-body-sm-size); color: var(--color-text-secondary); }
 .dag-ed-node__branch-ico { font-size: 14px; color: var(--color-tertiary); flex: 0 0 auto; }
+/* A decision's chip block: the left rule + each chip's icon take the branch's colour, which is the only
+   thing tying a chip to its card and its edge (the edges carry no text). */
+.dag-ed-node__branches--decision { border-left-color: var(--color-status-decision); }
+.dag-ed-node__branch[data-branch] .dag-ed-node__branch-ico { color: var(--branch-color); }
 .dag-ed-node__branch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* step-edit modal (Round-2: replaces the always-on inspector). Reuses .modal-overlay/.modal-card; bounded
@@ -1037,6 +1100,23 @@ code, .mono { font-family: var(--font-mono); }
    rule, L1118). SCOPED to .dag-ed-canvas so it can't bleed onto other Drawflow canvases. dag-editor.js
    tags each .connection with data-kind via the authoritative node_out_node-/node_in_node- class decode. */
 .dag-ed-canvas .connection[data-kind="OnFailure"] .main-path { stroke: var(--color-status-failed); stroke-dasharray: 6 4; }
+/* editor decision branch edge — solid, in the branch's own colour. --branch-color is set per-connection by
+   the data-branch rules below (dag-editor.js stamps data-branch from the edge's accent); the amber fallback
+   applies to a decision edge that somehow carries no accent. */
+.dag-ed-canvas .connection[data-kind="Decision"] .main-path { stroke: var(--branch-color, var(--color-status-decision)); }
+
+/* Branch identity: ONE colour per branch, resolved on three surfaces — the connection, the chip inside the
+   diamond, and the branch card — so a chip and its card can be paired at a glance. The editor prints no
+   condition text on edges (a long condition is unreadable there), so this colour carries the whole pairing;
+   the condition itself is spelled out in full on the chip. Setting --branch-color (rather than stroke) lets
+   the [data-kind] rules above own the line style and these own only the hue. */
+.dag-ed-canvas .connection[data-branch="1"], .dag-ed-canvas .dag-ed-node__branch[data-branch="1"], .dag-ed-canvas .dag-ed-node[data-branch="1"] { --branch-color: var(--color-branch-1); }
+.dag-ed-canvas .connection[data-branch="2"], .dag-ed-canvas .dag-ed-node__branch[data-branch="2"], .dag-ed-canvas .dag-ed-node[data-branch="2"] { --branch-color: var(--color-branch-2); }
+.dag-ed-canvas .connection[data-branch="3"], .dag-ed-canvas .dag-ed-node__branch[data-branch="3"], .dag-ed-canvas .dag-ed-node[data-branch="3"] { --branch-color: var(--color-branch-3); }
+.dag-ed-canvas .connection[data-branch="4"], .dag-ed-canvas .dag-ed-node__branch[data-branch="4"], .dag-ed-canvas .dag-ed-node[data-branch="4"] { --branch-color: var(--color-branch-4); }
+.dag-ed-canvas .connection[data-branch="5"], .dag-ed-canvas .dag-ed-node__branch[data-branch="5"], .dag-ed-canvas .dag-ed-node[data-branch="5"] { --branch-color: var(--color-branch-5); }
+.dag-ed-canvas .connection[data-branch="6"], .dag-ed-canvas .dag-ed-node__branch[data-branch="6"], .dag-ed-canvas .dag-ed-node[data-branch="6"] { --branch-color: var(--color-branch-6); }
+.dag-ed-canvas .connection[data-branch="else"], .dag-ed-canvas .dag-ed-node__branch[data-branch="else"], .dag-ed-canvas .dag-ed-node[data-branch="else"] { --branch-color: var(--color-branch-else); }
 /* arrowhead fill via CSS var (NOT the SVG `context-stroke` attr — renders BLACK on older Safari/WebKit). */
 #ukbatch-arrow path { fill: var(--color-border-strong); }
 
@@ -1074,6 +1154,9 @@ code, .mono { font-family: var(--font-mono); }
 .dag-st-node--job { border-left-color: var(--color-primary); }
 .dag-st-node--approval { border-left-color: var(--color-status-approval); }
 .dag-st-node--approval .dag-st-node__kindico { color: var(--color-status-approval); font-size: 16px; }
+/* decision diamond — amber accent + call_split icon (positioned div, foreignObject-free — no transform bug) */
+.dag-st-node--decision { border-left-color: var(--color-status-decision); }
+.dag-st-node--decision .dag-st-node__kindico { color: var(--color-status-decision); font-size: 16px; }
 .dag-st-node--unknown { border-style: dashed; opacity: 0.85; }
 /* compensation (reverse-unwind) node — a dashed accent in the failure colour, on its own lower lane */
 .dag-st-node--compensation { border-left-color: var(--color-status-failed); border-left-style: dashed; }
@@ -1159,6 +1242,10 @@ code, .mono { font-family: var(--font-mono); }
 /* connection flow lines — subtle stroke + arrowhead; status tint via [data-status] (set by the JS bridge) */
 .dag-status-canvas .drawflow .connection .main-path { stroke: var(--color-border-strong); stroke-width: 2px; fill: none; marker-end: url(#ukbatch-arrow); }
 .dag-status-canvas .drawflow .connection[data-kind="OnFailure"] .main-path { stroke: var(--color-status-failed); stroke-dasharray: 6 4; }
+/* decision branch edge — solid amber (diamond → branch fan-out + re-convergence) */
+.dag-status-canvas .drawflow .connection[data-kind="Decision"] .main-path { stroke: var(--color-status-decision); }
+/* decision branch condition label drawn at the connection midpoint (a cosmetic SVG <text> the JS appends) */
+.dag-status-canvas .drawflow .connection .dag-st-edge-label { fill: var(--color-text-secondary); font-size: 11px; paint-order: stroke; stroke: var(--color-surface-container-lowest); stroke-width: 3px; pointer-events: none; }
 /* compensation edge — dashed, failure-coloured, tighter dash than the OnFailure chain to read distinctly */
 .dag-status-canvas .drawflow .connection[data-kind="Compensation"] .main-path { stroke: var(--color-status-failed); stroke-dasharray: 2 4; }
 .dag-status-canvas .drawflow .connection[data-status="running"] .main-path { stroke: var(--color-status-running); }
@@ -1278,6 +1365,7 @@ code, .mono { font-family: var(--font-mono); }
 .status-badge--failed    { background: color-mix(in srgb, var(--color-status-failed)    18%, transparent); color: var(--color-status-failed); }
 .status-badge--cancelled { background: color-mix(in srgb, var(--color-status-cancelled) 18%, transparent); color: var(--color-status-cancelled); }
 .status-badge--approval  { background: color-mix(in srgb, var(--color-status-approval)  18%, transparent); color: var(--color-status-approval); }
+.status-badge--skipped   { background: color-mix(in srgb, var(--color-text-tertiary)    18%, transparent); color: var(--color-text-tertiary); }
 
 /* Inline pill flagging whether a batch's stored cron is firing. Sits beside the cron expression. */
 .schedule-chip {

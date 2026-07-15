@@ -429,24 +429,306 @@ public sealed class EditorTests : TestContext
             "a ParallelGroup node gets a 'Parallel · {JoinPolicy}' subheading for the branches block");
     }
 
+    // ── decision fan-out on canvas ────────────────────────────────────────────────
+
+    private static BatchStep DecisionStep(string id, int order, params DecisionBranch[] branches) => new()
+    {
+        StepId = id,
+        Order = order,
+        StepType = BatchStepType.Decision,
+        Decision = new DecisionStepData { Branches = branches },
+    };
+
+    private static DecisionBranch BranchOf(string id, string? key, string jobName, string? target = null) => new()
+    {
+        StepId = id,
+        When = key is null ? null : new StepCondition
+        {
+            ParameterKey = key, Operator = ConditionOperator.GreaterThan, Value = "1000",
+        },
+        Job = new JobStepData { JobName = jobName, TargetService = target },
+    };
+
+    private static BatchStep JobStep(string id, int order, string jobName = "JobA") => new()
+    {
+        StepId = id, Order = order, StepType = BatchStepType.Job,
+        Job = new JobStepData { JobName = jobName },
+    };
+
+    private IRenderedComponent<Editor> RenderEdit(IUKBatchClient client, string id, BatchDefinitionDto def)
+    {
+        client.GetBatchByIdAsync(id, Arg.Any<CancellationToken>()).Returns(def);
+        var cut = RenderComponent<Editor>(p => p
+            .Add(e => e.ServiceName, Svc)
+            .Add(e => e.BatchId, id));
+        cut.WaitForState(() => cut.FindAll("div.dag-ed-canvas").Count > 0);
+        return cut;
+    }
+
+    private static BatchDefinitionDto Definition(string id, IReadOnlyList<BatchStep> steps, IReadOnlyList<BatchStep>? onFailure = null) => new()
+    {
+        Id = id, Name = id, Source = BatchSource.Dashboard, Version = 1,
+        Steps = steps,
+        OnFailureSteps = onFailure ?? [],
+        FailurePolicy = BatchFailurePolicy.StopOnFailure,
+        CreatedAtUtc = DateTimeOffset.UtcNow,
+    };
+
+    [Fact]
+    public void DecisionBranchNodes_PlacedInNextColumn_AsDeleteProtectedCards()
+    {
+        // The branches fan OUT as their own cards one column right of the diamond, stacking downward from
+        // the diamond's own row. The step after the decision must clear BOTH columns.
+        var client = WireDeps();
+        var def = Definition("dec-id",
+        [
+            JobStep("s1", 0),
+            DecisionStep("dec", 1, BranchOf("b1", "amount", "Ship.Express"), BranchOf("b2", null, "Ship.Standard")),
+            JobStep("s3", 2, "Notify"),
+        ]);
+
+        var cut = RenderEdit(client, "dec-id", def);
+        var nodes = cut.FindComponent<DrawflowCanvas>().Instance.Graph.Nodes;
+
+        var diamond = nodes.Single(n => n.StepId == "dec");
+        var b1 = nodes.Single(n => n.StepId == "b1");
+        var b2 = nodes.Single(n => n.StepId == "b2");
+        var next = nodes.Single(n => n.StepId == "s3");
+
+        diamond.Kind.Should().Be("Decision");
+        b1.X.Should().BeGreaterThan(diamond.X, "branch cards sit one column RIGHT of their diamond");
+        b2.X.Should().Be(b1.X, "both branches share the branch column");
+        b1.Y.Should().Be(diamond.Y, "the first branch shares the diamond's row (no centring — adding a branch never shifts the others)");
+        b2.Y.Should().BeGreaterThan(b1.Y, "further branches stack downward");
+        next.X.Should().BeGreaterThan(b1.X, "the step after a decision clears the branch column too");
+
+        b1.IsDeleteProtected.Should().BeTrue("a branch has no entry in Steps to remove — it is dropped in the decision's dialog");
+        b1.Subtitle.Should().BeNull("the condition is shown in full on the diamond's chip, not repeated under the job name");
+        b1.Title.Should().Be("Ship.Express", "the branch card names the job it routes to");
+        b1.OrderBadge.Should().Be("2", "a branch runs AS its decision's step, so it carries the decision's position");
+        b2.OrderBadge.Should().Be("2");
+    }
+
+    [Fact]
+    public async Task BranchCard_EditRequest_OpensTheParentDecisionDialog()
+    {
+        // A branch card carries the BRANCH's id, which is no step of its own. Clicking it must resolve to the
+        // decision that owns it — otherwise the operator clicks a card and gets an empty dialog.
+        var client = WireDeps();
+        var def = Definition("edit-id",
+        [
+            DecisionStep("dec", 0, BranchOf("b1", "amount", "Ship.Express"), BranchOf("b2", null, "Ship.Standard")),
+        ]);
+
+        var cut = RenderEdit(client, "edit-id", def);
+        var canvas = cut.FindComponent<DrawflowCanvas>();
+        await cut.InvokeAsync(() => canvas.Instance.OnNodeEditRequestedCb.InvokeAsync("b1"));
+
+        var modal = cut.FindComponent<StepEditorModal>();
+        modal.Instance.IsVisible.Should().BeTrue();
+        modal.Instance.Step.Should().NotBeNull();
+        modal.Instance.Step!.StepId.Should().Be("dec", "a branch is edited in its decision's dialog, not on its own");
+        modal.Instance.Step.StepType.Should().Be(BatchStepType.Decision);
+    }
+
+    [Fact]
+    public async Task DeleteDecisionNode_AlsoDropsItsBranchCards()
+    {
+        // The branch cards project the decision's own branch list — deleting the decision must take them
+        // with it, or they linger on the canvas with nothing behind them.
+        var client = WireDeps();
+        var def = Definition("del-id",
+        [
+            DecisionStep("dec", 0, BranchOf("b1", "amount", "Ship.Express"), BranchOf("b2", null, "Ship.Standard")),
+            JobStep("s2", 1, "Notify"),
+        ]);
+
+        var cut = RenderEdit(client, "del-id", def);
+        var canvas = cut.FindComponent<DrawflowCanvas>();
+        canvas.Instance.Graph.Nodes.Should().Contain(n => n.StepId == "b1");
+
+        await cut.InvokeAsync(() => canvas.Instance.OnNodeRemovedCb.InvokeAsync("dec"));
+
+        var nodes = cut.FindComponent<DrawflowCanvas>().Instance.Graph.Nodes;
+        nodes.Should().NotContain(n => n.StepId == "dec");
+        nodes.Should().NotContain(n => n.StepId == "b1" || n.StepId == "b2",
+            "a removed decision takes its branch cards with it");
+        nodes.Should().Contain(n => n.StepId == "s2", "the rest of the flow survives");
+    }
+
+    [Fact]
+    public async Task DeleteBranchCard_IsRefused_TheBranchSurvives()
+    {
+        // The canvas refuses this delete (dag-editor.js wraps removeNodeId), so this path should never fire.
+        // If some future surface bypasses that guard, the model must WIN: a branch has no single unambiguous
+        // canvas-delete meaning, so it stays and the card is put back rather than silently diverging.
+        var client = WireDeps();
+        var def = Definition("keep-id",
+        [
+            DecisionStep("dec", 0, BranchOf("b1", "amount", "Ship.Express"), BranchOf("b2", null, "Ship.Standard")),
+        ]);
+
+        var cut = RenderEdit(client, "keep-id", def);
+        var canvas = cut.FindComponent<DrawflowCanvas>();
+
+        await cut.InvokeAsync(() => canvas.Instance.OnNodeRemovedCb.InvokeAsync("b1"));
+
+        var nodes = cut.FindComponent<DrawflowCanvas>().Instance.Graph.Nodes;
+        nodes.Should().Contain(n => n.StepId == "b1", "a branch is dropped in the decision's dialog, never by a canvas delete");
+        nodes.Single(n => n.StepId == "dec").Branches.Should().HaveCount(2, "the model keeps both branches");
+    }
+
+    [Fact]
+    public void BranchCards_DoNotAddRailChips()
+    {
+        // The rail is the EXECUTION ORDER of the top-level steps. A branch runs as part of its decision's
+        // step, so it must not appear as a step of its own there.
+        var client = WireDeps();
+        var def = Definition("rail-id",
+        [
+            JobStep("s1", 0),
+            DecisionStep("dec", 1, BranchOf("b1", "amount", "Ship.Express"), BranchOf("b2", null, "Ship.Standard")),
+        ]);
+
+        var cut = RenderEdit(client, "rail-id", def);
+
+        cut.FindAll(".dag-ed-rail__chip").Count.Should().Be(2, "two top-level steps — the branches are not steps");
+        cut.FindComponent<DrawflowCanvas>().Instance.Graph.Nodes
+            .Should().HaveCount(4, "but all four cards are on the canvas: job + diamond + two branches");
+    }
+
+    [Fact]
+    public async Task DraggingTheDecision_CarriesItsBranchCards()
+    {
+        // Branch cards are placed RELATIVE to their diamond. Moving the diamond has to move them too, or they
+        // stay behind and then snap into formation at some later, unrelated change.
+        var client = WireDeps();
+        var def = Definition("move-id",
+        [
+            DecisionStep("dec", 0, BranchOf("b1", "amount", "Ship.Express"), BranchOf("b2", null, "Ship.Standard")),
+        ]);
+
+        var cut = RenderEdit(client, "move-id", def);
+        var canvas = cut.FindComponent<DrawflowCanvas>();
+        var beforeX = canvas.Instance.Graph.Nodes.Single(n => n.StepId == "b1").X;
+
+        await cut.InvokeAsync(() => canvas.Instance.OnNodeMovedCb.InvokeAsync(new NodeMovedArgs("dec", 900, 400)));
+
+        var nodes = cut.FindComponent<DrawflowCanvas>().Instance.Graph.Nodes;
+        nodes.Single(n => n.StepId == "b1").X.Should().BeGreaterThan(beforeX, "the fan follows its diamond");
+        nodes.Single(n => n.StepId == "b1").X.Should().BeGreaterThan(900, "branches stay one column right of it");
+        nodes.Single(n => n.StepId == "b1").Y.Should().Be(400, "the first branch shares the diamond's new row");
+        nodes.Single(n => n.StepId == "b2").Y.Should().BeGreaterThan(400, "the rest stack below it");
+    }
+
+    [Fact]
+    public void DecisionNode_CarriesBranchChips_WithAccentsMatchingItsBranchCards()
+    {
+        // Colour — not edge text — is what pairs a chip with the card it routes to, so the chip's accent
+        // and the branch card's accent MUST be the same key.
+        var client = WireDeps();
+        var def = Definition("chip-id",
+        [
+            DecisionStep("dec", 0, BranchOf("b1", "amount", "Ship.Express"), BranchOf("b2", null, "Ship.Standard")),
+        ]);
+
+        var cut = RenderEdit(client, "chip-id", def);
+        var nodes = cut.FindComponent<DrawflowCanvas>().Instance.Graph.Nodes;
+        var diamond = nodes.Single(n => n.StepId == "dec");
+
+        diamond.Branches.Should().NotBeNull("a decision renders its routing conditions as chips inside the card");
+        diamond.Branches!.Select(b => b.Label).Should().ContainInOrder("amount > 1000", "else");
+        diamond.Children.Should().BeNull("branch chips are typed (they carry a colour) — Children stays ParallelGroup-only");
+
+        diamond.Branches![0].Accent.Should().Be(nodes.Single(n => n.StepId == "b1").BranchAccent,
+            "the chip and its branch card share ONE accent — that pairing is the whole point of the colour");
+        diamond.Branches[1].Accent.Should().Be(BranchAccents.Else, "the else chip takes the neutral accent");
+        nodes.Single(n => n.StepId == "b2").BranchAccent.Should().Be(BranchAccents.Else);
+    }
+
+    [Fact]
+    public void ZeroBranchDecision_RendersOneSpineNode_NoBranchCards()
+    {
+        // Reachable mid-edit (the dialog lets the operator remove the last branch). It must thread as a
+        // plain spine node — not vanish, and not reserve a branch column.
+        var client = WireDeps();
+        var def = Definition("empty-dec", [JobStep("s1", 0), DecisionStep("dec", 1), JobStep("s3", 2)]);
+
+        var cut = RenderEdit(client, "empty-dec", def);
+        var nodes = cut.FindComponent<DrawflowCanvas>().Instance.Graph.Nodes;
+
+        nodes.Should().HaveCount(3, "no branches ⇒ no branch cards, and the diamond still renders");
+        nodes.Should().NotContain(n => n.IsDeleteProtected);
+        var xs = nodes.OrderBy(n => n.OrderBadge, StringComparer.Ordinal).Select(n => n.X).ToList();
+        (xs[2] - xs[1]).Should().Be(xs[1] - xs[0],
+            "a branch-less decision occupies ONE column — it reserves no branch column it would not fill");
+    }
+
+    [Fact]
+    public void NoDecision_CompensatorLaneStaysAt200_FailureLaneStaysAt320()
+    {
+        // Zero-regression pin: the lane floors move ONLY when a decision fans out on canvas. A batch
+        // without one must lay out at the historical constants — the guard, not the arithmetic, is what
+        // makes that true, so a future gap-constant edit cannot silently drift these.
+        var client = WireDeps();
+        var withComp = JobStep("s1", 0) with { Compensation = new CompensationStepData { JobName = "Undo" } };
+        var def = Definition("no-dec", [withComp, JobStep("s2", 1)], [JobStep("f1", 0, "Notify")]);
+
+        var cut = RenderEdit(client, "no-dec", def);
+        var nodes = cut.FindComponent<DrawflowCanvas>().Instance.Graph.Nodes;
+
+        nodes.Single(n => n.StepId == CompensationStepIds.For("s1")).Y.Should().Be(200,
+            "the compensator lane sits at its historical Y when nothing fans out below the spine");
+        nodes.Single(n => n.StepId == "f1").Y.Should().Be(320,
+            "the failure lane sits at its historical Y when nothing fans out below the spine");
+    }
+
+    [Fact]
+    public void DecisionOnCanvas_PushesLanesBelowTheFan()
+    {
+        // A tall fan must not have the lower lanes drawn through it.
+        var client = WireDeps();
+        var decision = DecisionStep("dec", 0,
+            BranchOf("b1", "amount", "A"), BranchOf("b2", "tier", "B"), BranchOf("b3", null, "C"))
+            with { Compensation = new CompensationStepData { JobName = "Undo" } };
+        var def = Definition("deep-dec", [decision], [JobStep("f1", 0, "Notify")]);
+
+        var cut = RenderEdit(client, "deep-dec", def);
+        var nodes = cut.FindComponent<DrawflowCanvas>().Instance.Graph.Nodes;
+
+        var fanBottom = nodes.Where(n => n.IsDeleteProtected).Max(n => n.Y);
+        var comp = nodes.Single(n => n.StepId == CompensationStepIds.For("dec")).Y;
+        var failure = nodes.Single(n => n.StepId == "f1").Y;
+
+        comp.Should().BeGreaterThan(fanBottom, "the compensator lane clears the deepest branch card");
+        failure.Should().BeGreaterThan(comp, "the failure chain stays below the compensator lane");
+        comp.Should().BeGreaterThan(200, "a fan-out pushes the lane below its historical floor");
+        failure.Should().BeGreaterThan(320);
+    }
+
     // ── onFailure-canvas Bucket 5 — compensation palette tile + 2nd order rail ────
 
     [Fact]
-    public void Palette_RendersFourthCompensationTile()
+    public void Palette_RendersCompensationAndDecisionTiles()
     {
-        // The DagPalette now has a 4th "Compensation" tile (onFailure lane). bunit CAN render the static
-        // palette markup (it is plain HTML, no JSInterop), so we assert the tile + its label are present.
+        // The DagPalette has FIVE draggable tiles: Job, Parallel group, Approval gate, Decision, and the
+        // failure chain (onFailure). bunit CAN render the static palette markup (plain HTML, no JSInterop),
+        // so we assert the tiles + their labels are present.
         WireDeps();
         var cut = RenderCreate();
         cut.WaitForState(() => cut.FindAll("div.dag-ed-canvas").Count > 0);
 
-        cut.FindAll("div.dag-ed-palette__tile").Count.Should().Be(4,
-            "the palette has FOUR draggable tiles: Job, Parallel group, Approval gate, Compensation");
+        cut.FindAll("div.dag-ed-palette__tile").Count.Should().Be(5,
+            "the palette has FIVE draggable tiles: Job, Parallel group, Approval gate, Decision, Failure chain");
         cut.FindAll("div.dag-ed-palette__tile--failure").Should().NotBeEmpty(
-            "the 4th tile is the failure-chain (onFailure) tile with the --failure modifier");
+            "the failure-chain (onFailure) tile carries the --failure modifier");
+        cut.FindAll("div.dag-ed-palette__tile--decision").Should().NotBeEmpty(
+            "the Decision tile carries the --decision modifier");
         cut.Find("div.dag-ed-palette").TextContent.Should().Contain("Failure chain",
             "the tile is labelled 'Failure chain' — it appends to the batch-level OnFailure chain, "
             + "deliberately distinct from the per-step compensator edited in a step's own dialog");
+        cut.Find("div.dag-ed-palette").TextContent.Should().Contain("Decision",
+            "the Decision tile mints a decision step that routes among branch jobs by condition");
     }
 
     [Fact]

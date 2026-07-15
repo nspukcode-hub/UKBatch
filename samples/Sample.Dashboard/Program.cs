@@ -12,6 +12,7 @@ var builder = WebApplication.CreateBuilder(args);
 const string InvoicePipelineName = "invoice-pipeline";
 const string WildcardApprovalPipelineName = "wildcard-approval-pipeline";
 const string OrderPipelineName = "order-pipeline";
+const string ShippingDecisionName = "shipping-decision";
 
 // Embedded mode: same host hosts both the REST API surface AND the Blazor
 // Dashboard. Dashboard talks to the local Api via HTTP/SignalR loopback. Architecturally
@@ -32,6 +33,8 @@ builder.AddUKBatchAspNetCore(b =>
     b.AddJob<PrepareOrderJob>();
     b.AddJob<ProcessInvoiceJob>();
     b.AddJob<FinalizeOrderJob>();
+    b.AddJob<ShipExpressJob>();
+    b.AddJob<ShipStandardJob>();
     // Declared parameters demo: the job announces its expected parameters, so the dashboard Trigger
     // screen renders a typed form (text/number/checkbox/datetime-local/JSON) instead of a raw JSON box,
     // and the single-job REST trigger rejects a missing required 'orderId' with a 400.
@@ -68,6 +71,18 @@ builder.AddUKBatchAspNetCore(b =>
         .ThenRunJob<ProcessInvoiceJob>()
         .ThenRunJob<FinalizeOrderJob>()
         .FailurePolicy(BatchFailurePolicy.StopOnFailure));
+
+    // Decision routing demo: after generating the invoice, a decision routes to exactly ONE shipping
+    // branch by the order amount — the branch whose condition holds runs, the others are skipped
+    // (visible, grey) and the flow re-converges. Trigger with {"amount": 5000} to take the express
+    // branch, or {"amount": 500} for the standard (else) branch; watch the run's graph diverge at the
+    // diamond and colour the taken branch. Add more branches, or chain another decision after a branch,
+    // to route further.
+    b.AddBatch(ShippingDecisionName, batch => batch
+        .RunJob<InvoiceGenerationJob>()
+        .ThenDecide(d => d
+            .When("amount", ConditionOperator.GreaterThan, 1000).RunJob<ShipExpressJob>()
+            .Otherwise().RunJob<ShipStandardJob>()));
 
     // Wildcard approval pipeline — exercises [ApprovalGateConfig.AnyAuthenticatedUser] sentinel.
     b.AddBatch(WildcardApprovalPipelineName, batch => batch

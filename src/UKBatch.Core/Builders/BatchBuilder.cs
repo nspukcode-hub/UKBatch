@@ -143,6 +143,35 @@ public sealed class BatchBuilder
         return this;
     }
 
+    /// <summary>
+    /// Adds a decision step: routes to exactly one of several branch jobs by condition, recording the rest as
+    /// skipped. See <see cref="DecisionBuilder"/> for the branch composition shape.
+    /// </summary>
+    public BatchBuilder Decide(Action<DecisionBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var decision = new DecisionBuilder();
+        configure(decision);
+        var data = decision.Build();
+        _steps.Add(new BatchStep
+        {
+            StepId = IdGenerator.NewStepId(),
+            Order = _steps.Count,
+            StepType = BatchStepType.Decision,
+            Job = null,
+            ParallelGroup = null,
+            Approval = null,
+            Decision = data,
+            Compensation = decision.Compensation,
+            Condition = decision.Condition,
+            Metadata = null,
+        });
+        return this;
+    }
+
+    /// <summary>Semantic alias for <see cref="Decide"/>.</summary>
+    public BatchBuilder ThenDecide(Action<DecisionBuilder> configure) => Decide(configure);
+
     /// <summary>Adds an approval-gate step.</summary>
     public BatchBuilder ThenWaitForApproval(
         string title,

@@ -237,8 +237,13 @@ function nodeHtml(spec) {
         ? `<span class="dag-st-node__sub">${escapeHtml(spec.subtitle)}</span>`
         : '';
     const isApproval = String(spec.kind) === 'Approval';
-    const approvalIco = isApproval
+    const isDecision = String(spec.kind) === 'Decision';
+    // Kind glyph: the routing diamond reads from the CSS `dag-st-node--decision` shape + the call_split
+    // icon; the approval gate keeps its rule icon. Both share the head icon slot.
+    const kindIco = isApproval
         ? `<span class="material-symbols-outlined dag-st-node__kindico">rule</span>`
+        : isDecision
+        ? `<span class="material-symbols-outlined dag-st-node__kindico">call_split</span>`
         : '';
     // In-node Approve: rendered on Approval nodes ONLY, hidden by default. CSS reveals it
     // solely when the node carries data-pending="true" (the JS bridge sets that from PendingStepIds — see
@@ -250,7 +255,7 @@ function nodeHtml(spec) {
         : '';
     return `<div class="dag-st-node dag-st-node--${kind}" data-step="${sid}" data-status="${status}">
               <div class="dag-st-node__head">
-                ${approvalIco}
+                ${kindIco}
                 <span class="dag-st-node__title" title="${escapeHtml(spec.title)}">${escapeHtml(displayTitle(spec.title))}</span>
                 <span class="dag-st-node__notice material-symbols-outlined" aria-hidden="true"></span>
               </div>
@@ -309,6 +314,7 @@ function applyEdgeKinds(st, graph) {
             kind: e.kind,
             status: e.statusClass ?? '',
             edgeid: `${e.fromStepId}->${e.toStepId}`,
+            label: e.label ?? '',   // decision branch condition text (empty on every other edge)
         });
     }
     for (const conn of st.editor.container.querySelectorAll('.connection')) {
@@ -321,8 +327,31 @@ function applyEdgeKinds(st, graph) {
             conn.dataset.kind = m.kind;
             conn.dataset.edgeid = m.edgeid;
             if (m.status) conn.dataset.status = m.status;   // initial edge tint (subsequent via setStatuses)
+            if (m.label) conn.dataset.label = m.label; else delete conn.dataset.label;
+            applyEdgeLabel(conn, m.label);
         }
     }
+}
+
+// Draws a decision branch's condition text at the connection's midpoint. The label is a cosmetic overlay:
+// a missing path or an engine without getPointAtLength simply skips it (the branch node's own subtitle
+// still carries the condition). Idempotent — any prior label is removed before a fresh one is added.
+function applyEdgeLabel(conn, label) {
+    const existing = conn.querySelector('.dag-st-edge-label');
+    if (existing) existing.remove();
+    if (!label) return;
+    const path = conn.querySelector('.main-path');
+    if (!path || typeof path.getTotalLength !== 'function') return;
+    let mid;
+    try { mid = path.getPointAtLength(path.getTotalLength() / 2); }
+    catch { return; }   // detached path / zero length — skip the cosmetic label
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('class', 'dag-st-edge-label');
+    text.setAttribute('x', mid.x);
+    text.setAttribute('y', mid.y - 6);
+    text.setAttribute('text-anchor', 'middle');
+    text.textContent = label;   // textContent — never innerHTML (no injection surface)
+    conn.appendChild(text);
 }
 
 // Status update WITHOUT node rebuild: single data-status attribute writes on existing node DOM +

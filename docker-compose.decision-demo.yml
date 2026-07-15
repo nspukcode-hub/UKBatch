@@ -1,0 +1,51 @@
+# Standalone embedded-mode demo for the DECISION NODE — kept separate from the main server+workers
+# stack (distinct compose project name, container name, image name, and host port 5081) so it never
+# clashes with a running stack or its images.
+#
+# One container: REST API + Blazor Dashboard + local jobs, in-memory storage (no Postgres/RabbitMQ).
+#
+#   docker compose -f docker-compose.decision-demo.yml up --build -d
+#
+# Try it:
+#   - Open the dashboard:            http://localhost:5081/dashboard
+#       The batch catalog lists "shipping-decision". Trigger it, then open the run to watch the graph
+#       diverge at the diamond and colour the taken branch (winner green, the skipped branch grey).
+#   - Trigger the EXPRESS branch (amount > 1000):
+#       curl -s -XPOST http://localhost:5081/api/batches/by-name/shipping-decision/run \
+#            -H 'content-type: application/json' -d '{"initialParameters":{"amount":5000}}'
+#       -> InvoiceGeneration runs, then ShipExpress runs, ShipStandard is Skipped.
+#   - Trigger the STANDARD (else) branch (amount <= 1000):
+#       curl -s -XPOST http://localhost:5081/api/batches/by-name/shipping-decision/run \
+#            -H 'content-type: application/json' -d '{"initialParameters":{"amount":500}}'
+#       -> ShipStandard runs, ShipExpress is Skipped.
+#   - Wizard preview (create/edit a batch): the same diamond + diverging arrows render live as you build.
+#   - Visual editor: a decision fans out as you build it — the diamond, one box per branch, and the
+#       re-converge onto the next step. Each branch has its own colour, shared by its chip on the diamond,
+#       its arrow, and its box, so a long condition stays readable in one place. Branch boxes are
+#       display-only: drag them to taste, but add/remove/edit branches in the decision dialog.
+#
+# Isolated compose project ('name:' below) — teardown (removes the container, keeps nothing) with:
+#   docker compose -f docker-compose.decision-demo.yml down
+name: ukbatch-decision-demo
+services:
+  decision-demo:
+    image: ukbatch/sample-decision:local
+    container_name: ukbatch-decision-demo
+    build:
+      context: .
+      dockerfile: samples/Sample.Dashboard/Dockerfile
+    environment:
+      # Development so the sample's header-trusting DevAuth scheme is allowed (it refuses in Production).
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      # The embedded dashboard's loopback client calls its own /api. TRAILING SLASH MANDATORY
+      # (HttpClient strips the last path segment per RFC 3986). Overrides the appsettings :5057 value
+      # to the in-container port.
+      UKBatch__Dashboard__Services__0__BaseUrl: "http://localhost:8080/api/"
+    ports:
+      - "5081:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10

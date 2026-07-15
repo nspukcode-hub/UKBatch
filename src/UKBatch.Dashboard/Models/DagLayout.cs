@@ -173,6 +173,59 @@ public sealed record class DagLayout
                     if (!hasHint) y = joinY + RowGap; // next row starts below the join
                     break;
                 }
+                case BatchStepType.Decision:
+                {
+                    // The decision diamond sits ON the spine (a visible routing node, unlike the invisible
+                    // ParallelGroup container). Its branch jobs fan out one row below — reusing the parallel
+                    // fan-out geometry — then re-converge onto a synthetic join, so the spine's single-anchor
+                    // invariant is preserved. Coordinates emit via InvariantCulture in DagView (tr-TR guard).
+                    var branches = step.Decision?.Branches ?? [];
+                    int n = Math.Max(branches.Count, 1);
+                    var hasHint = TryGetHint(hints, step.StepId, out var decisionHint);
+                    var diamondX = hasHint ? decisionHint.X : CenterX - NodeW / 2;
+                    var diamondY = hasHint ? decisionHint.Y : y;
+                    nodes.Add(DecisionNode(step, diamondX, diamondY));
+                    if (prevAnchorStepId is not null)
+                        edges.Add(SeqEdge(prevAnchorX, prevAnchorBottomY, diamondX + NodeW / 2, diamondY,
+                            fromStepId: prevAnchorStepId, toStepId: step.StepId));
+                    double diamondCenterX = diamondX + NodeW / 2;
+                    double diamondBottomY = diamondY + NodeH;
+                    maxNodeBottomY = Math.Max(maxNodeBottomY, diamondY + NodeH);
+                    minX = Math.Min(minX, diamondX);
+                    maxX = Math.Max(maxX, diamondX + NodeW);
+
+                    double span = (n - 1) * ParallelPitch;
+                    double firstCx = diamondCenterX - span / 2;
+                    double branchY = diamondY + RowPitch;
+                    for (int i = 0; i < branches.Count; i++)
+                    {
+                        double cx = firstCx + i * ParallelPitch;
+                        var branch = branches[i];
+                        nodes.Add(BranchNode(step, branch, cx - NodeW / 2, branchY));
+                        // Diamond → branch (labelled with the branch condition text). Coloured by the branch
+                        // (destination) status like any fan-out edge.
+                        edges.Add(DecisionEdge(diamondCenterX, diamondBottomY, cx, branchY,
+                            fromStepId: step.StepId, toStepId: branch.StepId, label: DecisionNodes.BranchLabel(branch)));
+                        maxNodeBottomY = Math.Max(maxNodeBottomY, branchY + NodeH);
+                        minX = Math.Min(minX, cx - NodeW / 2);
+                        maxX = Math.Max(maxX, cx + NodeW / 2);
+                    }
+                    // Fan-in: each branch re-converges onto a synthetic join point on the spine (no node) —
+                    // ToStepId null so DagView colours the edge by the branch (source).
+                    double decisionJoinY = branchY + NodeH + RowGap / 2;
+                    for (int i = 0; i < branches.Count; i++)
+                    {
+                        double cx = firstCx + i * ParallelPitch;
+                        edges.Add(DecisionEdge(cx, branchY + NodeH, diamondCenterX, decisionJoinY,
+                            fromStepId: branches[i].StepId, toStepId: null, label: null));
+                    }
+                    prevAnchorStepId = step.StepId;
+                    prevAnchorX = diamondCenterX;
+                    prevAnchorBottomY = decisionJoinY;
+                    maxNodeBottomY = Math.Max(maxNodeBottomY, decisionJoinY);
+                    if (!hasHint) y = decisionJoinY + RowGap;
+                    break;
+                }
                 default:
                 {
                     // Unknown future step type — neutral placeholder on the spine (NEVER throw).
@@ -283,6 +336,39 @@ public sealed record class DagLayout
         Subtitle = ApprovalSubtitle(step.Approval),
     };
 
+    private static DagLayoutNode DecisionNode(BatchStep step, double x, double y) => new()
+    {
+        StepId = step.StepId,
+        Kind = DagNodeKind.Decision,
+        // Rectangle, same dims as a job node — the routing "diamond" reads from the amber accent + the
+        // call_split icon (DagView renders `dag-node--decision`), NOT an SVG polygon (which mis-places
+        // under the canvas transform, the same reason the approval gate is a rectangle).
+        X = x, Y = y, Width = NodeW, Height = NodeH,
+        Title = "Decision",
+        Subtitle = DecisionSubtitle(step.Decision),
+    };
+
+    // A branch job node keyed by the branch's own StepId (== the JobExecution.BatchStepId the winner
+    // produces / a losing branch is recorded skipped under). GroupId carries the parent decision id so the
+    // node is identifiable as a branch, mirroring how a ParallelGroup child carries its group id.
+    private static DagLayoutNode BranchNode(BatchStep decision, DecisionBranch branch, double x, double y) => new()
+    {
+        StepId = branch.StepId,
+        Kind = DagNodeKind.Job,
+        X = x, Y = y, Width = NodeW, Height = NodeH,
+        Title = branch.Job.JobName,
+        Subtitle = DecisionNodes.BranchLabel(branch),
+        TargetService = branch.Job.TargetService,
+        GroupId = decision.StepId,
+    };
+
+    private static string? DecisionSubtitle(DecisionStepData? data)
+    {
+        if (data is null) return null;
+        var count = data.Branches.Count;
+        return count == 1 ? "1 branch" : $"{count} branches";
+    }
+
     private static DagLayoutNode UnknownNode(BatchStep step, double x, double y) => new()
     {
         StepId = step.StepId,
@@ -312,6 +398,10 @@ public sealed record class DagLayout
     private static DagLayoutEdge ParallelEdge(double x1, double y1, double x2, double y2,
         string? fromStepId = null, string? toStepId = null)
         => new() { X1 = x1, Y1 = y1, X2 = x2, Y2 = y2, Kind = DagEdgeKind.Parallel, FromStepId = fromStepId, ToStepId = toStepId };
+
+    private static DagLayoutEdge DecisionEdge(double x1, double y1, double x2, double y2,
+        string? fromStepId = null, string? toStepId = null, string? label = null)
+        => new() { X1 = x1, Y1 = y1, X2 = x2, Y2 = y2, Kind = DagEdgeKind.Decision, FromStepId = fromStepId, ToStepId = toStepId, Label = label };
 
     private static DagLayoutEdge FailureEdge(double x1, double y1, double x2, double y2,
         string? fromStepId = null, string? toStepId = null)

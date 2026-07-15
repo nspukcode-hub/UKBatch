@@ -7,6 +7,8 @@ public enum DagEdgeKind
     Sequential,
     /// <summary>Fan-out / fan-in connector for a parallel group.</summary>
     Parallel,
+    /// <summary>Solid amber connector from a decision diamond out to a branch job (and its re-convergence).</summary>
+    Decision,
     /// <summary>Dashed red connector into / within the OnFailure branch.</summary>
     OnFailure,
 }
@@ -32,6 +34,13 @@ public sealed record class DagLayoutEdge
 
     /// <summary>Edge classification.</summary>
     public required DagEdgeKind Kind { get; init; }
+
+    /// <summary>
+    /// Optional short label drawn at the edge midpoint — a decision branch's condition text (e.g.
+    /// <c>"amount &gt; 1000"</c> or <c>"else"</c>). <c>null</c> on every non-branch edge, so existing
+    /// connectors render unchanged.
+    /// </summary>
+    public string? Label { get; init; }
 
     /// <summary>
     /// StepId of the node this edge departs FROM, or <c>null</c> for a synthetic anchor (e.g. the

@@ -22,6 +22,13 @@
         <span class="material-symbols-outlined">rule</span>
         <span>Approval gate</span>
     </div>
+    @* Decision tile — payload 'Decision'. DrawflowCanvas.OnNodeDropped parses it as BatchStepType.Decision
+       and the Editor seeds two branches (one conditional, one else), mirroring the ParallelGroup seed. *@
+    <div class="dag-ed-palette__tile dag-ed-palette__tile--decision" draggable="true"
+         ondragstart="event.dataTransfer.setData('application/x-ukbatch-step','Decision'); event.dataTransfer.effectAllowed='copy';">
+        <span class="material-symbols-outlined">call_split</span>
+        <span>Decision</span>
+    </div>
     @* Compensation (onFailure) tile — SAME MIME key, payload 'OnFailure'. dag-editor.js's onDrop reads
        the raw string verbatim and forwards it; DrawflowCanvas.OnNodeDropped routes 'OnFailure' to a
        Job draft with the onFailure LANE flag set (it is NOT a BatchStepType). 'undo' icon = roll-back /

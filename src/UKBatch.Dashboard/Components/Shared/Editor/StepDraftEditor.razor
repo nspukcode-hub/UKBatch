@@ -28,6 +28,9 @@
     case BatchStepType.ApprovalGate:
         @RenderApprovalEditor(Step);
         break;
+    case BatchStepType.Decision:
+        @RenderDecisionEditor(Step);
+        break;
     default:
         <span class="form-field__hint">Unsupported step.</span>
         break;
@@ -338,6 +341,23 @@
         @if (AllowCondition)
         {
             @* A conditional approval gate: skip the gate entirely when the condition does not hold. *@
+            <ConditionEditor Step="step" OnChanged="OnChanged" />
+        }
+    </div>;
+
+    // ── Decision ─────────────────────────────────────────────────────────────────
+    private RenderFragment RenderDecisionEditor(WizardStepDraft step) => @<div class="wizard-pane">
+        <DecisionEditor Step="step" JobCatalog="JobCatalog" Services="Services" OnChanged="OnChanged" />
+        @if (AllowCompensation)
+        {
+            @* Decision-level compensator: the decision compensates as ONE unit — a branch is not undone
+               individually, so the compensator must undo whichever branch ran (or be idempotent). *@
+            <CompensationEditor Step="step" JobCatalog="JobCatalog" Services="Services"
+                                OnChanged="OnChanged" OnCompensationChanged="OnCompensationEnabled" />
+        }
+        @if (AllowCondition)
+        {
+            @* Decision-level run-if guard: the whole decision (all routing) is skipped when it does not hold. *@
             <ConditionEditor Step="step" OnChanged="OnChanged" />
         }
     </div>;

@@ -18,9 +18,16 @@ public sealed record class DagStatusEdge
     /// <summary>Destination node StepId.</summary>
     public required string ToStepId { get; init; }
 
-    /// <summary>Visual line style: <c>"Sequential" | "Parallel" | "OnFailure" | "Compensation"</c>.</summary>
+    /// <summary>Visual line style: <c>"Sequential" | "Parallel" | "Decision" | "OnFailure" | "Compensation"</c>.</summary>
     public required string Kind { get; init; }
 
     /// <summary>Resolved <c>data-status</c> value (may be <c>""</c>) from <see cref="DagStatusClasses.EdgeClass"/>.</summary>
     public required string StatusClass { get; init; }
+
+    /// <summary>
+    /// Optional short branch label rendered on a <c>Decision</c> connection (the condition text, e.g.
+    /// <c>"amount &gt; 1000"</c> or <c>"else"</c>). <c>null</c> on every other edge; the JS bridge draws it
+    /// as a <c>data-label</c> badge and degrades gracefully when absent.
+    /// </summary>
+    public string? Label { get; init; }
 }

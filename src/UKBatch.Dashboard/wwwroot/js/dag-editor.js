@@ -83,6 +83,8 @@ export async function init(containerEl, dotnetRef, opts) {
         idMap: new Map(),                   // String(drawflowId) -> stepId
         moveTimers,
         suppressRemovedEvent: false,        // set around a C#-initiated removeNodeId (see removeNodeImpl)
+        deleteProtected: new Set(),         // stepIds the canvas must refuse to delete (see the wrapper below)
+        allowProtectedRemove: false,        // lets removeNodeImpl bypass that refusal for a C#-driven remove
         onDragOver: null,                   // assigned below; cached for symmetric removal in dispose()
         onDrop: null,
         onEditPointerDown: null,            // capture-phase guard: stops Drawflow's drag on the Edit btn
@@ -94,6 +96,26 @@ export async function init(containerEl, dotnetRef, opts) {
                                             // the guardResync / refreshNode-fallback revert target
     };
     _state.set(containerEl, st);
+
+    // ── delete guard for cards the canvas must not remove ──────────────────────────────────────────
+    // Some cards PROJECT a field of another step (a decision's branch) rather than being a step of their
+    // own: there is no entry in the C# Steps list a canvas delete could remove, so allowing one would
+    // leave the model and the canvas disagreeing. Such a card is removed by editing its parent.
+    //
+    // Drawflow routes EVERY delete surface — the Delete key (its `key` handler), the right-click "x"
+    // (its `drawflow-delete` case), and our own toolbar button — through removeNodeId, so wrapping that
+    // ONE method covers all of them. A key-event guard would not: Drawflow binds keydown on this same
+    // container in start(), and for an event whose target IS the container there is no capture/bubble
+    // ordering to win — registration order decides, and Drawflow registered first.
+    //
+    // clear() empties the precanvas directly (it never calls removeNodeId), so importGraph and dispose
+    // are unaffected by this wrapper.
+    const nativeRemoveNodeId = editor.removeNodeId.bind(editor);
+    editor.removeNodeId = (domId) => {
+        const stepId = st.idMap.get(String(domId).slice(5));   // "node-<df>" -> "<df>"
+        if (stepId != null && st.deleteProtected.has(stepId) && !st.allowProtectedRemove) return;
+        nativeRemoveNodeId(domId);
+    };
 
     // ── debounced move commit (pointer-up granularity, NOT per-frame) ──
     function commitMove(drawflowNodeId) {
@@ -121,6 +143,7 @@ export async function init(containerEl, dotnetRef, opts) {
         const key = String(drawflowNodeId);
         const stepId = st.idMap.get(key);
         st.idMap.delete(key);
+        if (stepId) st.deleteProtected.delete(stepId);   // before the suppress check: the node is gone either way
         if (st.suppressRemovedEvent) return;
         if (stepId) dotnetRef.invokeMethodAsync('OnNodeRemoved', stepId);
     });
@@ -232,7 +255,8 @@ export async function init(containerEl, dotnetRef, opts) {
 // Blazor's output encoding does NOT apply to DOM this module injects, so an unescaped step name or
 // service name would be an XSS seam.
 function nodeHtml(spec) {
-    // spec: { stepId, kind, title, subtitle, orderBadge, targetService, children }
+    // spec: { stepId, kind, title, subtitle, orderBadge, targetService, children, branches,
+    //         isOnFailure, isDeleteProtected, branchAccent }
     const cloud = spec.targetService
         ? `<span class="dag-ed-node__cloud"><span class="material-symbols-outlined">cloud</span>${escapeHtml(spec.targetService)}</span>`
         : '';
@@ -249,15 +273,24 @@ function nodeHtml(spec) {
     // OnNodeRemoved → C#; no new callback). tabindex=-1: the rail chip is the keyboard edit path.
     // data-edit / data-del carry the StepId for the delegated listener; escaped (XSS discipline).
     const sid = escapeHtml(spec.stepId);
+    // A delete-protected card (a decision's branch) gets NO Delete button: it has no model entry of its
+    // own to remove — it is dropped in its parent's dialog. Offering the button and then refusing the
+    // delete would read as a broken button.
+    const delBtn = spec.isDeleteProtected ? '' :
+        `<button type="button" class="dag-ed-node__act dag-ed-node__del" data-del="${sid}" title="Delete" tabindex="-1"><span class="material-symbols-outlined">delete</span></button>`;
     const toolbar = `<div class="dag-ed-node__toolbar">` +
         `<button type="button" class="dag-ed-node__act dag-ed-node__edit" data-edit="${sid}" title="Edit" tabindex="-1"><span class="material-symbols-outlined">edit</span></button>` +
-        `<button type="button" class="dag-ed-node__act dag-ed-node__del" data-del="${sid}" title="Delete" tabindex="-1"><span class="material-symbols-outlined">delete</span></button>` +
+        delBtn +
         `</div>`;
     // Compensation (onFailure) nodes keep their OUTER Drawflow class as `dag-ed-job` (the modal keys off
     // Kind=Job for the Job-only editor) but the INNER card carries the `dag-ed-node--failure` modifier
     // (red/dashed accent — mirrors the read-only compensation styling).
     const failureMod = spec.isOnFailure ? ' dag-ed-node--failure' : '';
-    return `<div class="dag-ed-node dag-ed-node--${escapeHtml(String(spec.kind).toLowerCase())}${failureMod}" data-step="${sid}">
+    // A decision branch card takes its branch's colour, matching the chip inside the diamond and the edge
+    // between them. data-branch drives it (CSS maps the key to a palette slot); absent on every other card.
+    const accent = spec.branchAccent ? ` data-branch="${escapeHtml(String(spec.branchAccent))}"` : '';
+    const hint = spec.isDeleteProtected ? ` title="Edit this branch in the decision's dialog"` : '';
+    return `<div class="dag-ed-node dag-ed-node--${escapeHtml(String(spec.kind).toLowerCase())}${failureMod}" data-step="${sid}"${accent}${hint}>
               ${toolbar}
               <span class="dag-ed-node__badge">${escapeHtml(spec.orderBadge ?? '')}</span>
               <span class="dag-ed-node__title" title="${escapeHtml(spec.title)}">${escapeHtml(displayTitle(spec.title))}</span>
@@ -265,13 +298,35 @@ function nodeHtml(spec) {
             </div>`;
 }
 
-// Branches block for a ParallelGroup node: one chip per child job, each shortened via displayTitle
-// with the FULL name in the title attr (matches the node title's display rule). Every label passes
-// through escapeHtml (XSS — same discipline as nodeHtml; Blazor's encoder does NOT cover injected DOM).
-// Returns '' for non-group nodes or groups with no children, so Job/ApprovalGate cards are unchanged.
+// Branches block for a Decision (routing conditions) OR a ParallelGroup (child jobs) node. Every label
+// passes through escapeHtml (XSS — same discipline as nodeHtml; Blazor's encoder does NOT cover injected
+// DOM). Returns '' for a node with neither (Job/ApprovalGate cards unchanged).
 function branchesHtml(spec) {
-    if (spec.kind !== 'ParallelGroup' || !(spec.children && spec.children.length)) return '';
-    const chips = spec.children.map(c => {
+    if (spec.branches && spec.branches.length) return decisionChipsHtml(spec.branches);
+    if (spec.children && spec.children.length) return childChipsHtml(spec.children);
+    return '';
+}
+
+// Decision chips: one per branch, each showing its routing condition IN FULL and carrying the colour of
+// the edge to its branch card — colour is what pairs chip to card, since the edges carry no text.
+// NB: the label is NOT run through displayTitle. That shortener strips everything before the last dot,
+// which is right for a namespaced job name but would mangle a dotted parameter key
+// ("order.amount > 1000" -> "amount > 1000"). CSS ellipsis handles overflow; the tooltip has the full text.
+function decisionChipsHtml(branches) {
+    const chips = branches.map(b => {
+        const label = String(b?.label ?? '');
+        const accent = b?.accent ? ` data-branch="${escapeHtml(String(b.accent))}"` : '';
+        return `<span class="dag-ed-node__branch"${accent} title="${escapeHtml(label)}">` +
+            `<span class="material-symbols-outlined dag-ed-node__branch-ico">call_split</span>` +
+            `<span class="dag-ed-node__branch-name">${escapeHtml(label)}</span></span>`;
+    }).join('');
+    return `<div class="dag-ed-node__branches dag-ed-node__branches--decision">${chips}</div>`;
+}
+
+// ParallelGroup child chips: one per child job, each shortened via displayTitle with the FULL name in the
+// title attr (matches the node title's display rule).
+function childChipsHtml(children) {
+    const chips = children.map(c => {
         const full = String(c ?? '');
         return `<span class="dag-ed-node__branch" title="${escapeHtml(full)}">` +
             `<span class="material-symbols-outlined dag-ed-node__branch-ico">fork_right</span>` +
@@ -306,10 +361,14 @@ function addNodeImpl(st, spec) {
     // on .input/.output) — the operator cannot drag a connection from them; only programmatic
     // syncConnectionsImpl draws edges (which doesn't need pointer events). The C# Steps list is the
     // execution-order source of truth; these edges only visualize it.
+    // The `class` argument lands on the Drawflow WRAPPER, which is where the right-click "x" is
+    // appended — so dag-ed-nodelete is what lets CSS hide that affordance on a protected card.
+    const cls = `dag-ed-${String(spec.kind).toLowerCase()}${spec.isDeleteProtected ? ' dag-ed-nodelete' : ''}`;
     const dfId = st.editor.addNode(
-        spec.kind, 1, 1, spec.x, spec.y, `dag-ed-${String(spec.kind).toLowerCase()}`,
+        spec.kind, 1, 1, spec.x, spec.y, cls,
         { stepId: spec.stepId }, nodeHtml(spec), false);
     st.idMap.set(String(dfId), spec.stepId);
+    if (spec.isDeleteProtected) st.deleteProtected.add(spec.stepId);
     return dfId;
 }
 
@@ -325,10 +384,14 @@ function removeNodeImpl(st, stepId) {
     if (df == null) return;
     // B-2: suppress the echo so the resulting nodeRemoved does NOT re-report this C#-initiated
     // delete back to C#. The handler still cleans idMap; we also clean it here for the early path.
+    // allowProtectedRemove bypasses the delete guard: the guard exists to stop an OPERATOR delete of a
+    // card that has no model entry to remove — a C#-driven remove means the model already changed.
     st.suppressRemovedEvent = true;
+    st.allowProtectedRemove = true;
     try { st.editor.removeNodeId(`node-${df}`); }
-    finally { st.suppressRemovedEvent = false; }
+    finally { st.suppressRemovedEvent = false; st.allowProtectedRemove = false; }
     st.idMap.delete(String(df));
+    st.deleteProtected.delete(stepId);
 }
 
 function updateLabelImpl(st, stepId, title, orderBadge) {
@@ -381,6 +444,7 @@ function importImpl(st, graph) {
     try { st.editor.clear(); }
     finally { st.suppressRemovedEvent = false; }
     st.idMap.clear();
+    st.deleteProtected.clear();         // re-registered per node by addNodeImpl below
     const nodes = graph?.nodes ?? [];
     for (const n of nodes) addNodeImpl(st, n);
     // Force a synchronous reflow BEFORE drawing connections. The onFailure node sits
@@ -429,27 +493,33 @@ function syncConnectionsImpl(st, edges) {
     }
 }
 
-// Tag each .connection with data-kind from Drawflow's OWN node_out_node-<src> / node_in_node-<tgt>
-// connection classes (the AUTHORITATIVE source/target encoding addConnection writes), NOT append order.
-// Ported from dag-status.js applyEdgeKinds (the editor refuses to import the read-only module, A1). The
-// CSS rule .dag-ed-canvas .connection[data-kind="OnFailure"] .main-path renders the OnFailure branch
-// red-dashed.
+// Tag each .connection with data-kind (+ data-branch on a decision's fan-out) from Drawflow's OWN
+// node_out_node-<src> / node_in_node-<tgt> connection classes (the AUTHORITATIVE source/target encoding
+// addConnection writes), NOT append order. Ported from dag-status.js applyEdgeKinds (the editor refuses to
+// import the read-only module). The CSS rule .dag-ed-canvas .connection[data-kind="OnFailure"] .main-path
+// renders the OnFailure branch red-dashed; data-branch resolves a decision edge to its branch colour.
 function applyEdgeKinds(st, edges) {
-    // Precompute { "node_out_node-A|node_in_node-B" -> kind } from the resolved typed edges.
+    // Precompute { "node_out_node-A|node_in_node-B" -> edge } from the resolved typed edges.
     const meta = new Map();
     for (const e of edges) {
         const a = findDfId(st, e.fromStepId);
         const b = findDfId(st, e.toStepId);
         if (a == null || b == null) continue;
-        meta.set(`node_out_node-${a}|node_in_node-${b}`, e.kind);
+        meta.set(`node_out_node-${a}|node_in_node-${b}`, e);
     }
     for (const conn of st.editor.container.querySelectorAll('.connection')) {
         const cl = conn.classList;
         const out = [...cl].find(c => c.startsWith('node_out_node-'));
         const inn = [...cl].find(c => c.startsWith('node_in_node-'));
         if (!out || !inn) continue;
-        const kind = meta.get(`${out}|${inn}`);
-        if (kind) conn.dataset.kind = kind;
+        const e = meta.get(`${out}|${inn}`);
+        if (!e) continue;
+        if (e.kind) conn.dataset.kind = e.kind;
+        // The branch colour is what pairs this edge with its chip inside the diamond and the card it lands
+        // on — the editor prints no text on edges, so colour carries the whole pairing. Delete rather than
+        // leave a stale key: a re-sync reuses these .connection elements, and an edge that stopped being a
+        // branch edge (its decision lost its branches) must not keep the old slot's colour.
+        if (e.branchAccent) conn.dataset.branch = e.branchAccent; else delete conn.dataset.branch;
     }
 }
 

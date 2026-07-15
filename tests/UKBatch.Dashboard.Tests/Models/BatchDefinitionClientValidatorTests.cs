@@ -166,6 +166,68 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
                 },
             },
         },
+        new object[]
+        {
+            // A decision with no branches: both validators flag Decision.Branches (and nothing else).
+            "decision with no branches",
+            new BatchWizardModel
+            {
+                Name = "ok",
+                Steps = { DecisionDraft("dec1") },
+            },
+        },
+        new object[]
+        {
+            // A decision branch with a blank job name: both flag the branch's Job.JobName.
+            "decision branch with a blank job name",
+            new BatchWizardModel
+            {
+                Name = "ok",
+                Steps = { DecisionDraft("dec1", BranchDraft("b1", jobName: string.Empty, GtDraft("amount", "1000"))) },
+            },
+        },
+        new object[]
+        {
+            // Two else branches: both flag the SECOND else's When ("at most one else").
+            "decision with two else branches",
+            new BatchWizardModel
+            {
+                Name = "ok",
+                Steps = { DecisionDraft("dec1", BranchDraft("b1", "A", when: null), BranchDraft("b2", "B", when: null)) },
+            },
+        },
+        new object[]
+        {
+            // An else that is not last: both flag the trailing conditional branch's When ("else must be last").
+            "decision else branch not last",
+            new BatchWizardModel
+            {
+                Name = "ok",
+                Steps = { DecisionDraft("dec1", BranchDraft("b1", "A", when: null), BranchDraft("b2", "B", GtDraft("amount", "1000"))) },
+            },
+        },
+        new object[]
+        {
+            // A branch comparison operator with no comparand: both flag the branch's When.Value.
+            "decision branch condition missing its value",
+            new BatchWizardModel
+            {
+                Name = "ok",
+                Steps = { DecisionDraft("dec1", BranchDraft("b1", "A",
+                    new ConditionDraft { ParameterKey = "amount", Operator = ConditionOperator.GreaterThan, Value = string.Empty })) },
+            },
+        },
+        new object[]
+        {
+            // A branch ordering operator with a non-numeric comparand: both flag the branch's When.Value.
+            "decision branch ordering operator with a non-numeric value",
+            new BatchWizardModel
+            {
+                Name = "ok",
+                Steps = { DecisionDraft("dec1", BranchDraft("b1", "A",
+                    new ConditionDraft { ParameterKey = "amount", Operator = ConditionOperator.GreaterThan, Value = "notanumber" })) },
+            },
+        },
     };
 
     [Theory]
@@ -538,6 +600,37 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
             "distinct non-blank keys are valid");
     }
 
+    // ── Decision (client-focused; the WAF parity rows above prove the server agrees on the paths) ──
+
+    [Fact]
+    public void Validate_Decision_ValidTwoBranch_ProducesNoErrors()
+    {
+        var model = new BatchWizardModel
+        {
+            Name = "ok",
+            Steps =
+            {
+                DecisionDraft("dec1",
+                    BranchDraft("b1", "Express", GtDraft("amount", "1000")),
+                    BranchDraft("b2", "Standard", when: null)),
+            },
+        };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().BeEmpty("a conditional branch followed by an else with valid jobs is valid");
+    }
+
+    [Fact]
+    public void Validate_Decision_NoBranches_FlagsBranchesPath()
+    {
+        var model = new BatchWizardModel { Name = "ok", Steps = { DecisionDraft("dec1") } };
+
+        var errors = BatchDefinitionClientValidator.Validate(model);
+
+        errors.Should().ContainKey("Steps[0].Decision.Branches", "a decision needs at least one branch");
+    }
+
     // ── Sanity: a fully-valid wizard-emittable model produces zero errors ────────
 
     [Fact]
@@ -629,6 +722,27 @@ public sealed class BatchDefinitionClientValidatorTests : IClassFixture<SampleRe
         StepType = BatchStepType.ParallelGroup,
         JoinPolicy = join,
         Children = children.ToList(),
+    };
+
+    private static WizardStepDraft DecisionDraft(string id, params DecisionBranchDraft[] branches) => new()
+    {
+        StepId = id,
+        StepType = BatchStepType.Decision,
+        DecisionBranches = branches.ToList(),
+    };
+
+    private static DecisionBranchDraft BranchDraft(string id, string jobName, ConditionDraft? when) => new()
+    {
+        StepId = id,
+        JobName = jobName,
+        When = when,
+    };
+
+    private static ConditionDraft GtDraft(string key, string value) => new()
+    {
+        ParameterKey = key,
+        Operator = ConditionOperator.GreaterThan,
+        Value = value,
     };
 
     private static WizardStepDraft ApprovalDraft(string id, string title) => new()

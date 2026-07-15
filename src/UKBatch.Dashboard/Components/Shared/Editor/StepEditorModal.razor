@@ -81,6 +81,7 @@
         BatchStepType.Job => "work",
         BatchStepType.ParallelGroup => "alt_route",
         BatchStepType.ApprovalGate => "rule",
+        BatchStepType.Decision => "call_split",
         _ => "circle",
     };
 
@@ -89,6 +90,7 @@
         BatchStepType.Job => "Job",
         BatchStepType.ParallelGroup => "Parallel group",
         BatchStepType.ApprovalGate => "Approval gate",
+        BatchStepType.Decision => "Decision",
         _ => t.ToString(),
     };
 }
