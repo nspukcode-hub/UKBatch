@@ -432,21 +432,26 @@ public sealed class EditorTests : TestContext
     // ── onFailure-canvas Bucket 5 — compensation palette tile + 2nd order rail ────
 
     [Fact]
-    public void Palette_RendersFourthCompensationTile()
+    public void Palette_RendersCompensationAndDecisionTiles()
     {
-        // The DagPalette now has a 4th "Compensation" tile (onFailure lane). bunit CAN render the static
-        // palette markup (it is plain HTML, no JSInterop), so we assert the tile + its label are present.
+        // The DagPalette has FIVE draggable tiles: Job, Parallel group, Approval gate, Decision, and the
+        // failure chain (onFailure). bunit CAN render the static palette markup (plain HTML, no JSInterop),
+        // so we assert the tiles + their labels are present.
         WireDeps();
         var cut = RenderCreate();
         cut.WaitForState(() => cut.FindAll("div.dag-ed-canvas").Count > 0);
 
-        cut.FindAll("div.dag-ed-palette__tile").Count.Should().Be(4,
-            "the palette has FOUR draggable tiles: Job, Parallel group, Approval gate, Compensation");
+        cut.FindAll("div.dag-ed-palette__tile").Count.Should().Be(5,
+            "the palette has FIVE draggable tiles: Job, Parallel group, Approval gate, Decision, Failure chain");
         cut.FindAll("div.dag-ed-palette__tile--failure").Should().NotBeEmpty(
-            "the 4th tile is the failure-chain (onFailure) tile with the --failure modifier");
+            "the failure-chain (onFailure) tile carries the --failure modifier");
+        cut.FindAll("div.dag-ed-palette__tile--decision").Should().NotBeEmpty(
+            "the Decision tile carries the --decision modifier");
         cut.Find("div.dag-ed-palette").TextContent.Should().Contain("Failure chain",
             "the tile is labelled 'Failure chain' — it appends to the batch-level OnFailure chain, "
             + "deliberately distinct from the per-step compensator edited in a step's own dialog");
+        cut.Find("div.dag-ed-palette").TextContent.Should().Contain("Decision",
+            "the Decision tile mints a decision step that routes among branch jobs by condition");
     }
 
     [Fact]

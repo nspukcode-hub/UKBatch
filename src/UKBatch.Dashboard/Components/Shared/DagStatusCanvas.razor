@@ -367,6 +367,7 @@ else
             ToStepId = e.ToStepId,
             Kind = e.Kind,
             StatusClass = DagStatusClasses.EdgeClass(e, StatusByStepId),
+            Label = e.Label,   // decision branch edges carry the condition text (null on every other edge)
         }).ToList();
 
         return new DagStatusGraph { Nodes = nodes, Edges = edges };
@@ -399,6 +400,14 @@ else
             {
                 foreach (var c in pg.Steps)
                     if (string.Equals(c.StepId, resolved, StringComparison.Ordinal)) return c;
+            }
+            // A decision branch renders as its own node keyed by the branch id — resolve it to the branch's
+            // job step so clicking a branch opens the inspector on that job.
+            if (s is { StepType: BatchStepType.Decision, Decision: { } dec })
+            {
+                foreach (var br in dec.Branches)
+                    if (string.Equals(br.StepId, resolved, StringComparison.Ordinal))
+                        return DecisionNodes.BranchAsStep(s, br);
             }
         }
         foreach (var s in OnFailureSteps)

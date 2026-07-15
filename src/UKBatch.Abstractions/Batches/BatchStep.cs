@@ -5,9 +5,9 @@ namespace UKBatch.Abstractions.Batches;
 /// <see cref="StepType"/>.
 /// </summary>
 /// <remarks>
-/// Discriminated by <see cref="StepType"/>. For known v0.1 step types, exactly one of <see cref="Job"/>,
-/// <see cref="ParallelGroup"/>, <see cref="Approval"/> is non-null. Future versions may add new
-/// <see cref="BatchStepType"/> variants with their own payload fields. Consumers reading a step whose
+/// Discriminated by <see cref="StepType"/>. For known step types, exactly one of <see cref="Job"/>,
+/// <see cref="ParallelGroup"/>, <see cref="Approval"/>, <see cref="Decision"/> is non-null. Future versions may
+/// add new <see cref="BatchStepType"/> variants with their own payload fields. Consumers reading a step whose
 /// <see cref="StepType"/> is unrecognised MUST NOT throw at deserialization; the runtime executor will
 /// fail that step with a structured error and continue per <see cref="BatchFailurePolicy"/>.
 /// Storage adapters MUST round-trip <see cref="Metadata"/> verbatim so a v0.1 reader does not destroy
@@ -33,12 +33,18 @@ public sealed record class BatchStep
     /// <summary>Set when <see cref="StepType"/> is <see cref="BatchStepType.ApprovalGate"/>; otherwise <c>null</c>.</summary>
     public ApprovalGateConfig? Approval { get; init; }
 
+    /// <summary>Set when <see cref="StepType"/> is <see cref="BatchStepType.Decision"/>; otherwise <c>null</c>.</summary>
+    public DecisionStepData? Decision { get; init; }
+
     /// <summary>
-    /// Optional compensator for this step, honored only on a top-level <see cref="BatchStepType.Job"/> or
-    /// <see cref="BatchStepType.ParallelGroup"/> step (a parallel group compensates as one unit). <c>null</c>
-    /// means "cannot be undone" — the step is skipped during a reverse unwind. Forbidden on ApprovalGate steps,
-    /// parallel-group CHILDREN, and OnFailure (compensation-chain) steps; the validator rejects those. Inert
-    /// unless <see cref="BatchDefinition.FailurePolicy"/> is <see cref="BatchFailurePolicy.Compensate"/>.
+    /// Optional compensator for this step, honored only on a top-level <see cref="BatchStepType.Job"/>,
+    /// <see cref="BatchStepType.ParallelGroup"/>, or <see cref="BatchStepType.Decision"/> step (a parallel group
+    /// and a decision each compensate as one unit). A decision-level compensator is branch-blind — it runs when
+    /// a later step fails regardless of which branch won, so it must undo whichever branch ran (discriminate via
+    /// the forwarded outputs) or be idempotent. <c>null</c> means "cannot be undone" — the step is skipped
+    /// during a reverse unwind. Forbidden on ApprovalGate steps, parallel-group CHILDREN, decision branches, and
+    /// OnFailure (compensation-chain) steps; the validator rejects those. Inert unless
+    /// <see cref="BatchDefinition.FailurePolicy"/> is <see cref="BatchFailurePolicy.Compensate"/>.
     /// </summary>
     public CompensationStepData? Compensation { get; init; }
 

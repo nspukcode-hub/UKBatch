@@ -7,6 +7,13 @@ public enum DagNodeKind
     Job,
     /// <summary>Rectangular approval-gate node (200×80) — purple left-border accent + <c>rule</c> icon.</summary>
     Approval,
+    /// <summary>
+    /// Rectangular decision node (200×80) — amber left-border accent + <c>call_split</c> icon. Rendered as
+    /// a rectangle (not an SVG diamond polygon): a non-rectangle foreignObject mis-places under the canvas
+    /// <c>transform: scale</c> in Chromium, the same reason the approval gate is a rectangle. The routing
+    /// "diamond" reads from the accent + icon, and its branch job nodes fan out below it.
+    /// </summary>
+    Decision,
     /// <summary>Neutral placeholder for an unrecognised future step type (forward-compat).</summary>
     Unknown,
 }

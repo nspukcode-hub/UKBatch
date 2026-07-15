@@ -15,6 +15,12 @@ public sealed record class EditorEdge
     /// <summary>Target node's <c>WizardStepDraft.StepId</c>.</summary>
     public required string ToStepId { get; init; }
 
-    /// <summary>Edge kind: <c>"Sequential"</c> (main flow) | <c>"OnFailure"</c> (red-dashed compensation branch).</summary>
+    /// <summary>Edge kind: <c>"Sequential"</c> (main flow) | <c>"Decision"</c> (amber branch) | <c>"OnFailure"</c> (red-dashed compensation branch).</summary>
     public required string Kind { get; init; }
+
+    /// <summary>
+    /// Optional short label for a decision <c>diamond→branch</c> edge — the branch's condition text (e.g.
+    /// <c>"amount &gt; 1000"</c> or <c>"else"</c>). <c>null</c> on every other edge.
+    /// </summary>
+    public string? Label { get; init; }
 }

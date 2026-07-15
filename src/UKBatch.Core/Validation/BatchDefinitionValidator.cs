@@ -95,8 +95,8 @@ internal static class BatchDefinitionValidator
     }
 
     /// <summary>
-    /// Walks every step id in the definition: top-level steps, single-level ParallelGroup children, and
-    /// OnFailure (compensation) steps — the same id space the runtime correlates against.
+    /// Walks every step id in the definition: top-level steps, single-level ParallelGroup children, Decision
+    /// branches, and OnFailure (compensation) steps — the same id space the runtime correlates against.
     /// </summary>
     private static IEnumerable<string> EnumerateStepIds(BatchDefinition def)
     {
@@ -115,6 +115,16 @@ internal static class BatchDefinitionValidator
                 foreach (var child in step.ParallelGroup.Steps)
                 {
                     yield return child.StepId;
+                }
+            }
+            // A decision's branch ids correlate its winner/skipped execution rows. A branch id colliding with
+            // a top-level step id would map a skipped-loser row to that top-level index and wrongly exclude it
+            // from a Compensate unwind, so branch ids share the uniqueness space too.
+            if (step.StepType == BatchStepType.Decision && step.Decision is { } decision)
+            {
+                foreach (var branch in decision.Branches)
+                {
+                    yield return branch.StepId;
                 }
             }
         }
@@ -220,6 +230,69 @@ internal static class BatchDefinitionValidator
                 }
                 break;
 
+            case BatchStepType.Decision:
+                if (step.Decision is null)
+                {
+                    errors.Add(new ValidationError($"{path}.Decision", "Decision step requires payload"));
+                    break;
+                }
+
+                var branches = step.Decision.Branches;
+                if (branches.Count < 1)
+                {
+                    errors.Add(new ValidationError($"{path}.Decision.Branches", "Decision must contain at least one branch"));
+                }
+
+                // Track the else (unconditional) branch: at most one, and it must be last. A conditional branch
+                // after the else could never run — the else always wins first.
+                var elseSeen = false;
+                for (var b = 0; b < branches.Count; b++)
+                {
+                    var branch = branches[b];
+                    var branchPath = $"{path}.Decision.Branches[{b}]";
+
+                    if (string.IsNullOrWhiteSpace(branch.StepId))
+                    {
+                        errors.Add(new ValidationError($"{branchPath}.StepId", "must be non-empty"));
+                    }
+                    else if (branch.StepId.EndsWith(CompensationStepIds.Suffix, StringComparison.Ordinal))
+                    {
+                        // A branch id ending in the reserved compensator suffix would collide with a derived
+                        // compensator id and corrupt the resume skip/dedupe mapping — reject it up front.
+                        errors.Add(new ValidationError($"{branchPath}.StepId",
+                            $"must not end with the reserved compensator suffix '{CompensationStepIds.Suffix}'"));
+                    }
+
+                    if (branch.Job is null)
+                    {
+                        errors.Add(new ValidationError($"{branchPath}.Job", "Decision branch requires Job payload"));
+                    }
+                    else if (string.IsNullOrWhiteSpace(branch.Job.JobName))
+                    {
+                        errors.Add(new ValidationError($"{branchPath}.Job.JobName", "must be non-empty"));
+                    }
+
+                    if (branch.When is null)
+                    {
+                        if (elseSeen)
+                        {
+                            errors.Add(new ValidationError($"{branchPath}.When",
+                                "a Decision may have at most one else (unconditional) branch"));
+                        }
+                        elseSeen = true;
+                    }
+                    else
+                    {
+                        if (elseSeen)
+                        {
+                            errors.Add(new ValidationError($"{branchPath}.When",
+                                "the else (unconditional) branch must be the last branch"));
+                        }
+                        ValidateConditionShape(branch.When, $"{branchPath}.When", errors);
+                    }
+                }
+                break;
+
             default:
                 // Unknown step type — forward-compat tolerated at validator level; the runtime
                 // logs and continues per BatchFailurePolicy.
@@ -235,7 +308,7 @@ internal static class BatchDefinitionValidator
             if (!allowCompensation)
             {
                 errors.Add(new ValidationError($"{path}.Compensation",
-                    "compensation is not allowed here (only on top-level Job or ParallelGroup steps)"));
+                    "compensation is not allowed here (only on top-level Job, ParallelGroup, or Decision steps)"));
             }
             else if (step.StepType == BatchStepType.ApprovalGate)
             {
@@ -247,9 +320,9 @@ internal static class BatchDefinitionValidator
             }
         }
 
-        // A run-if condition is honored only on a top-level step (Job, ParallelGroup, or ApprovalGate). On a
-        // parallel child or an OnFailure step it would be silently ignored, so reject it there — declaring a
-        // guard that never runs is worse than an error.
+        // A run-if condition is honored only on a top-level step (Job, ParallelGroup, ApprovalGate, or
+        // Decision). On a parallel child or an OnFailure step it would be silently ignored, so reject it there
+        // — declaring a guard that never runs is worse than an error.
         if (step.Condition is { } cond)
         {
             if (!allowCondition)
@@ -257,27 +330,36 @@ internal static class BatchDefinitionValidator
                 errors.Add(new ValidationError($"{path}.Condition",
                     "a run-if condition is not allowed here (only on top-level steps)"));
             }
-            if (string.IsNullOrWhiteSpace(cond.ParameterKey))
-            {
-                errors.Add(new ValidationError($"{path}.Condition.ParameterKey", "must be non-empty"));
-            }
-            if (!Enum.IsDefined(cond.Operator))
-            {
-                errors.Add(new ValidationError($"{path}.Condition.Operator", $"unknown enum value {(int)cond.Operator}"));
-            }
-            else if (ConditionOperatorNeedsValue(cond.Operator) && string.IsNullOrEmpty(cond.Value))
-            {
-                errors.Add(new ValidationError($"{path}.Condition.Value", $"required for the {cond.Operator} operator"));
-            }
-            else if (IsOrderingOperator(cond.Operator)
-                && !double.TryParse(cond.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out _))
-            {
-                // An ordering operator compares numerically; a non-numeric comparand makes the evaluator return
-                // false on every run — a guard that silently never fires. Reject it up front (a broken guard is
-                // worse than an error, and it fails toward "never ship").
-                errors.Add(new ValidationError($"{path}.Condition.Value",
-                    $"must be a number for the {cond.Operator} operator"));
-            }
+            ValidateConditionShape(cond, $"{path}.Condition", errors);
+        }
+    }
+
+    /// <summary>
+    /// Validates the shape of a run-if condition — a step's own <see cref="StepCondition"/> or a decision
+    /// branch's <c>When</c>: a non-blank parameter key, a defined operator, a comparand where the operator
+    /// needs one, and a numeric comparand for the ordering operators. An ordering operator compares
+    /// numerically, so a non-numeric comparand makes the evaluator return false on every run — a guard that
+    /// silently never fires. Reject it up front (a broken guard is worse than an error, and it fails toward
+    /// "never ship").
+    /// </summary>
+    private static void ValidateConditionShape(StepCondition cond, string path, List<ValidationError> errors)
+    {
+        if (string.IsNullOrWhiteSpace(cond.ParameterKey))
+        {
+            errors.Add(new ValidationError($"{path}.ParameterKey", "must be non-empty"));
+        }
+        if (!Enum.IsDefined(cond.Operator))
+        {
+            errors.Add(new ValidationError($"{path}.Operator", $"unknown enum value {(int)cond.Operator}"));
+        }
+        else if (ConditionOperatorNeedsValue(cond.Operator) && string.IsNullOrEmpty(cond.Value))
+        {
+            errors.Add(new ValidationError($"{path}.Value", $"required for the {cond.Operator} operator"));
+        }
+        else if (IsOrderingOperator(cond.Operator)
+            && !double.TryParse(cond.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out _))
+        {
+            errors.Add(new ValidationError($"{path}.Value", $"must be a number for the {cond.Operator} operator"));
         }
     }
 

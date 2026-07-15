@@ -61,6 +61,14 @@ public sealed class WizardStepDraft
     /// <summary>Job-only child drafts (single-level — nested groups forbidden in v0.1).</summary>
     public List<WizardStepDraft> Children { get; set; } = new();
 
+    // ── Decision ──
+    /// <summary>
+    /// Ordered decision branches (one job each). The first whose <see cref="DecisionBranchDraft.When"/> holds
+    /// runs; the rest are skipped. A branch with a null condition is the else/default — at most one, last.
+    /// Round-tripped through edit-load so a builder-authored decision survives a re-save from the UI.
+    /// </summary>
+    public List<DecisionBranchDraft> DecisionBranches { get; set; } = new();
+
     // ── ApprovalGate ──
     /// <summary>Gate heading (required for ApprovalGate steps).</summary>
     public string ApprovalTitle { get; set; } = string.Empty;
@@ -133,6 +141,13 @@ public sealed class WizardStepDraft
             },
             Condition = BuildCondition(),
         },
+        BatchStepType.Decision => new BatchStep
+        {
+            StepId = StepId, Order = order, StepType = BatchStepType.Decision,
+            Decision = BuildDecision(),
+            Compensation = BuildCompensation(),
+            Condition = BuildCondition(),
+        },
         _ => throw new InvalidOperationException($"Unsupported draft type {StepType}"),
     };
 
@@ -176,6 +191,13 @@ public sealed class WizardStepDraft
                     : roles.Where(r => !string.IsNullOrWhiteSpace(r)).ToList();
                 draft.TimeoutSecondsApproval = step.Approval?.TimeoutAfter is { } t ? (int)t.TotalSeconds : null;
                 draft.OnTimeout = step.Approval?.OnTimeout ?? ApprovalTimeoutAction.Fail;
+                draft.Condition = ToConditionDraft(step.Condition);
+                break;
+            case BatchStepType.Decision:
+                draft.DecisionBranches = step.Decision?.Branches
+                    .Select(ToBranchDraft)
+                    .ToList() ?? new();
+                draft.Compensation = ToCompensationDraft(step.Compensation);
                 draft.Condition = ToConditionDraft(step.Condition);
                 break;
             default:
@@ -247,6 +269,67 @@ public sealed class WizardStepDraft
                 .ToList() ?? new(),
         };
     }
+
+    /// <summary>
+    /// Projects the decision branch drafts into a <see cref="DecisionStepData"/>. Render-safe (mirrors
+    /// <see cref="BuildParameters"/>): never throws, so a preview render on an in-progress draft is safe.
+    /// Emits every branch verbatim (a blank job name / a blank condition key is surfaced by the validator, not
+    /// dropped here — dropping a branch would silently change the routing) so the preview matches what saves.
+    /// </summary>
+    private DecisionStepData BuildDecision()
+    {
+        var branches = DecisionBranches.Select(BuildBranch).ToList();
+        return new DecisionStepData { Branches = branches };
+    }
+
+    private static DecisionBranch BuildBranch(DecisionBranchDraft draft)
+    {
+        var parms = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var p in draft.Parameters)
+        {
+            if (string.IsNullOrWhiteSpace(p.Key)) continue;
+            parms[p.Key] = p.Value;
+        }
+        return new DecisionBranch
+        {
+            StepId = draft.StepId,
+            Label = string.IsNullOrWhiteSpace(draft.Label) ? null : draft.Label.Trim(),
+            // A blank/whitespace parameter key means "no condition" — the else/default branch (mirrors
+            // BuildCondition; the client validator's else detection uses the same rule for parity).
+            When = draft.When is { } c && !string.IsNullOrWhiteSpace(c.ParameterKey)
+                ? new StepCondition
+                {
+                    ParameterKey = c.ParameterKey.Trim(),
+                    Operator = c.Operator,
+                    Value = string.IsNullOrEmpty(c.Value) ? null : c.Value,
+                }
+                : null,
+            Job = new JobStepData
+            {
+                JobName = draft.JobName.Trim(),
+                TargetService = string.IsNullOrWhiteSpace(draft.TargetService) ? null : draft.TargetService,
+                Parameters = parms.Count == 0 ? null : parms,
+                MaxRetries = draft.MaxRetries,
+                TimeoutSeconds = draft.TimeoutSeconds,
+            },
+        };
+    }
+
+    // Inverse of BuildBranch: rehydrates a mutable branch draft from a fetched branch so an edit round-trips
+    // a builder-authored decision instead of silently dropping its branches.
+    private static DecisionBranchDraft ToBranchDraft(DecisionBranch branch) => new()
+    {
+        StepId = branch.StepId,
+        Label = branch.Label,
+        When = ToConditionDraft(branch.When),
+        JobName = branch.Job.JobName,
+        TargetService = branch.Job.TargetService,
+        MaxRetries = branch.Job.MaxRetries,
+        TimeoutSeconds = branch.Job.TimeoutSeconds,
+        Parameters = branch.Job.Parameters?
+            .Select(kv => new KeyValuePair<string, string>(kv.Key, StringifyValue(kv.Value)))
+            .ToList() ?? new(),
+    };
 
     /// <summary>
     /// Projects the condition draft into a <see cref="StepCondition"/>. Render-safe (mirrors

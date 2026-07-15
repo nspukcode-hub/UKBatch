@@ -265,12 +265,12 @@ function nodeHtml(spec) {
             </div>`;
 }
 
-// Branches block for a ParallelGroup node: one chip per child job, each shortened via displayTitle
-// with the FULL name in the title attr (matches the node title's display rule). Every label passes
-// through escapeHtml (XSS — same discipline as nodeHtml; Blazor's encoder does NOT cover injected DOM).
-// Returns '' for non-group nodes or groups with no children, so Job/ApprovalGate cards are unchanged.
+// Branches block for a ParallelGroup (child jobs) OR a Decision (branch conditions) node: one chip per
+// entry, each shortened via displayTitle with the FULL text in the title attr (matches the node title's
+// display rule). Every label passes through escapeHtml (XSS — same discipline as nodeHtml; Blazor's encoder
+// does NOT cover injected DOM). Returns '' for a node with no children (Job/ApprovalGate cards unchanged).
 function branchesHtml(spec) {
-    if (spec.kind !== 'ParallelGroup' || !(spec.children && spec.children.length)) return '';
+    if (!(spec.children && spec.children.length)) return '';
     const chips = spec.children.map(c => {
         const full = String(c ?? '');
         return `<span class="dag-ed-node__branch" title="${escapeHtml(full)}">` +

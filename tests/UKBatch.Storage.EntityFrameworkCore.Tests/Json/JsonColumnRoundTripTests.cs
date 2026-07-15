@@ -130,6 +130,56 @@ public sealed class JsonColumnRoundTripTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Steps_Decision_RoundTrips()
+    {
+        // A decision step rides inside the existing Steps JSON column (no schema change) — every branch
+        // field (id, label, condition, job, cross-service target) must survive the write-read cycle, and the
+        // else branch (null condition) must round-trip as null.
+        var decision = new BatchStep
+        {
+            StepId = "dec",
+            Order = 0,
+            StepType = BatchStepType.Decision,
+            Decision = new DecisionStepData
+            {
+                Branches = new[]
+                {
+                    new DecisionBranch
+                    {
+                        StepId = "b1",
+                        Label = "big order",
+                        When = new StepCondition { ParameterKey = "amount", Operator = ConditionOperator.GreaterThan, Value = "1000" },
+                        Job = new JobStepData { JobName = "Ship.Express", TargetService = "shipping" },
+                    },
+                    new DecisionBranch
+                    {
+                        StepId = "b2",
+                        When = null,
+                        Job = new JobStepData { JobName = "Ship.Standard" },
+                    },
+                },
+            },
+        };
+
+        await _batchStore.CreateAsync(TestData.BatchDef("def-1", "batch", steps: new[] { decision }), CancellationToken.None);
+
+        var fetched = await _batchStore.GetAsync("def-1", CancellationToken.None);
+        var d = fetched!.Steps.Single();
+        d.StepType.Should().Be(BatchStepType.Decision);
+        d.Decision.Should().NotBeNull();
+        d.Decision!.Branches.Should().HaveCount(2);
+        d.Decision.Branches[0].StepId.Should().Be("b1");
+        d.Decision.Branches[0].Label.Should().Be("big order");
+        d.Decision.Branches[0].When!.ParameterKey.Should().Be("amount");
+        d.Decision.Branches[0].When!.Operator.Should().Be(ConditionOperator.GreaterThan);
+        d.Decision.Branches[0].When!.Value.Should().Be("1000");
+        d.Decision.Branches[0].Job.JobName.Should().Be("Ship.Express");
+        d.Decision.Branches[0].Job.TargetService.Should().Be("shipping");
+        d.Decision.Branches[1].When.Should().BeNull("the else branch has no condition");
+        d.Decision.Branches[1].Job.JobName.Should().Be("Ship.Standard");
+    }
+
+    [Fact]
     public async Task JsonColumn_RoundTrips_BatchStep_Compensation_WithParameters()
     {
         // A compensator rides inside the existing Steps JSON column (no schema change for definitions),

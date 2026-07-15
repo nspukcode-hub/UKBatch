@@ -52,6 +52,13 @@ else
             @foreach (var e in _layout.Edges)
             {
                 <path class="dag-edge @EdgeClass(e.Kind) @EdgeStatusClass(e)" d="@EdgePath(e)" />
+                @* Decision branch edges carry a condition label drawn at the edge midpoint. Built via a
+                   RenderFragment so the SVG <text> element is not parsed as a Razor control block.
+                   Coordinates emit via InvariantCulture (tr-TR would otherwise write "12,5"). *@
+                @if (e.Label is { Length: > 0 })
+                {
+                    @EdgeLabel(e)
+                }
             }
             @foreach (var n in _layout.Nodes)
             {
@@ -64,11 +71,15 @@ else
                    the displacement. The approval variant is distinguished by a purple left-border accent
                    and the `rule` icon (see .dag-node--approval in dashboard.css), NOT a different shape. *@
                 <foreignObject width="@n.Width.ToString(Inv)" height="@n.Height.ToString(Inv)" x="@n.X.ToString(Inv)" y="@n.Y.ToString(Inv)">
-                    <div class="dag-node @KindClass(n) @ApprovalClass(n) @StatusClass(n) @SelectedClass(n)" @onclick="@(() => SelectAsync(n.StepId))">
+                    <div class="dag-node @KindClass(n) @ApprovalClass(n) @DecisionClass(n) @StatusClass(n) @SelectedClass(n)" @onclick="@(() => SelectAsync(n.StepId))">
                         <div class="dag-node__head">
                             @if (n.Kind == DagNodeKind.Approval)
                             {
                                 <span class="material-symbols-outlined dag-node__icon">rule</span>
+                            }
+                            @if (n.Kind == DagNodeKind.Decision)
+                            {
+                                <span class="material-symbols-outlined dag-node__icon">call_split</span>
                             }
                             <span class="dag-node__title mono">@n.Title</span>
                             @* Guard per-node — not-started nodes have no map entry; StatusFor returns JobStatus? *@
@@ -219,6 +230,14 @@ else
                 foreach (var c in pg.Steps)
                     if (string.Equals(c.StepId, stepId, StringComparison.Ordinal)) return c;
             }
+            // A decision branch renders as its own node keyed by the branch id — resolve it to the branch's
+            // job step so clicking a branch opens the inspector on that job.
+            if (s is { StepType: BatchStepType.Decision, Decision: { } dec })
+            {
+                foreach (var br in dec.Branches)
+                    if (string.Equals(br.StepId, stepId, StringComparison.Ordinal))
+                        return DecisionNodes.BranchAsStep(s, br);
+            }
         }
         foreach (var s in OnFailureSteps)
             if (string.Equals(s.StepId, stepId, StringComparison.Ordinal)) return s;
@@ -239,6 +258,11 @@ else
     // Unknown/Approval modifiers compose independently on the shared dag-node rectangle.
     private static string ApprovalClass(DagLayoutNode n)
         => n.Kind == DagNodeKind.Approval ? "dag-node--approval" : string.Empty;
+
+    // Decision rectangle variant (amber left-border + call_split icon). Composes independently, like the
+    // approval modifier — a rectangle, not an SVG polygon (the transform-displacement lesson).
+    private static string DecisionClass(DagLayoutNode n)
+        => n.Kind == DagNodeKind.Decision ? "dag-node--decision" : string.Empty;
 
     private string StatusClass(DagLayoutNode n)
     {
@@ -261,6 +285,7 @@ else
     private static string EdgeClass(DagEdgeKind kind) => kind switch
     {
         DagEdgeKind.Parallel => "dag-edge--parallel",
+        DagEdgeKind.Decision => "dag-edge--decision",
         DagEdgeKind.OnFailure => "dag-edge--on-failure",
         _ => string.Empty,
     };
@@ -294,6 +319,21 @@ else
         var mid = (e.Y1 + e.Y2) / 2;
         return string.Create(Inv, $"M {e.X1} {e.Y1} C {e.X1} {mid} {e.X2} {mid} {e.X2} {e.Y2}");
     }
+
+    // SVG <text> label at the edge midpoint (decision branch condition). Emitted via RenderTreeBuilder so
+    // the reserved Razor <text> control-tag is not intercepted; coordinates pin InvariantCulture.
+    private RenderFragment EdgeLabel(DagLayoutEdge e) => builder =>
+    {
+        var mx = (e.X1 + e.X2) / 2;
+        var my = (e.Y1 + e.Y2) / 2 - 4;
+        builder.OpenElement(0, "text");
+        builder.AddAttribute(1, "class", "dag-edge__label");
+        builder.AddAttribute(2, "text-anchor", "middle");
+        builder.AddAttribute(3, "x", mx.ToString(Inv));
+        builder.AddAttribute(4, "y", my.ToString(Inv));
+        builder.AddContent(5, e.Label);
+        builder.CloseElement();
+    };
 
     public async ValueTask DisposeAsync()
     {

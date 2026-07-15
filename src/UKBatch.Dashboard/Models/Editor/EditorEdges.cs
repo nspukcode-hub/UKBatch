@@ -11,11 +11,12 @@ namespace UKBatch.Dashboard.Models.Editor;
 /// <remarks>
 /// <para>CROSS-REFERENCE — mirrors <c>UKBatch.Dashboard.Models.DagStatus.DagStatusEdges.Build</c> (the
 /// read-only live-status canvas's edge derivation) but with ONE intentional divergence: the editor
-/// renders a <c>ParallelGroup</c> as a SINGLE node (its children live INSIDE the card), so there is no
-/// child fan-out/fan-in cross-product. The spine is a simple node chain and the onFailure branch anchors
-/// on the single TRAILING top-level node id — never a child set. When/if the editor ever expands
-/// ParallelGroup children on-canvas, this divergence must be revisited (and <c>DagStatusEdges</c>'s
-/// fan-out logic ported in). The read-only <c>DagStatusEdges</c> carries the reciprocal pointer.</para>
+/// renders a <c>ParallelGroup</c> AND a <c>Decision</c> as a SINGLE node (their children / branches live
+/// INSIDE the card, edited in the modal), so there is no child/branch fan-out/fan-in cross-product. The
+/// spine is a simple node chain and the onFailure branch anchors on the single TRAILING top-level node id
+/// — never a child/branch set. When/if the editor ever expands those children/branches on-canvas, this
+/// divergence must be revisited (and <c>DagStatusEdges</c>'s fan-out logic ported in). The read-only
+/// <c>DagStatusEdges</c> carries the reciprocal pointer.</para>
 /// </remarks>
 public static class EditorEdges
 {
@@ -48,9 +49,9 @@ public static class EditorEdges
         // kind so the existing dashed styling applies without a new style hook.
         foreach (var s in steps)
         {
-            // Match the display-node projection: a compensator only round-trips on a Job / ParallelGroup
-            // step, so only those get an edge — never a dangling edge to a node that is not drawn.
-            if (s is { Compensation: not null, StepType: BatchStepType.Job or BatchStepType.ParallelGroup })
+            // Match the display-node projection: a compensator only round-trips on a Job / ParallelGroup /
+            // Decision step, so only those get an edge — never a dangling edge to a node that is not drawn.
+            if (s is { Compensation: not null, StepType: BatchStepType.Job or BatchStepType.ParallelGroup or BatchStepType.Decision })
             {
                 edges.Add(new EditorEdge
                 {

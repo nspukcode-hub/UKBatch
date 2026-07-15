@@ -1,0 +1,276 @@
+@* Decision branch editor. Composes the ordered branches of a decision step: each branch runs one job when
+   its condition holds, evaluated top-to-bottom. A branch marked "else" runs when no earlier branch matched
+   (at most one, and it stays pinned last). Shares the wizard's form-field taxonomy + job-catalog picker so a
+   branch's JobName + TargetService are set together from an advertised job. Every mutation raises OnChanged
+   so the parent refreshes its summary / canvas node. The condition fields are inlined (rather than reusing
+   ConditionEditor, which toggles a step's own run-if guard) because a branch's toggle is else-vs-condition. *@
+@using System.Globalization
+@using UKBatch.Abstractions.Batches
+@using UKBatch.Dashboard.Models
+@using UKBatch.Dashboard.Models.Wizard
+
+<div class="decision-editor">
+    <div class="form-field">
+        <span class="form-field__label">Branches</span>
+        <span class="form-field__hint">Evaluated in order — the first branch whose condition holds runs; the
+            rest are skipped. Mark the final branch "else" to run it when nothing else matched.</span>
+        @if (Step.DecisionBranches.Count == 0)
+        {
+            <span class="form-field__error">A decision needs at least one branch.</span>
+        }
+    </div>
+
+    @for (var b = 0; b < Step.DecisionBranches.Count; b++)
+    {
+        var idx = b;
+        var branch = Step.DecisionBranches[idx];
+        var isElse = branch.When is null;
+        <div @key="branch.StepId" class="decision-editor__branch">
+            <div class="decision-editor__branch-head">
+                <span class="decision-editor__branch-title">
+                    <span class="material-symbols-outlined">call_split</span>
+                    @(isElse ? "Else (default)" : $"Branch {idx + 1}")
+                </span>
+                <span class="decision-editor__branch-ctrls">
+                    <button class="btn--icon btn--sm" aria-label="Move up" disabled="@(idx == 0)"
+                            @onclick="@(() => MoveBranchAsync(idx, -1))">
+                        <span class="material-symbols-outlined">arrow_upward</span>
+                    </button>
+                    <button class="btn--icon btn--sm" aria-label="Move down" disabled="@(!CanMoveDown(idx))"
+                            @onclick="@(() => MoveBranchAsync(idx, 1))">
+                        <span class="material-symbols-outlined">arrow_downward</span>
+                    </button>
+                    <button class="btn--icon btn--sm" aria-label="Remove branch" @onclick="@(() => RemoveBranchAsync(idx))">
+                        <span class="material-symbols-outlined">close</span>
+                    </button>
+                </span>
+            </div>
+
+            <div class="form-field">
+                <label class="form-field__label">
+                    <input type="checkbox" checked="@isElse" disabled="@(!CanBeElse(idx))"
+                           @onchange="@(e => ToggleElseAsync(idx, e))" />
+                    Else (runs when no earlier branch matched)
+                </label>
+            </div>
+
+            @if (!isElse && branch.When is { } cond)
+            {
+                <div class="form-row">
+                    <div class="form-field">
+                        <label class="form-field__label">Parameter key</label>
+                        <input class="form-field__input" @bind="cond.ParameterKey" @bind:event="oninput" @bind:after="OnChanged.InvokeAsync"
+                               placeholder="e.g. amount, tier" />
+                    </div>
+                    <div class="form-field">
+                        <label class="form-field__label">Operator</label>
+                        <select class="form-field__select" @bind="cond.Operator" @bind:after="OnChanged.InvokeAsync">
+                            @foreach (var op in Operators)
+                            {
+                                <option @key="op" value="@op">@OperatorLabel(op)</option>
+                            }
+                        </select>
+                    </div>
+                    @if (NeedsValue(cond.Operator))
+                    {
+                        <div class="form-field">
+                            <label class="form-field__label">Value</label>
+                            <input class="form-field__input" @bind="cond.Value" @bind:event="oninput" @bind:after="OnChanged.InvokeAsync" />
+                        </div>
+                    }
+                </div>
+            }
+
+            <div class="form-field">
+                <label class="form-field__label">Branch job</label>
+                <select class="form-field__select" value="@SelectedCatalogToken(branch)"
+                        @onchange="@(e => SelectFromCatalogAsync(branch, e))">
+                    <option value="">— select a job —</option>
+                    @if (CurrentNotInCatalog(branch))
+                    {
+                        <option value="@CurrentToken" selected>@CurrentJobLabel(branch)</option>
+                    }
+                    @for (var ci = 0; ci < JobCatalog.Count; ci++)
+                    {
+                        var entry = JobCatalog[ci];
+                        <option @key="entry" value="@ci.ToString(CultureInfo.InvariantCulture)">@CatalogLabel(entry)</option>
+                    }
+                </select>
+            </div>
+            <div class="form-field">
+                <label class="form-field__label">Branch job name</label>
+                <input class="form-field__input" @bind="branch.JobName" @bind:event="oninput" @bind:after="OnChanged.InvokeAsync" />
+            </div>
+            <div class="form-field">
+                <label class="form-field__label">Target service</label>
+                <select class="form-field__select" @bind="branch.TargetService" @bind:after="OnChanged.InvokeAsync">
+                    <option value="">Local (this service)</option>
+                    @foreach (var svc in Services)
+                    {
+                        <option @key="svc.Name" value="@svc.Name">@(svc.DisplayName ?? svc.Name)</option>
+                    }
+                </select>
+            </div>
+        </div>
+    }
+
+    <button class="btn btn--secondary btn--sm" @onclick="AddBranchAsync">
+        <span class="material-symbols-outlined">add</span> Add branch
+    </button>
+</div>
+
+@code {
+    /// <summary>The decision step whose branches are being edited (binds <see cref="WizardStepDraft.DecisionBranches"/>).</summary>
+    [Parameter, EditorRequired] public WizardStepDraft Step { get; set; } = default!;
+
+    /// <summary>Worker-aware "job @ service" catalog for each branch's Job picker.</summary>
+    [Parameter] public IReadOnlyList<JobCatalogEntry> JobCatalog { get; set; } = [];
+
+    /// <summary>Configured services for each branch's Target-service dropdown (cross-service branches).</summary>
+    [Parameter] public IReadOnlyList<UKBatchServiceDescriptor> Services { get; set; } = [];
+
+    /// <summary>Raised after any mutation so the parent refreshes its summary / validation / canvas node.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private const string CurrentToken = "current";
+    private static readonly ConditionOperator[] Operators = Enum.GetValues<ConditionOperator>();
+
+    // At most one else, and it is pinned last: a branch can be the else only if it already is, or it is the
+    // last branch and no other branch is else. This structurally prevents an unreachable branch after the else.
+    private bool CanBeElse(int idx)
+    {
+        var branch = Step.DecisionBranches[idx];
+        if (branch.When is null) return true;   // already the else — the toggle must stay usable to unset it
+        var isLast = idx == Step.DecisionBranches.Count - 1;
+        var anyOtherElse = Step.DecisionBranches.Where((_, i) => i != idx).Any(x => x.When is null);
+        return isLast && !anyOtherElse;
+    }
+
+    // A branch may not move below the else (the else stays last). Disable the down arrow on the branch just
+    // above a trailing else, and on the else itself.
+    private bool CanMoveDown(int idx)
+    {
+        var last = Step.DecisionBranches.Count - 1;
+        if (idx >= last) return false;
+        if (Step.DecisionBranches[idx].When is null) return false;      // an else never moves down
+        if (Step.DecisionBranches[last].When is null && idx == last - 1) return false; // don't cross the trailing else
+        return true;
+    }
+
+    private async Task ToggleElseAsync(int idx, ChangeEventArgs e)
+    {
+        var enabled = e.Value is true || string.Equals(e.Value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+        var branch = Step.DecisionBranches[idx];
+        if (enabled)
+        {
+            branch.When = null;
+            // Pin the else last so a later conditional branch can never be dead code.
+            if (idx != Step.DecisionBranches.Count - 1)
+            {
+                Step.DecisionBranches.RemoveAt(idx);
+                Step.DecisionBranches.Add(branch);
+            }
+        }
+        else
+        {
+            branch.When ??= new ConditionDraft();
+        }
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task AddBranchAsync()
+    {
+        var branch = new DecisionBranchDraft { When = new ConditionDraft() };
+        // Insert a new conditional branch BEFORE a trailing else so the else stays last.
+        var count = Step.DecisionBranches.Count;
+        if (count > 0 && Step.DecisionBranches[count - 1].When is null)
+        {
+            Step.DecisionBranches.Insert(count - 1, branch);
+        }
+        else
+        {
+            Step.DecisionBranches.Add(branch);
+        }
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task RemoveBranchAsync(int idx)
+    {
+        if (idx >= 0 && idx < Step.DecisionBranches.Count) Step.DecisionBranches.RemoveAt(idx);
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task MoveBranchAsync(int idx, int delta)
+    {
+        var target = idx + delta;
+        if (idx < 0 || idx >= Step.DecisionBranches.Count || target < 0 || target >= Step.DecisionBranches.Count) return;
+        (Step.DecisionBranches[idx], Step.DecisionBranches[target]) = (Step.DecisionBranches[target], Step.DecisionBranches[idx]);
+        await OnChanged.InvokeAsync();
+    }
+
+    // ── job catalog picker (mirrors CompensationEditor.SelectFromCatalogAsync, writing the branch draft) ──
+
+    private bool CurrentNotInCatalog(DecisionBranchDraft branch)
+    {
+        if (string.IsNullOrWhiteSpace(branch.JobName)) return false;
+        var svc = NormalizeService(branch.TargetService);
+        return !JobCatalog.Any(e => e.JobName == branch.JobName && NormalizeService(e.ServiceName) == svc);
+    }
+
+    private string SelectedCatalogToken(DecisionBranchDraft branch)
+    {
+        if (string.IsNullOrWhiteSpace(branch.JobName)) return string.Empty;
+        var svc = NormalizeService(branch.TargetService);
+        for (var i = 0; i < JobCatalog.Count; i++)
+        {
+            var e = JobCatalog[i];
+            if (e.JobName == branch.JobName && NormalizeService(e.ServiceName) == svc)
+            {
+                return i.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+        return CurrentToken;
+    }
+
+    private async Task SelectFromCatalogAsync(DecisionBranchDraft branch, ChangeEventArgs e)
+    {
+        var token = e.Value?.ToString();
+        if (string.IsNullOrEmpty(token) || token == CurrentToken) return;
+        if (!int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx)) return;
+        if (idx < 0 || idx >= JobCatalog.Count) return;
+
+        var entry = JobCatalog[idx];
+        branch.JobName = entry.JobName;
+        branch.TargetService = entry.ServiceName ?? string.Empty;   // cross-service branches supported
+        await OnChanged.InvokeAsync();
+    }
+
+    private static string CatalogLabel(JobCatalogEntry entry)
+        => entry.ServiceName is { Length: > 0 } svc ? $"{entry.JobName} — {svc}" : $"{entry.JobName} — Local";
+
+    private static string CurrentJobLabel(DecisionBranchDraft branch)
+        => branch.TargetService is { Length: > 0 } svc ? $"{branch.JobName} — {svc}" : $"{branch.JobName} — Local";
+
+    private static string NormalizeService(string? service)
+        => string.IsNullOrWhiteSpace(service) ? string.Empty : service;
+
+    private static bool NeedsValue(ConditionOperator op) => op is not (
+        ConditionOperator.Exists or ConditionOperator.NotExists or
+        ConditionOperator.IsTrue or ConditionOperator.IsFalse);
+
+    private static string OperatorLabel(ConditionOperator op) => op switch
+    {
+        ConditionOperator.Equals => "equals",
+        ConditionOperator.NotEquals => "not equals",
+        ConditionOperator.GreaterThan => "greater than",
+        ConditionOperator.GreaterThanOrEqual => "greater than or equal",
+        ConditionOperator.LessThan => "less than",
+        ConditionOperator.LessThanOrEqual => "less than or equal",
+        ConditionOperator.Exists => "exists",
+        ConditionOperator.NotExists => "does not exist",
+        ConditionOperator.IsTrue => "is true",
+        ConditionOperator.IsFalse => "is false",
+        ConditionOperator.Contains => "contains",
+        _ => op.ToString(),
+    };
+}

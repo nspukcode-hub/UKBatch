@@ -67,6 +67,7 @@
         BatchStepType.Job => string.IsNullOrWhiteSpace(s.JobName) ? "(job)" : s.JobName,
         BatchStepType.ParallelGroup => $"{s.Children.Count} branches",
         BatchStepType.ApprovalGate => string.IsNullOrWhiteSpace(s.ApprovalTitle) ? "(approval)" : s.ApprovalTitle,
+        BatchStepType.Decision => $"Decision · {s.DecisionBranches.Count} branches",
         _ => s.StepType.ToString(),
     };
 }

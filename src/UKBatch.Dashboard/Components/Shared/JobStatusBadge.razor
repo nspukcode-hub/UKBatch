@@ -16,6 +16,7 @@
         JobStatus.Failed => "failed",
         JobStatus.Cancelled or JobStatus.Cancelling => "cancelled",
         JobStatus.AwaitingApproval => "approval",
+        JobStatus.Skipped => "skipped",
         _ => "pending",
     };
 
@@ -27,6 +28,7 @@
         JobStatus.Failed => "error",
         JobStatus.Cancelled or JobStatus.Cancelling => "block",
         JobStatus.AwaitingApproval => "back_hand",
+        JobStatus.Skipped => "skip_next",
         _ => "help",
     };
 }

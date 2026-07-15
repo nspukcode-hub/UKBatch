@@ -56,15 +56,18 @@ public static class DagStatusEdges
         // ParallelGroup's children have no inbound (case c).
         IReadOnlyList<string> prevExitStepIds = [];
         bool prevWasParallelGroup = false;
+        bool prevWasDecision = false;
 
         foreach (var step in steps.OrderBy(s => s.Order))
         {
-            var (entryNodes, exitNodes, isParallelGroup) = Resolve(step, renderedStepIds);
+            var (entryNodes, exitNodes, isParallelGroup, isDecision) = Resolve(step, renderedStepIds);
 
             // Emit prev → entry for every prev × entry. A fan-out (this step is a PG) keys status off the
-            // destination/child; a fan-in (the PREVIOUS step was a PG) keys off the source/child.
+            // destination/child; a fan-in (the PREVIOUS step fanned out — a PG OR a decision) keys off the
+            // source/child. A decision's own inbound edge (prev → diamond) is a single edge, so it is NOT a
+            // fan-out cross-product here — its fan-out to branches is emitted explicitly below.
             bool isFanOut = isParallelGroup;
-            bool isFanIn = prevWasParallelGroup;
+            bool isFanIn = prevWasParallelGroup || prevWasDecision;
             string kind = (isFanOut || isFanIn) ? "Parallel" : "Sequential";
             foreach (var prev in prevExitStepIds)
             {
@@ -80,8 +83,29 @@ public static class DagStatusEdges
                 }
             }
 
+            // A decision is a VISIBLE fan-out origin (unlike the invisible ParallelGroup container): its
+            // diamond → branch edges are not a prev→entry cross-product, so emit them explicitly, labelled
+            // with each branch's condition. The branch ids become this step's exit set, so the NEXT step
+            // fans in from them (prevWasDecision ⇒ IsFanIn).
+            if (isDecision && step.Decision is { } decision)
+            {
+                foreach (var branch in decision.Branches)
+                {
+                    if (!renderedStepIds.Contains(branch.StepId)) continue;
+                    edges.Add(new StatusEdge
+                    {
+                        FromStepId = step.StepId,
+                        ToStepId = branch.StepId,
+                        Kind = "Decision",
+                        IsFanIn = false,
+                        Label = DecisionNodes.BranchLabel(branch),
+                    });
+                }
+            }
+
             prevExitStepIds = exitNodes;
             prevWasParallelGroup = isParallelGroup;
+            prevWasDecision = isDecision;
         }
 
         // ── OnFailure chain: originates from the spine's TRUE exit nodes (children if the spine ends in
@@ -128,7 +152,7 @@ public static class DagStatusEdges
         {
             if (step.Compensation is null) continue;
             var derivedId = CompensationStepIds.For(step.StepId);
-            var (_, sourceNodes, _) = Resolve(step, renderedStepIds);
+            var (_, sourceNodes, _, _) = Resolve(step, renderedStepIds);
             foreach (var src in sourceNodes)
             {
                 edges.Add(new StatusEdge
@@ -146,7 +170,9 @@ public static class DagStatusEdges
 
     // Entry = node(s) an inbound edge terminates at; Exit = node(s) the next step departs from.
     // Job / Approval / Unknown → [stepId] for both. ParallelGroup → [renderedChild1…N] for both.
-    private static (IReadOnlyList<string> Entry, IReadOnlyList<string> Exit, bool IsParallelGroup) Resolve(
+    // Decision → Entry = [diamond] (a single inbound node); Exit = [renderedBranch1…N] (the next step
+    // re-converges from every branch, and a decision-level compensator fans in from every branch).
+    private static (IReadOnlyList<string> Entry, IReadOnlyList<string> Exit, bool IsParallelGroup, bool IsDecision) Resolve(
         BatchStep step,
         HashSet<string> renderedStepIds)
     {
@@ -157,11 +183,21 @@ public static class DagStatusEdges
                 .Select(c => c.StepId)
                 .Where(renderedStepIds.Contains)
                 .ToList();
-            return (children, children, true);
+            return (children, children, true, false);
         }
 
-        // Job / ApprovalGate / Unknown (and a malformed PG with null payload) — single spine node.
+        if (step is { StepType: BatchStepType.Decision, Decision: { } decision })
+        {
+            var entry = renderedStepIds.Contains(step.StepId) ? (IReadOnlyList<string>)[step.StepId] : [];
+            var branches = decision.Branches
+                .Select(b => b.StepId)
+                .Where(renderedStepIds.Contains)
+                .ToList();
+            return (entry, branches, false, true);
+        }
+
+        // Job / ApprovalGate / Unknown (and a malformed PG/Decision with null payload) — single spine node.
         var one = renderedStepIds.Contains(step.StepId) ? (IReadOnlyList<string>)[step.StepId] : [];
-        return (one, one, false);
+        return (one, one, false, false);
     }
 }

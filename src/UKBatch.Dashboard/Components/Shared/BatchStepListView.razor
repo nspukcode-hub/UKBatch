@@ -52,6 +52,7 @@
         BatchStepType.Job => "work",
         BatchStepType.ParallelGroup => "view_column",
         BatchStepType.ApprovalGate => "back_hand",
+        BatchStepType.Decision => "call_split",
         _ => "circle",
     };
 
@@ -60,6 +61,13 @@
         BatchStepType.Job => step.Job?.JobName ?? "(unknown job)",
         BatchStepType.ParallelGroup => $"{step.ParallelGroup?.Steps.Count ?? 0} parallel children — JoinPolicy {step.ParallelGroup?.JoinPolicy}",
         BatchStepType.ApprovalGate => step.Approval?.Title ?? "(approval gate)",
+        BatchStepType.Decision => DecisionDetail(step.Decision),
         _ => string.Empty,
     };
+
+    private static string DecisionDetail(DecisionStepData? data)
+    {
+        var count = data?.Branches.Count ?? 0;
+        return count == 1 ? "1 branch" : $"{count} branches";
+    }
 }

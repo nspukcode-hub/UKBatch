@@ -384,6 +384,14 @@ internal sealed class BatchExecutor
                     cancellationToken,
                     _resumeShadowProbe).ConfigureAwait(false);
 
+            case BatchStepType.Decision:
+                return await DecisionStepRunner.RunAsync(
+                    def, batchId, step, initial, accumulatedOutputs, triggeredBy,
+                    _runner, _awaiter,
+                    _transport, _thisServiceName, _timeProvider,
+                    _logger, cancellationToken,
+                    _resumeShadowProbe).ConfigureAwait(false);
+
             case BatchStepType.ApprovalGate:
             {
                 if (step.Approval is null)

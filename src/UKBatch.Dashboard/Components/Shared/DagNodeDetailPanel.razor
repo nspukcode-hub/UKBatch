@@ -30,6 +30,9 @@
             case BatchStepType.ApprovalGate:
                 @RenderApproval(Step.Approval);
                 break;
+            case BatchStepType.Decision:
+                @RenderDecision(Step.Decision);
+                break;
             default:
                 <section class="dag-node-detail__section">
                     <dl><div class="dag-node-detail__row"><dt>Step ID</dt><dd class="mono">@Step.StepId</dd></div></dl>
@@ -87,6 +90,7 @@
         BatchStepType.Job => "work",
         BatchStepType.ParallelGroup => "alt_route",
         BatchStepType.ApprovalGate => "rule",
+        BatchStepType.Decision => "call_split",
         _ => "help",
     };
 
@@ -95,6 +99,7 @@
         BatchStepType.Job => Step.Job?.JobName ?? "Job",
         BatchStepType.ParallelGroup => "Parallel group",
         BatchStepType.ApprovalGate => Step.Approval?.Title ?? "Approval gate",
+        BatchStepType.Decision => "Decision",
         _ => Step.StepId,
     };
 
@@ -144,6 +149,39 @@
                         <span class="dag-node-detail__chip mono">@(c.Job?.JobName ?? c.StepId)</span>
                     }
                 </div>
+            </section>
+        }
+    };
+
+    private RenderFragment RenderDecision(DecisionStepData? data) => __builder =>
+    {
+        <section class="dag-node-detail__section">
+            <h3>Decision</h3>
+            <dl>
+                <div class="dag-node-detail__row"><dt>Step ID</dt><dd class="mono">@Step.StepId</dd></div>
+                <div class="dag-node-detail__row"><dt>Branches</dt><dd>@(data?.Branches.Count ?? 0)</dd></div>
+            </dl>
+            <p class="form-field__hint">Branches are evaluated in order; the first whose condition holds runs,
+                the rest are skipped.</p>
+        </section>
+        @if (data?.Branches is { Count: > 0 } branches)
+        {
+            <section class="dag-node-detail__section">
+                <h3>Branches</h3>
+                <ul class="dag-node-detail__branches">
+                    @foreach (var branch in branches)
+                    {
+                        <li @key="branch.StepId" class="dag-node-detail__branch">
+                            <span class="dag-node-detail__branch-cond">@DecisionNodes.BranchLabel(branch)</span>
+                            <span class="material-symbols-outlined dag-node-detail__branch-arrow">arrow_right_alt</span>
+                            <span class="dag-node-detail__branch-job mono">@branch.Job.JobName</span>
+                            @if (branch.Job.TargetService is { Length: > 0 } svc)
+                            {
+                                <span class="dag-node-detail__chip">@svc</span>
+                            }
+                        </li>
+                    }
+                </ul>
             </section>
         }
     };

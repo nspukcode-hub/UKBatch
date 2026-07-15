@@ -18,4 +18,10 @@ public enum BatchStepType
 
     /// <summary>Manual pause until approval is granted or times out (see <see cref="ApprovalGateConfig"/>).</summary>
     ApprovalGate = 2,
+
+    /// <summary>
+    /// Routes to exactly one of several branch jobs by condition, recording the rest as skipped
+    /// (see <see cref="DecisionStepData"/>).
+    /// </summary>
+    Decision = 3,
 }

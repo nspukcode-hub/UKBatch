@@ -198,6 +198,9 @@ else
             <button class="btn btn--secondary btn--sm" @onclick="@(() => AddStep(BatchStepType.ApprovalGate))">
                 <span class="material-symbols-outlined">rule</span> Approval gate
             </button>
+            <button class="btn btn--secondary btn--sm" @onclick="@(() => AddStep(BatchStepType.Decision))">
+                <span class="material-symbols-outlined">call_split</span> Decision
+            </button>
         </div>
     </div>;
 
@@ -477,6 +480,12 @@ else
             draft.Children.Add(new WizardStepDraft { StepType = BatchStepType.Job });
             draft.Children.Add(new WizardStepDraft { StepType = BatchStepType.Job });
         }
+        else if (type == BatchStepType.Decision)
+        {
+            // Seed one conditional branch + one else so the routing shape is obvious out of the gate.
+            draft.DecisionBranches.Add(new DecisionBranchDraft { When = new ConditionDraft() });
+            draft.DecisionBranches.Add(new DecisionBranchDraft { When = null });
+        }
         _model.Steps.Add(draft);
         _expandedStep = _model.Steps.Count - 1; // open the new row for editing
     }
@@ -671,6 +680,7 @@ else
         BatchStepType.Job => "work",
         BatchStepType.ParallelGroup => "alt_route",
         BatchStepType.ApprovalGate => "rule",
+        BatchStepType.Decision => "call_split",
         _ => "circle",
     };
 
@@ -678,6 +688,7 @@ else
     {
         BatchStepType.ParallelGroup => "wizard-step-row--parallel",
         BatchStepType.ApprovalGate => "wizard-step-row--approval",
+        BatchStepType.Decision => "wizard-step-row--decision",
         _ => string.Empty,
     };
 
@@ -686,6 +697,7 @@ else
         BatchStepType.Job => "wizard-step-row__type--job",
         BatchStepType.ParallelGroup => "wizard-step-row__type--parallel",
         BatchStepType.ApprovalGate => "wizard-step-row__type--approval",
+        BatchStepType.Decision => "wizard-step-row__type--decision",
         _ => string.Empty,
     };
 
@@ -698,6 +710,7 @@ else
                 : step.TargetService is { Length: > 0 } svc ? $"{step.JobName} → {svc}" : step.JobName,
             BatchStepType.ParallelGroup => $"{step.Children.Count} branches — {step.JoinPolicy}",
             BatchStepType.ApprovalGate => string.IsNullOrWhiteSpace(step.ApprovalTitle) ? "(no title)" : step.ApprovalTitle,
+            BatchStepType.Decision => step.DecisionBranches.Count == 1 ? "1 branch" : $"{step.DecisionBranches.Count} branches",
             _ => string.Empty,
         };
         return step.Condition is { ParameterKey: { Length: > 0 } } c ? $"{summary} · {ConditionSummary(c)}" : summary;

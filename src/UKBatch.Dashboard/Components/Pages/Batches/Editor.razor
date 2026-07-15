@@ -399,6 +399,12 @@ else
             draft.Children.Add(new WizardStepDraft { StepType = BatchStepType.Job });
             draft.Children.Add(new WizardStepDraft { StepType = BatchStepType.Job });
         }
+        else if (intent.Kind == BatchStepType.Decision)
+        {
+            // Seed one conditional branch + one else (matches Wizard.AddStep) — a decision routes among >=1.
+            draft.DecisionBranches.Add(new DecisionBranchDraft { When = new ConditionDraft() });
+            draft.DecisionBranches.Add(new DecisionBranchDraft { When = null });
+        }
         // Was the drop on an EMPTY spot (top-left default 0,0 region) or a deliberate placement? A
         // brand-new node should flow LEFT-TO-RIGHT: if the operator dropped near the canvas origin (the
         // common "just drop it" gesture lands at small x/y after the pan/zoom translate), snap it to the
@@ -606,16 +612,16 @@ else
         // re-push titles+badges. Cheap (<50 nodes) and keeps the canvas in sync without a full reimport.
         await ResyncOrderBadgesAsync();
 
-        // An edit can ALSO change the node's BODY beyond the title: a ParallelGroup's branch chips, or a
-        // Job's subtitle line (the compensator mark lives there — adding/removing a compensator must show
-        // on the card without reopening the page). UpdateLabelAsync (above) only patches the title/badge;
-        // re-render the whole card from a fresh spec via RefreshNodeAsync (which also reflows the
+        // An edit can ALSO change the node's BODY beyond the title: a ParallelGroup's or a Decision's branch
+        // chips, or a Job's subtitle line (the compensator mark lives there — adding/removing a compensator
+        // must show on the card without reopening the page). UpdateLabelAsync (above) only patches the
+        // title/badge; re-render the whole card from a fresh spec via RefreshNodeAsync (which also reflows the
         // connection anchors after the card resizes). Re-render on every OnChanged is fine at this scale
         // (<50 nodes, one DOM swap). The cached _graph is left to the structural-change rebuilds
         // (drop/remove/reorder) — a field edit is NOT a top-level structural change, so RebuildGraph is
         // intentionally not called here.
         var sel = SelectedDraft();
-        if (sel is { StepType: BatchStepType.Job or BatchStepType.ParallelGroup } && _canvas is not null)
+        if (sel is { StepType: BatchStepType.Job or BatchStepType.ParallelGroup or BatchStepType.Decision } && _canvas is not null)
         {
             var idx = _model.Steps.IndexOf(sel);
             if (idx >= 0)
@@ -743,10 +749,10 @@ else
         // routes to the parent via the derived-id suffix.
         for (int i = 0; i < _model.Steps.Count; i++)
         {
-            // Only Job / ParallelGroup steps carry a compensator to storage (the draft projection and the
-            // validator both restrict it there), so keep the display node in lockstep — never paint an
-            // uneditable node for a compensator that would not round-trip.
-            if (_model.Steps[i] is { Compensation: not null, StepType: BatchStepType.Job or BatchStepType.ParallelGroup })
+            // Only Job / ParallelGroup / Decision steps carry a compensator to storage (the draft projection
+            // and the validator both restrict it there — each compensates as one unit), so keep the display
+            // node in lockstep — never paint an uneditable node for a compensator that would not round-trip.
+            if (_model.Steps[i] is { Compensation: not null, StepType: BatchStepType.Job or BatchStepType.ParallelGroup or BatchStepType.Decision })
             {
                 specs.Add(ToCompensatorNodeSpec(_model.Steps[i], specs[i]));
             }
@@ -818,9 +824,13 @@ else
             : null;
         // A ParallelGroup has no read-only layout node (DagLayout fans its children out instead of
         // emitting a container node), so n is null and n?.Subtitle would be null — give the group a
-        // "Parallel · {JoinPolicy}" subheading for the branches block (mirrors Wizard.StepSummary).
+        // "Parallel · {JoinPolicy}" subheading for the branches block (mirrors Wizard.StepSummary). A
+        // Decision DOES have a layout node (the diamond, Subtitle="N branches"), but its branch chips carry
+        // the routing; give it a "Decision" subheading when the layout node is absent (defensive).
         var baseSubtitle = n?.Subtitle ?? (step.StepType == BatchStepType.ParallelGroup
             ? $"Parallel · {step.JoinPolicy}"
+            : step.StepType == BatchStepType.Decision
+            ? "Decision"
             : null);
         // Compose the subtitle from whichever parts are present: base · compensator · condition.
         var subtitle = string.Join(" · ", new[] { baseSubtitle, compensatorMark, conditionMark }
@@ -838,9 +848,12 @@ else
             // WizardStepDraft.Children stays the editable model). Pass the FULL job name — dag-editor.js
             // displayTitle() shortens it (the same last-dotted-segment rule the title uses) so the chip
             // label matches the node title, and the full name stays in the chip's tooltip. A blank child
-            // job → "(unset)" placeholder. Non-group nodes carry null (no branches container).
+            // job → "(unset)" placeholder. A Decision renders its branch conditions as chips (the routing
+            // logic; each branch's job is set in the modal). Non-group/decision nodes carry null.
             Children = step.StepType == BatchStepType.ParallelGroup
                 ? step.Children.Select(c => string.IsNullOrWhiteSpace(c.JobName) ? "(unset)" : c.JobName).ToList()
+                : step.StepType == BatchStepType.Decision
+                ? step.DecisionBranches.Select(br => br.SummaryLabel()).ToList()
                 : null,
             X = x,
             Y = y,
@@ -890,6 +903,7 @@ else
         BatchStepType.Job => string.IsNullOrWhiteSpace(s.JobName) ? "(unknown job)" : s.JobName,
         BatchStepType.ApprovalGate => string.IsNullOrWhiteSpace(s.ApprovalTitle) ? "(approval gate)" : s.ApprovalTitle,
         BatchStepType.ParallelGroup => $"{s.Children.Count} branches",
+        BatchStepType.Decision => "Decision",
         _ => s.StepId,
     };
 

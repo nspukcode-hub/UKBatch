@@ -471,6 +471,10 @@ else
         // Approval gates have no execution row — overlay their feed-derived status (RefreshGatesAsync).
         foreach (var (sid, st) in _gateStatus)
             map[sid] = st;
+        // Decision diamonds have no execution row either — derive each from its branch rows (the winner's
+        // row + the losers' Skipped rows), which are already in the map above.
+        if (_definition is { } def)
+            DecisionStatusReconciler.Apply(def.Steps, map);
         _statusByStepId = map;
     }
 

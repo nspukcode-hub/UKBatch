@@ -24,7 +24,7 @@ public sealed record class StatusEdge
     /// <summary>Destination node StepId (always real).</summary>
     public required string ToStepId { get; init; }
 
-    /// <summary>Visual line style: <c>"Sequential" | "Parallel" | "OnFailure" | "Compensation"</c>.</summary>
+    /// <summary>Visual line style: <c>"Sequential" | "Parallel" | "Decision" | "OnFailure" | "Compensation"</c>.</summary>
     public required string Kind { get; init; }
 
     /// <summary>
@@ -32,4 +32,11 @@ public sealed record class StatusEdge
     /// <b>source/child</b>; <c>false</c> ⇒ status keys off the <b>destination</b> (Sequential / fan-out).
     /// </summary>
     public required bool IsFanIn { get; init; }
+
+    /// <summary>
+    /// Optional short label for a decision <c>diamond→branch</c> edge — the branch's condition text (e.g.
+    /// <c>"amount &gt; 1000"</c> or <c>"else"</c>). <c>null</c> on every other edge, so existing edges are
+    /// unaffected.
+    /// </summary>
+    public string? Label { get; init; }
 }
