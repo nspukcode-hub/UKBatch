@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.3-alpha] - 2026-07-15
+
+Data flow and correctness between the steps of a batch: a step can hand values to the steps after it, a failure can undo the work already done, and a flow can skip a step or route to one of several branches based on what it finds.
+
+### Added
+
+- **Step output forwarding.** A job can publish values through `JobContext.Outputs`, and every later step in the run reads them as ordinary parameters — so a pipeline can pass an id, a total, or an object from one step to the next instead of recomputing it. Values merge in a fixed order (a run's initial parameters, then accumulated outputs, then a step's own static parameters), so a static parameter always wins over a forwarded one. A parallel group folds back the outputs its join policy accepted (all branches for `WaitAll`, the winner for `WaitAny`, the quorum for `WaitMajority`). Forwarding also crosses a service boundary: a job on a worker returns its outputs to the orchestrator over HTTP or RabbitMQ. The forwarded state is persisted (`BatchRun.ForwardedState`), so a resumed run continues with the values it had. `JobParameters.TryGet<T>`/`GetRequired<T>`/`GetOrDefault<T>` now also resolve values that crossed a JSON boundary, which is what makes a forwarded object readable as its own type. An additive migration (`AddStepOutputForwarding`) adds the output columns.
+- **Saga / per-step compensation.** A step can declare a compensator (`BatchStep.Compensation`, in code via `CompensateWith...`), and when a later step fails the run undoes the completed steps **in reverse order** before it stops. The step that failed is not compensated (it did not complete), and a cancelled run never compensates. The unwind is durable: a cursor (`BatchRun.CompensationStepIndex`) records how far it got, so a host restart mid-unwind continues rather than starting over, and a compensator effectively runs once. A compensator may target another service. An additive migration (`AddBatchRunCompensationCursor`) adds the cursor.
+- **Retrying a failed run.** `POST /batches/{runId}/retry` (and a Retry button on the dashboard's run detail) starts a fresh run that picks up from the failed run's cursor instead of re-running the steps that already succeeded. The new run links back through `RetryOfBatchId`; the original stays Failed as a record. A compensated run is not retryable.
+- **Declared job parameters.** A job can declare what it expects — `.WithParameter<T>(name, defaultValue, required, description)` — and that declaration surfaces in three places: the dashboard's Trigger screen renders typed inputs instead of a raw JSON box, `GET /jobs/{name}` publishes the parameters in its OpenAPI-described response, and a worker announces its jobs' parameters in its heartbeat so a remote job is described too. Triggering a single job without a required parameter is rejected with a clear `400` (`ukbatch:job-parameter-validation`); the check can be turned off with `UKBatchOptions.EnforceDeclaredParameters`. Jobs that declare nothing behave exactly as before.
+- **Conditional step execution (run-if).** A step can carry a condition (`.RunIf(...)`, `condition` in the REST body, or the dashboard editors) and is skipped when it does not hold at dispatch time. A skipped step is recorded — the new terminal `JobStatus.Skipped` — rather than silently vanishing, the run continues to the next step, and a skipped step is never compensated during an unwind. An if/else is two consecutive steps with opposite conditions.
+- **Decision step.** A decision routes to exactly one of several job branches: branches are evaluated in order, the first whose condition holds runs, and a branch with no condition is the default (at most one, last). The branches not taken are recorded `Skipped` and the flow re-converges on the next step. Declared in code with `.Decide(...)`/`.ThenDecide(...)`, and rendered on the dashboard — in the run view, the wizard preview, and the visual editor, which fans the decision out as you build it and gives each branch a colour shared by its condition chip, its arrow and its card.
+
+### Fixed
+
+- **A resumed run no longer loses the parameters it was triggered with.** A run's initial parameters are persisted with it, so a run that resumes after a restart sees the same values it started with instead of an empty set.
+
+### Known limitations
+
+- Step outputs are JSON-serializable values (scalars and objects). Passing a large payload by file/artifact reference is a later release.
+- A compensator attaches to a top-level step: a parallel group or a decision compensates as one unit. Per-child and per-branch compensators are a later release.
+- Each decision branch runs one job — chain decisions for more depth. A parallel group cannot be a decision branch.
+- A declared parameter is an announcement, not a contract: enforcement applies to the single-job trigger endpoint. A job run as a batch step or by a schedule still reads its parameters at run time.
+- Skipped steps are not reflected in a run's counts (total/succeeded/failed), so a run containing skipped steps shows fewer accounted steps than it has.
+- Durable compensation (the unwind cursor) and forwarded state need the EF storage adapter, like durable resume before them; with in-memory storage they are inactive.
+
 ## [0.2.2-alpha] - 2026-06-18
 
 Durable recovery for batch workflows: an in-flight run resumes after a restart, and a scheduled batch can catch up a fire it missed while down. Both build on the persistent run store and require the EF storage adapter.
@@ -179,7 +205,11 @@ First public preview of the UKBatch package family.
 - **Single-node orphan reaper.** The orphaned-execution reaper assumes a single orchestrator node.
 - **Adapters not yet available.** Kafka, Azure Service Bus, and Redis adapters are not part of this release.
 
-[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.1.6-alpha...HEAD
+[Unreleased]: https://github.com/nspukcode-hub/UKBatch/compare/v0.2.3-alpha...HEAD
+[0.2.3-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.2.3-alpha
+[0.2.2-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.2.2-alpha
+[0.2.1-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.2.1-alpha
+[0.2.0-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.2.0-alpha
 [0.1.6-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.6-alpha
 [0.1.5-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.5-alpha
 [0.1.4-alpha]: https://github.com/nspukcode-hub/UKBatch/releases/tag/v0.1.4-alpha
