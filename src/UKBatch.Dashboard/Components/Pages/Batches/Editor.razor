@@ -133,7 +133,7 @@ else
                 <DrawflowCanvas @ref="_canvas"
                                 Graph="GraphSpec()"
                                 ReadOnly="false"
-                                OnNodeMovedCb="HandleNodeMoved"
+                                OnNodeMovedCb="HandleNodeMovedAsync"
                                 OnNodeSelectedCb="HandleCanvasSelectAsync"
                                 OnNodeEditRequestedCb="HandleEditRequested"
                                 OnNodeDroppedCb="HandleDropAsync"
@@ -194,9 +194,20 @@ else
     // FULL graph import happens; maintained by the add/remove paths.
     private readonly HashSet<string> _compNodeIds = new(StringComparer.Ordinal);
 
-    private void ResetCompNodeTracking()
+    // Last-pushed state of each decision branch card on the canvas, keyed by branch StepId. A value tuple
+    // compares structurally with no allocation, which is what lets the per-KEYSTROKE change handler tell an
+    // add/remove/reorder (re-wire the canvas) from a pure text edit (must NOT: SyncConnectionsAsync tears
+    // down and rebuilds EVERY line, so running it per character would flicker the whole canvas).
+    private readonly Dictionary<string, (string Title, string? Service, string? Accent, double X, double Y)>
+        _branchNodes = new(StringComparer.Ordinal);
+
+    // Re-seeds the display-node trackers from the CURRENT graph after a full import (which re-places every
+    // node). Compensators are found by their derived-id suffix; a branch card carries an ordinary step id,
+    // so it is identified by the spec flag the graph builder set instead.
+    private void ResetDisplayNodeTracking()
     {
         _compNodeIds.Clear();
+        _branchNodes.Clear();
         if (_graph is null) return;
         foreach (var n in _graph.Nodes)
         {
@@ -204,7 +215,61 @@ else
             {
                 _compNodeIds.Add(n.StepId);
             }
+            else if (n.IsDeleteProtected)
+            {
+                _branchNodes[n.StepId] = (n.Title, n.TargetService, n.BranchAccent, n.X, n.Y);
+            }
         }
+    }
+
+    // Reconciles the canvas's decision branch cards with the model, three ways: gone ⇒ remove, new ⇒ add,
+    // moved ⇒ re-place, text-only ⇒ re-render the card in place. Only the first three change node ids, so
+    // only they need the connections re-wired — a text edit must not, or every keystroke would rebuild every
+    // line. Call after RebuildGraph() on any path that can change the branch set, its order, or a diamond's
+    // position.
+    private async Task SyncBranchNodesAsync()
+    {
+        if (_canvas is null || _graph is null) return;
+        var want = new Dictionary<string, DagNodeSpec>(StringComparer.Ordinal);
+        foreach (var n in _graph.Nodes)
+        {
+            if (n.IsDeleteProtected) want[n.StepId] = n;
+        }
+
+        var structural = false;
+        foreach (var id in _branchNodes.Keys.Where(k => !want.ContainsKey(k)).ToList())
+        {
+            _branchNodes.Remove(id);
+            _localHints.Remove(id);   // a dropped branch's saved position must not linger and skew NextLtrSlot
+            await _canvas.RemoveNodeAsync(id);
+            structural = true;
+        }
+        foreach (var (id, spec) in want)
+        {
+            var now = (spec.Title, spec.TargetService, spec.BranchAccent, spec.X, spec.Y);
+            if (!_branchNodes.TryGetValue(id, out var was))
+            {
+                _branchNodes[id] = now;
+                await _canvas.AddNodeAsync(spec);
+                structural = true;
+            }
+            else if (was.X != now.X || was.Y != now.Y)
+            {
+                // Re-place rather than nudge: Drawflow exposes no supported move, and reaching into its
+                // internal node data to shift one card is exactly where this canvas has broken before. A
+                // branch card is display-only, so removing and re-adding it loses nothing.
+                _branchNodes[id] = now;
+                await _canvas.RemoveNodeAsync(id);
+                await _canvas.AddNodeAsync(spec);
+                structural = true;
+            }
+            else if (was != now)
+            {
+                _branchNodes[id] = now;
+                await _canvas.RefreshNodeAsync(spec);
+            }
+        }
+        if (structural) await SyncConnectionsAsync();
     }
 
     private string? _nameError;
@@ -298,7 +363,7 @@ else
         finally
         {
             RebuildGraph();   // build the cached spec once, after load
-            ResetCompNodeTracking();   // the initial import (Graph parameter) places these nodes
+            ResetDisplayNodeTracking();   // the initial import (Graph parameter) places these nodes
             _loading = false;
         }
     }
@@ -316,7 +381,11 @@ else
             ? _selectedStepId[..^CompensationStepIds.Suffix.Length]
             : _selectedStepId;
         return _model.Steps.FirstOrDefault(s => s.StepId == id)
-            ?? _model.OnFailureSteps.FirstOrDefault(s => s.StepId == id);
+            ?? _model.OnFailureSteps.FirstOrDefault(s => s.StepId == id)
+            // A decision branch card carries the BRANCH's own id, which is no step of its own — resolve it
+            // to the decision that owns it, so a click on a branch opens the dialog that edits it.
+            ?? _model.Steps.FirstOrDefault(s => s.StepType == BatchStepType.Decision
+                                                && s.DecisionBranches.Any(b => b.StepId == id));
     }
 
     // True when the current selection resolves in the compensation lane → the modal renders Job-only,
@@ -430,6 +499,8 @@ else
         RebuildGraph();                                                  // one layout pass; refreshes the cache
         var spec = _graph!.Nodes.First(n => n.StepId == draft.StepId);
         await _canvas.AddNodeAsync(spec);                                // step 2: place the node (reuse the spec)
+        // A dropped decision arrives with its seeded branches, so its cards go down in the same gesture.
+        await SyncBranchNodesAsync();
         await SyncConnectionsAsync();                                    // redraw flow lines incl. the new node
         MarkDirty();
     }
@@ -495,11 +566,22 @@ else
 
     // ── node moved (geometry ONLY — order is untouched, invariant #2) ───────────────
 
-    private void HandleNodeMoved(NodeMovedArgs e)
+    private async Task HandleNodeMovedAsync(NodeMovedArgs e)
     {
         _localHints[e.StepId] = new DagLayoutHint { X = e.X, Y = e.Y };
         MarkDirty();
-        // No RebuildGraph: geometry-only; the canvas already reflects the new position.
+        // Geometry-only for every ordinary card: the canvas already shows the new position and nothing else
+        // depends on it, so there is no rebuild on this (drag-settle) path.
+        //
+        // A decision is the exception: its branch cards are placed RELATIVE to the diamond, so moving the
+        // diamond has to carry them along — otherwise they stay behind and then snap into formation at some
+        // later, unrelated change. Narrow gate: only a dragged decision pays for the rebuild. (A branch card
+        // dragged on its own just saves a hint like any other card; its own hint then wins over the formula.)
+        if (_model.Steps.FirstOrDefault(s => s.StepId == e.StepId) is { StepType: BatchStepType.Decision })
+        {
+            RebuildGraph();
+            await SyncBranchNodesAsync();
+        }
     }
 
     // ── canvas delete key ──────────────────────────────────────────────────────────
@@ -550,8 +632,12 @@ else
                 if (_canvas is not null) await _canvas.RemoveNodeAsync(compId);
             }
             await ResyncOrderBadgesAsync(); // remaining indices shifted
+            RebuildGraph();                 // before the reconcile below, which reads the fresh graph
+            // A removed decision takes its branch cards with it; removing any step re-columns the ones
+            // after it, which moves a later decision's fan. The reconcile covers both, and re-wires the
+            // connections itself when it changed a node.
+            await SyncBranchNodesAsync();
             await SyncConnectionsAsync();   // redraw flow lines minus the removed node
-            RebuildGraph();
             MarkDirty();
             return;
         }
@@ -560,7 +646,19 @@ else
         // policy, WARN but do NOT auto-revert — the server degrades Compensate→StopOnFailure on save;
         // silently flipping the operator's explicit policy mid-edit would surprise them.
         var fidx = _model.OnFailureSteps.FindIndex(s => s.StepId == stepId);
-        if (fidx < 0) return;
+        if (fidx < 0)
+        {
+            // Nothing in either list owns this id — the only cards that fit are a decision's branches, which
+            // the canvas refuses to delete. Reaching here means that refusal was bypassed, so put the card
+            // back rather than let the canvas quietly disagree with the model. Evicting the tracker entry
+            // first is what makes the reconcile re-add it (otherwise it reads as unchanged).
+            if (_branchNodes.Remove(stepId))
+            {
+                RebuildGraph();
+                await SyncBranchNodesAsync();
+            }
+            return;
+        }
         _model.OnFailureSteps.RemoveAt(fidx);
         _localHints.Remove(stepId);
         if (string.Equals(_selectedStepId, stepId, StringComparison.Ordinal)) _selectedStepId = null;
@@ -584,8 +682,10 @@ else
         if (idx < 0 || idx >= _model.Steps.Count || t < 0 || t >= _model.Steps.Count) return;
         (_model.Steps[idx], _model.Steps[t]) = (_model.Steps[t], _model.Steps[idx]);
         await ResyncOrderBadgesAsync(); // push new badges + titles to the canvas
+        RebuildGraph();                 // before the reconcile below, which reads the fresh graph
+        // Re-ordering re-columns the spine, so a decision's fan follows its diamond to the new column.
+        await SyncBranchNodesAsync();
         await SyncConnectionsAsync();   // reorder changes the flow-line chain
-        RebuildGraph();
         MarkDirty();
     }
 
@@ -649,6 +749,16 @@ else
                     await _canvas.RefreshNodeAsync(compSpec);
                 }
                 await _canvas.RefreshNodeAsync(_graph.Nodes.First(n => n.StepId == sel.StepId));
+
+                // The decision dialog can add, remove, reorder or retitle a branch, and each of those has to
+                // land on the canvas the moment it happens. The reconcile tells those apart: it re-wires the
+                // connections only when a card actually appeared, vanished or moved, and otherwise just
+                // re-renders the card — which matters because this handler runs on every KEYSTROKE, and
+                // re-wiring rebuilds every line on the canvas.
+                if (sel.StepType == BatchStepType.Decision)
+                {
+                    await SyncBranchNodesAsync();
+                }
             }
         }
 
@@ -701,9 +811,19 @@ else
     private const double LtrGapX = 90;
     private const double LtrNodeHeight = 90;    // approx card height — used only for the drop "near origin" test
 
+    // A decision's branch cards stack DOWNWARD from the diamond's own row, one column to its right. The
+    // first branch shares the diamond's Y (no centring) so adding or removing a branch never shifts the
+    // ones already placed — the operator's mental map of the fan stays put. 150 clears a ~90px card.
+    private const double BranchStride = 150;
+
+    // Vertical clearance between the fan's lowest card and a lane below it.
+    private const double LaneGap = 40;
+
     // Compensator display nodes live on a MIDDLE lane: below the spine (LtrRowY), above the batch-level
     // failure-chain lane (LtrFailureLaneY) — visually "this step's own undo", not part of the chain. The
     // small X nudge keeps the parent→compensator edge from rendering as a purely vertical line under the card.
+    // These two constants are FLOORS: a decision fanning out on-canvas pushes both lanes below its branches
+    // (see BuildGraph). With no fan-out on canvas they are the literal lane positions.
     private const double CompensatorLaneY = 200;
     private const double CompensatorLaneXNudge = 30;
 
@@ -733,28 +853,72 @@ else
         var auto = DagLayout.Compute(_model.StepsAsBatchSteps(), _model.OnFailureAsBatchSteps(), _localHints);
         var byId = auto.Nodes.ToDictionary(n => n.StepId, StringComparer.Ordinal);
         var specs = new List<DagNodeSpec>(_model.Steps.Count + _model.OnFailureSteps.Count);
+
+        // First loop: the top-level spine. A decision occupies TWO columns (its diamond, then the column
+        // its branch cards fan into), so PLACEMENT tracks its own column counter — while the ORDER BADGE
+        // stays the list index so the card and its rail chip always show the same number.
+        int column = 0;
         for (int i = 0; i < _model.Steps.Count; i++)
         {
-            specs.Add(ToNodeSpec(_model.Steps[i], i, byId));
+            specs.Add(ToNodeSpec(_model.Steps[i], i, column, byId));
+            column += EditorEdges.FansOut(_model.Steps[i]) ? 2 : 1;
         }
-        // Second loop: the compensation lane. Appended AFTER the main flow so the import order places the
-        // spine first; each onFailure node sits on the LOWER LtrFailureLaneY lane (or its saved hint).
+
+        // Parent lookup for the display-node loops below (each is placed relative to the card it projects).
+        // Built by indexer rather than ToDictionary: BuildGraph runs during render, and a duplicate id would
+        // throw there and tear the circuit down with the operator's unsaved batch.
+        var spineById = new Dictionary<string, DagNodeSpec>(StringComparer.Ordinal);
+        foreach (var s in specs) spineById[s.StepId] = s;
+
+        // Second loop: decision branch display nodes, fanning out one column right of their diamond. Each
+        // projects one entry of the parent's DecisionBranches — it is not a step of its own, so it is
+        // display-only (movable, not deletable; edited in the decision's dialog).
+        double? fanBottom = null;
+        for (int s = 0; s < _model.Steps.Count; s++)
+        {
+            var step = _model.Steps[s];
+            // Same predicate the edge topology uses, so the cards placed here are exactly the ones wired
+            // there — a branch-less decision is ONE spine node in both.
+            if (!EditorEdges.FansOut(step) || !spineById.TryGetValue(step.StepId, out var diamond)) continue;
+            for (int i = 0; i < step.DecisionBranches.Count; i++)
+            {
+                var branchSpec = ToBranchNodeSpec(step.DecisionBranches[i], i, s, diamond, byId);
+                specs.Add(branchSpec);
+                var bottom = branchSpec.Y + LtrNodeHeight;
+                fanBottom = fanBottom is { } cur ? Math.Max(cur, bottom) : bottom;
+            }
+        }
+
+        // Lane floors: the historical constants, pushed down ONLY when a decision actually fans out
+        // on-canvas (a dragged branch counts — fanBottom reads the placed cards). A batch with no fan-out
+        // therefore lays out exactly as it did before: the guard, not the arithmetic, is what makes that true.
+        double compLaneY = CompensatorLaneY;
+        double failLaneY = LtrFailureLaneY;
+        if (fanBottom is { } fan)
+        {
+            compLaneY = Math.Max(CompensatorLaneY, fan + LaneGap);
+            failLaneY = Math.Max(LtrFailureLaneY, Math.Max(fan, compLaneY + LtrNodeHeight) + LaneGap);
+        }
+
+        // Third loop: the compensation lane. Appended AFTER the main flow so the import order places the
+        // spine first; each onFailure node sits on the LOWER failure lane (or its saved hint).
         for (int i = 0; i < _model.OnFailureSteps.Count; i++)
         {
-            specs.Add(ToFailureNodeSpec(_model.OnFailureSteps[i], i, byId));
+            specs.Add(ToFailureNodeSpec(_model.OnFailureSteps[i], i, failLaneY, byId));
         }
-        // Third loop: per-step compensator display nodes, one per compensator-bearing top-level step,
+        // Fourth loop: per-step compensator display nodes, one per compensator-bearing top-level step,
         // hanging directly below their parent (mid lane — between the spine and the failure-chain lane).
         // Display-only: the compensator is edited in the parent's dialog; selecting/deleting the node
         // routes to the parent via the derived-id suffix.
-        for (int i = 0; i < _model.Steps.Count; i++)
+        foreach (var step in _model.Steps)
         {
             // Only Job / ParallelGroup / Decision steps carry a compensator to storage (the draft projection
             // and the validator both restrict it there — each compensates as one unit), so keep the display
             // node in lockstep — never paint an uneditable node for a compensator that would not round-trip.
-            if (_model.Steps[i] is { Compensation: not null, StepType: BatchStepType.Job or BatchStepType.ParallelGroup or BatchStepType.Decision })
+            if (step is { Compensation: not null, StepType: BatchStepType.Job or BatchStepType.ParallelGroup or BatchStepType.Decision }
+                && spineById.TryGetValue(step.StepId, out var parentSpec))
             {
-                specs.Add(ToCompensatorNodeSpec(_model.Steps[i], specs[i]));
+                specs.Add(ToCompensatorNodeSpec(step, parentSpec, compLaneY));
             }
         }
         var edges = EditorEdges.Build(_model.Steps, _model.OnFailureSteps);
@@ -764,7 +928,7 @@ else
     // Compensator display node: derived id (parent id + fixed suffix), red failure accent, placed on a
     // MIDDLE lane below its parent (a saved drag hint wins) so it reads as "this step's undo" — clearly
     // apart from the batch-level failure chain on the bottom lane.
-    private DagNodeSpec ToCompensatorNodeSpec(WizardStepDraft parent, DagNodeSpec parentSpec)
+    private DagNodeSpec ToCompensatorNodeSpec(WizardStepDraft parent, DagNodeSpec parentSpec, double laneY)
     {
         var comp = parent.Compensation!;
         var id = CompensationStepIds.For(parent.StepId);
@@ -775,7 +939,7 @@ else
         }
         else
         {
-            (x, y) = (parentSpec.X + CompensatorLaneXNudge, CompensatorLaneY);
+            (x, y) = (parentSpec.X + CompensatorLaneXNudge, laneY);
         }
         return new DagNodeSpec
         {
@@ -786,12 +950,15 @@ else
             OrderBadge = "↩",
             TargetService = comp.TargetService,
             IsOnFailure = true,
+            // Deliberately deletable: a canvas delete here has ONE unambiguous meaning — clear the
+            // parent's Compensation — which HandleNodeRemovedAsync does. (Contrast a decision branch,
+            // which has no such single meaning and is delete-protected.)
             X = x,
             Y = y,
         };
     }
 
-    private DagNodeSpec ToNodeSpec(WizardStepDraft step, int index, IReadOnlyDictionary<string, DagLayoutNode> byId)
+    private DagNodeSpec ToNodeSpec(WizardStepDraft step, int index, int column, IReadOnlyDictionary<string, DagLayoutNode> byId)
     {
         // Read Title/Subtitle/TargetService straight off the matched DagLayoutNode — it already
         // computes exactly what read-only DagView shows (free visual round-trip parity).
@@ -799,7 +966,8 @@ else
 
         // Placement: a saved hint (operator-dragged position) WINS; otherwise the editor's LEFT-TO-RIGHT
         // formula (NOT DagLayout's vertical coords) so hint-less nodes — e.g. a Wizard-created batch
-        // never dragged — open as a clean horizontal chain.
+        // never dragged — open as a clean horizontal chain. Keyed by COLUMN, not by list index: a decision
+        // reserves the column its branches fan into, so the step after it clears them.
         double x, y;
         if (_localHints.TryGetValue(step.StepId, out var h))
         {
@@ -807,7 +975,7 @@ else
         }
         else
         {
-            (x, y) = (LtrStartX + index * (LtrNodeWidth + LtrGapX), LtrRowY);
+            (x, y) = (LtrStartX + column * (LtrNodeWidth + LtrGapX), LtrRowY);
         }
 
         // A per-step compensator is edited in the step dialog, not drawn as a canvas node — so the node
@@ -848,13 +1016,60 @@ else
             // WizardStepDraft.Children stays the editable model). Pass the FULL job name — dag-editor.js
             // displayTitle() shortens it (the same last-dotted-segment rule the title uses) so the chip
             // label matches the node title, and the full name stays in the chip's tooltip. A blank child
-            // job → "(unset)" placeholder. A Decision renders its branch conditions as chips (the routing
-            // logic; each branch's job is set in the modal). Non-group/decision nodes carry null.
+            // job → "(unset)" placeholder. Non-group nodes carry null (a decision's chips are typed —
+            // they carry a colour — so they ride Branches instead).
             Children = step.StepType == BatchStepType.ParallelGroup
                 ? step.Children.Select(c => string.IsNullOrWhiteSpace(c.JobName) ? "(unset)" : c.JobName).ToList()
-                : step.StepType == BatchStepType.Decision
-                ? step.DecisionBranches.Select(br => br.SummaryLabel()).ToList()
                 : null,
+            // A Decision keeps its routing conditions as chips INSIDE the diamond — in FULL, because a
+            // condition truncated onto an edge is unreadable. Each chip carries the colour of the edge to
+            // its branch card, which is what pairs the two on canvas.
+            Branches = step.StepType == BatchStepType.Decision
+                ? step.DecisionBranches
+                    .Select((br, i) => new BranchChipSpec { Label = br.SummaryLabel(), Accent = BranchAccents.For(br, i) })
+                    .ToList()
+                : null,
+            X = x,
+            Y = y,
+        };
+    }
+
+    // Decision branch display node: the job one branch routes to, keyed by the branch's own StepId and
+    // placed one column right of its diamond (a saved drag hint wins). Display-only — it projects an entry
+    // of the parent's DecisionBranches, so it is edited (and removed) in the decision's dialog.
+    private DagNodeSpec ToBranchNodeSpec(
+        DecisionBranchDraft branch, int branchIndex, int decisionIndex, DagNodeSpec diamond,
+        IReadOnlyDictionary<string, DagLayoutNode> byId)
+    {
+        var n = byId.GetValueOrDefault(branch.StepId);
+        double x, y;
+        if (_localHints.TryGetValue(branch.StepId, out var h))
+        {
+            (x, y) = (h.X, h.Y);
+        }
+        else
+        {
+            (x, y) = (diamond.X + LtrNodeWidth + LtrGapX, diamond.Y + branchIndex * BranchStride);
+        }
+        return new DagNodeSpec
+        {
+            StepId = branch.StepId,
+            Kind = BatchStepType.Job.ToString(),   // the card IS a job; a click routes to the parent's dialog
+            Title = string.IsNullOrWhiteSpace(n?.Title)
+                ? (string.IsNullOrWhiteSpace(branch.JobName) ? "(unset)" : branch.JobName)
+                : n.Title,
+            // Deliberately NO subtitle: the read-only view puts the branch's condition here because its
+            // diamond shows no chips, but here the diamond spells every condition out in full and the
+            // colour already pairs card to chip — repeating it under the job name is noise.
+            Subtitle = null,
+            // A branch runs AS its decision's step, so it carries the decision's position (the same rule
+            // the runtime uses when it synthesizes the branch's step).
+            OrderBadge = (decisionIndex + 1).ToString(CultureInfo.InvariantCulture),
+            TargetService = n?.TargetService ?? (string.IsNullOrWhiteSpace(branch.TargetService) ? null : branch.TargetService),
+            // A branch has no entry in Steps to remove, so a canvas delete would desync the model; it is
+            // added/removed in the decision's dialog, which also keeps the else-branch rules intact.
+            IsDeleteProtected = true,
+            BranchAccent = BranchAccents.For(branch, branchIndex),
             X = x,
             Y = y,
         };
@@ -865,7 +1080,7 @@ else
     // it for free (same "compensation" subtitle the read-only DagView shows). Placement uses the
     // editor-local LOWER failure lane (a saved hint still wins). Kind stays "Job" (the modal renders the
     // Job-only editor); IsOnFailure=true makes dag-editor.js paint the dag-ed-node--failure accent.
-    private DagNodeSpec ToFailureNodeSpec(WizardStepDraft step, int index, IReadOnlyDictionary<string, DagLayoutNode> byId)
+    private DagNodeSpec ToFailureNodeSpec(WizardStepDraft step, int index, double laneY, IReadOnlyDictionary<string, DagLayoutNode> byId)
     {
         var n = byId.GetValueOrDefault(step.StepId);
         double x, y;
@@ -875,7 +1090,7 @@ else
         }
         else
         {
-            (x, y) = (LtrStartX + index * (LtrNodeWidth + LtrGapX), LtrFailureLaneY);
+            (x, y) = (LtrStartX + index * (LtrNodeWidth + LtrGapX), laneY);
         }
         return new DagNodeSpec
         {
@@ -1032,7 +1247,7 @@ else
             _nameError = null;
             _dirty = false;
             RebuildGraph();
-            ResetCompNodeTracking();   // full re-import below replaces every node, compensators included
+            ResetDisplayNodeTracking();   // full re-import below replaces every node, display nodes included
             if (_canvas is not null) await _canvas.ImportAsync(_graph!); // re-place the fresh graph
             await Notifications.InfoAsync("Reloaded", "Loaded the latest version. Re-apply your edits and save again.");
         }

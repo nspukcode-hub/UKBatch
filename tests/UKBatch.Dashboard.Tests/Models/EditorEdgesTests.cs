@@ -47,7 +47,28 @@ public sealed class EditorEdgesTests
         Children = children.ToList(),
     };
 
-    // A compact projection of an edge for set-equality assertions.
+    private static WizardStepDraft Decision(string id, params DecisionBranchDraft[] branches) => new()
+    {
+        StepId = id,
+        StepType = BatchStepType.Decision,
+        DecisionBranches = branches.ToList(),
+    };
+
+    private static DecisionBranchDraft Branch(string id, string? key, string jobName = "JobX") => new()
+    {
+        StepId = id,
+        JobName = jobName,
+        // A null key = the else/default branch; a set key = a conditional branch.
+        When = key is null ? null : new ConditionDraft
+        {
+            ParameterKey = key,
+            Operator = ConditionOperator.GreaterThan,
+            Value = "1000",
+        },
+    };
+
+    // A compact projection of an edge for set-equality assertions. NB: drops Label + BranchAccent — the
+    // decision tests below assert those with ContainSingle(predicate) instead.
     private static (string From, string To, string Kind) Tuple(EditorEdge e)
         => (e.FromStepId, e.ToStepId, e.Kind);
 
@@ -277,5 +298,146 @@ public sealed class EditorEdgesTests
 
         edges.Should().OnlyContain(e => !e.To.EndsWith(CompensationStepIds.Suffix),
             "compensator edges appear only when a step declares a compensator");
+    }
+
+    // ── decision fan-out: diamond → branch cards → re-convergence ─────────────────
+
+    [Fact]
+    public void Build_Decision_FansOutToBranches_WithLabelAndAccent()
+    {
+        var steps = new[]
+        {
+            Job("j1", "First"),
+            Decision("dec", Branch("b1", "amount"), Branch("b2", null)),
+        };
+
+        var edges = BuildFor(steps);
+
+        edges.Should().ContainSingle(e =>
+            e.FromStepId == "j1" && e.ToStepId == "dec" && e.Kind == "Sequential",
+            "the step before a decision connects to its diamond, not to a branch");
+
+        var fanOut = edges.Where(e => e.Kind == "Decision").ToList();
+        fanOut.Should().HaveCount(2, "the diamond fans out one edge per branch");
+        fanOut.Should().ContainSingle(e =>
+            e.FromStepId == "dec" && e.ToStepId == "b1" && e.Label == "amount > 1000" && e.BranchAccent == "1",
+            "a conditional branch's edge carries its condition text + the first palette slot");
+        fanOut.Should().ContainSingle(e =>
+            e.FromStepId == "dec" && e.ToStepId == "b2" && e.Label == "else" && e.BranchAccent == BranchAccents.Else,
+            "the else branch's edge is labelled else and takes the neutral accent, never a palette slot");
+    }
+
+    [Fact]
+    public void Build_Decision_NextStepReconvergesFromEveryBranch()
+    {
+        var steps = new[]
+        {
+            Decision("dec", Branch("b1", "amount"), Branch("b2", null)),
+            Job("j2", "After"),
+        };
+
+        var edges = BuildFor(steps).Select(Tuple).ToList();
+
+        edges.Should().Contain(("b1", "j2", "Sequential"));
+        edges.Should().Contain(("b2", "j2", "Sequential"),
+            "the next step re-converges from EVERY branch — whichever one wins must reach it");
+        edges.Should().NotContain(e => e.From == "dec" && e.To == "j2",
+            "routing goes THROUGH the branches — the diamond has no direct edge to the next step");
+    }
+
+    [Fact]
+    public void Build_TrailingDecision_OnFailureAnchorsOnBranches_NotTheDiamond()
+    {
+        var steps = new[]
+        {
+            Job("j1", "First"),
+            Decision("dec", Branch("b1", "amount"), Branch("b2", null)),
+        };
+        var onFailure = new[] { Job("F1", "Comp"), Job("F2", "Comp2") };
+
+        var edges = BuildFor(steps, onFailure).Select(Tuple).ToList();
+        var failure = edges.Where(e => e.Kind == "OnFailure").ToList();
+
+        failure.Should().Contain(("b1", "F1", "OnFailure"));
+        failure.Should().Contain(("b2", "F1", "OnFailure"),
+            "a trailing decision exits through its branch cards, so the failure chain fans in from all of them");
+        failure.Should().NotContain(e => e.From == "dec",
+            "the diamond is not the spine exit once it fans out — its branches are");
+        failure.Should().Contain(("F1", "F2", "OnFailure"),
+            "the chain still runs node→node after the anchor (only the anchor fans in)");
+    }
+
+    [Fact]
+    public void Build_ZeroBranchDecision_ThreadsAsSingleSpineNode()
+    {
+        // Reachable mid-edit: the decision dialog lets the operator remove the last branch (only save-time
+        // validation rejects it). An empty exit set would silently strand everything downstream.
+        var steps = new[]
+        {
+            Job("j1", "First"),
+            Decision("dec"),
+            Job("j2", "After"),
+        };
+        var onFailure = new[] { Job("F1", "Comp") };
+
+        var edges = BuildFor(steps, onFailure).Select(Tuple).ToList();
+
+        edges.Should().BeEquivalentTo(new[]
+        {
+            ("j1", "dec", "Sequential"),
+            ("dec", "j2", "Sequential"),
+            ("j2", "F1", "OnFailure"),
+        }, "a branch-less decision threads as ONE spine node — the chain and the onFailure anchor stay intact");
+        edges.Should().NotContain(e => e.Kind == "Decision", "there is no branch to fan out to");
+    }
+
+    [Fact]
+    public void Build_DecisionCompensator_HangsOffTheDiamond_NotTheBranches()
+    {
+        var decision = Decision("dec", Branch("b1", "amount"), Branch("b2", null));
+        decision.Compensation = new CompensationDraft { JobName = "Undo" };
+
+        var edges = BuildFor(new[] { decision }).Select(Tuple).ToList();
+
+        var compId = CompensationStepIds.For("dec");
+        edges.Should().Contain(("dec", compId, "OnFailure"),
+            "a decision compensates as ONE unit — its compensator hangs off the diamond");
+        edges.Should().ContainSingle(e => e.To == compId,
+            "exactly one compensator edge: fanning in from the branches (which sit a column RIGHT of the " +
+            "diamond) would sweep the edge back leftwards across the canvas");
+    }
+
+    [Fact]
+    public void Build_ConsecutiveDecisions_CrossProductBetweenBranchSets()
+    {
+        var steps = new[]
+        {
+            Decision("d1", Branch("a1", "x"), Branch("a2", null)),
+            Decision("d2", Branch("b1", "y"), Branch("b2", null)),
+        };
+
+        var edges = BuildFor(steps).Select(Tuple).ToList();
+
+        edges.Should().Contain(("a1", "d2", "Sequential"));
+        edges.Should().Contain(("a2", "d2", "Sequential"),
+            "the second diamond is entered from EVERY branch of the first — its entry is the diamond alone");
+        edges.Where(e => e.Kind == "Decision").Should().HaveCount(4, "each diamond fans out to its own 2 branches");
+    }
+
+    [Fact]
+    public void Build_NoDecision_OnlySequentialAndOnFailureKinds()
+    {
+        // Zero-regression pin: a batch with no decision must emit exactly the edge kinds it always did.
+        var withComp = Job("s1", "DoWork");
+        withComp.Compensation = new CompensationDraft { JobName = "UndoWork" };
+        var steps = new[] { withComp, Parallel("PG", Job("A"), Job("B")), Approval("ap") };
+        var onFailure = new[] { Job("F1", "Comp") };
+
+        var edges = BuildFor(steps, onFailure);
+
+        edges.Should().OnlyContain(e => e.Kind == "Sequential" || e.Kind == "OnFailure",
+            "no decision ⇒ no Decision-kind edge ever appears");
+        edges.Should().OnlyContain(e => e.BranchAccent == null && e.Label == null,
+            "accent + label are decision-only — a decision-free batch carries neither");
     }
 }

@@ -19,7 +19,10 @@
 #            -H 'content-type: application/json' -d '{"initialParameters":{"amount":500}}'
 #       -> ShipStandard runs, ShipExpress is Skipped.
 #   - Wizard preview (create/edit a batch): the same diamond + diverging arrows render live as you build.
-#   - Visual editor: a decision shows as a single node with its branches as chips (edit them in the modal).
+#   - Visual editor: a decision fans out as you build it — the diamond, one box per branch, and the
+#       re-converge onto the next step. Each branch has its own colour, shared by its chip on the diamond,
+#       its arrow, and its box, so a long condition stays readable in one place. Branch boxes are
+#       display-only: drag them to taste, but add/remove/edit branches in the decision dialog.
 #
 # Isolated compose project ('name:' below) — teardown (removes the container, keeps nothing) with:
 #   docker compose -f docker-compose.decision-demo.yml down

@@ -373,6 +373,46 @@ public sealed class DragEditorSourceInvariantTests
             "the failure-node modifier (dashed red-left-border card) MUST exist for compensation nodes");
     }
 
+    [Fact]
+    public void DagEditorJs_WrapsRemoveNodeId_SoProtectedCardsCannotBeDeleted()
+    {
+        // A decision's branch card projects an entry of its parent's branch list — it has no entry in the C#
+        // Steps list, so a canvas delete would leave the model and the canvas disagreeing. Drawflow routes
+        // EVERY delete surface (the Delete key, the right-click "x", our toolbar button) through
+        // removeNodeId, so wrapping that ONE method is what covers them all.
+        //
+        // This is a source grep because the alternative is invisible to bunit: it cannot run Drawflow, so a
+        // dropped wrapper would leave every test green while a branch card silently deletes in the browser.
+        var js = File.ReadAllText(ResolveRepoPath(DagEditorJsRelativePath));
+
+        js.Should().Contain("editor.removeNodeId =",
+            "the delete guard MUST wrap removeNodeId — a per-surface event guard cannot cover the right-click x, "
+            + "and a keydown guard cannot win against Drawflow's own listener on the same container");
+        js.Should().Contain("deleteProtected",
+            "the wrapper MUST consult the protected set (populated from the node spec's isDeleteProtected)");
+        js.Should().Contain("allowProtectedRemove",
+            "a C#-driven remove MUST be able to bypass the refusal — the guard exists to stop an OPERATOR delete");
+    }
+
+    [Fact]
+    public void DashboardCss_HasBranchPaletteAndProtectedDeleteRules()
+    {
+        // Colour is the ONLY thing pairing a decision's chip with its branch card and the edge between them
+        // (the editor prints no text on edges), so the palette is a presentation contract, not decoration.
+        var css = File.ReadAllText(ResolveRepoPath(DashboardCssRelativePath));
+
+        css.Should().Contain("--color-branch-1",
+            "the branch palette MUST exist — it is what pairs a chip with its card and edge");
+        css.Should().Contain("--color-branch-else",
+            "the else branch MUST have its own neutral key so the default branch reads as the fallback it is");
+        css.Should().NotContain("--color-branch-1: var(--color-status-",
+            "branch colours MUST NOT alias the status ramp — those mean how a RUN went, which authoring cannot show");
+        css.Should().Contain(@".dag-ed-canvas .connection[data-branch=""else""]",
+            "decision edges MUST resolve their colour from data-branch (stamped by applyEdgeKinds)");
+        css.Should().Contain(".dag-ed-nodelete .drawflow-delete",
+            "Drawflow's right-click x MUST be hidden on a protected card — the guard would otherwise refuse a visible button");
+    }
+
     // ── source-root resolution (mirrors SampleSourceGuardTests / DashboardPackageInvariants) ──
 
     private static string ResolveRepoPath(string relativePath)

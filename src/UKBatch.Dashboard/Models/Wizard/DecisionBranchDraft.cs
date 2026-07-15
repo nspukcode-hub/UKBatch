@@ -36,37 +36,12 @@ public sealed class DecisionBranchDraft
 
     /// <summary>
     /// A compact display of this branch's routing condition — the explicit <see cref="Label"/> when set,
-    /// otherwise <c>"else"</c> for the default branch or a <c>"key symbol value"</c> summary.
+    /// otherwise <c>"else"</c> for the default branch or a <c>"key symbol value"</c> summary. Delegates to
+    /// the shared formatter so this in-progress draft reads exactly as the branch will once saved (one
+    /// formatter, so the two cannot drift apart).
     /// </summary>
     public string SummaryLabel()
-    {
-        if (Label is { Length: > 0 } label)
-        {
-            return label;
-        }
-        if (When is not { } c || string.IsNullOrWhiteSpace(c.ParameterKey))
-        {
-            return "else";
-        }
-        return c.Operator switch
-        {
-            ConditionOperator.Exists => $"{c.ParameterKey} exists",
-            ConditionOperator.NotExists => $"{c.ParameterKey} not set",
-            ConditionOperator.IsTrue => $"{c.ParameterKey} is true",
-            ConditionOperator.IsFalse => $"{c.ParameterKey} is false",
-            _ => $"{c.ParameterKey} {Symbol(c.Operator)} {c.Value}",
-        };
-    }
-
-    private static string Symbol(ConditionOperator op) => op switch
-    {
-        ConditionOperator.Equals => "=",
-        ConditionOperator.NotEquals => "≠",
-        ConditionOperator.GreaterThan => ">",
-        ConditionOperator.GreaterThanOrEqual => "≥",
-        ConditionOperator.LessThan => "<",
-        ConditionOperator.LessThanOrEqual => "≤",
-        ConditionOperator.Contains => "contains",
-        _ => op.ToString(),
-    };
+        => string.IsNullOrWhiteSpace(Label)
+            ? (When is { } c ? DecisionNodes.Describe(c.ParameterKey, c.Operator, c.Value) : "else")
+            : Label.Trim();
 }

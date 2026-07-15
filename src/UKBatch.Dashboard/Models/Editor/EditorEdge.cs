@@ -22,5 +22,17 @@ public sealed record class EditorEdge
     /// Optional short label for a decision <c>diamond→branch</c> edge — the branch's condition text (e.g.
     /// <c>"amount &gt; 1000"</c> or <c>"else"</c>). <c>null</c> on every other edge.
     /// </summary>
+    /// <remarks>
+    /// Carried for parity with the read-only canvas, which DOES print it. The editor deliberately does not:
+    /// the diamond's own chips already show every condition in full, and a long condition is unreadable on
+    /// an edge. <see cref="BranchAccent"/> is what visually pairs an edge with its chip here.
+    /// </remarks>
     public string? Label { get; init; }
+
+    /// <summary>
+    /// Colour key pairing a decision <c>diamond→branch</c> edge with its chip and branch card — a palette
+    /// slot, or <see cref="BranchAccents.Else"/> for the default branch. <c>null</c> on every other edge.
+    /// Serialized to JS as <c>branchAccent</c> and emitted onto the connection as <c>data-branch</c>.
+    /// </summary>
+    public string? BranchAccent { get; init; }
 }

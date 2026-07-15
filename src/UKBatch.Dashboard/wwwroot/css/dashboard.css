@@ -13,6 +13,24 @@
     --color-status-approval: #A855F7;
     --color-status-decision: #EAB308;
 
+    /* Decision branch identity colors (editor canvas ONLY). A branch's slot colors three surfaces at once —
+       its chip inside the diamond, its edge, and the card it lands on — which is what pairs them, since the
+       editor prints no text on edges. Cycles after 6; `else` is neutral grey, never a slot, so the default
+       branch reads as the fallback it is.
+       Slot 1 is green because it paints the FIRST condition — the "if" arm most decisions are read as, so
+       the taken-condition arm reads as the affirmative one and its `else` as the grey fallback beside it.
+       These are their own hexes, never aliases of the status ramp: the two never meet (the editor canvas
+       has no run status to paint, and the run view has no branch identity), but keeping them independent
+       means restyling one can never silently restyle the other. Slot 3 stays clear of slot 1's hue — two
+       greens side by side would defeat the pairing these colors exist for. */
+    --color-branch-1: #4ADE80;
+    --color-branch-2: #F472B6;
+    --color-branch-3: #38BDF8;
+    --color-branch-4: #FB923C;
+    --color-branch-5: #C084FC;
+    --color-branch-6: #A78BFA;
+    --color-branch-else: #94A3B8;
+
     /* Service health colors */
     --color-health-connected: var(--color-status-completed);
     --color-health-reconnecting: var(--color-status-cancelled);
@@ -992,9 +1010,17 @@ code, .mono { font-family: var(--font-mono); }
 .dag-ed-node--job { border-left-color: var(--color-primary); }
 .dag-ed-node--parallelgroup { border-left-color: var(--color-tertiary); border-top-style: dashed; border-right-style: dashed; border-bottom-style: dashed; }
 .dag-ed-node--approvalgate { border-left-color: var(--color-status-approval); }
-/* decision node — amber accent + branch-condition chips inside (the editor collapses a decision to one
-   node, its branches edited in the modal — mirrors the ParallelGroup treatment). */
+/* decision node — amber accent + one chip per branch inside, each spelling its routing condition out in
+   full and tinted with that branch's colour. The branches ALSO render as their own cards a column to the
+   right (see --branch-color); the chips stay because a condition is only readable here, not on an edge. */
 .dag-ed-node--decision { border-left-color: var(--color-status-decision); border-top-style: dashed; border-right-style: dashed; border-bottom-style: dashed; }
+/* A decision BRANCH card takes its branch's colour on the left accent, matching its chip and its edge. The
+   card is display-only (it projects one entry of the parent's branch list), hence the dashed outline —
+   the same "not a plain step" cue the group/decision cards use. */
+.dag-ed-node[data-branch] { border-left-color: var(--branch-color); border-top-style: dashed; border-right-style: dashed; border-bottom-style: dashed; }
+/* Delete-protected cards have no Delete button (dag-editor.js omits it); also hide Drawflow's own
+   right-click "x", which it appends to the WRAPPER — otherwise the guard silently refuses a visible button. */
+.dag-ed-canvas .drawflow-node.dag-ed-nodelete .drawflow-delete { display: none; }
 /* compensation (onFailure) node — outer Drawflow class stays dag-ed-job (Job-only modal); this inner
    modifier paints the red/dashed accent so the lower lane reads as the compensation branch. */
 .dag-ed-node--failure { border-left-color: var(--color-status-failed); border-style: dashed; }
@@ -1019,6 +1045,10 @@ code, .mono { font-family: var(--font-mono); }
 .dag-ed-node__branches { display: flex; flex-direction: column; gap: var(--space-xxs); margin-top: var(--space-xs); padding-top: var(--space-xs); padding-left: var(--space-xs); border-top: 1px dashed var(--color-border-subtle); border-left: 2px solid var(--color-tertiary); }
 .dag-ed-node__branch { display: flex; align-items: center; gap: var(--space-xxs); min-width: 0; font-size: var(--font-body-sm-size); color: var(--color-text-secondary); }
 .dag-ed-node__branch-ico { font-size: 14px; color: var(--color-tertiary); flex: 0 0 auto; }
+/* A decision's chip block: the left rule + each chip's icon take the branch's colour, which is the only
+   thing tying a chip to its card and its edge (the edges carry no text). */
+.dag-ed-node__branches--decision { border-left-color: var(--color-status-decision); }
+.dag-ed-node__branch[data-branch] .dag-ed-node__branch-ico { color: var(--branch-color); }
 .dag-ed-node__branch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* step-edit modal (Round-2: replaces the always-on inspector). Reuses .modal-overlay/.modal-card; bounded
@@ -1070,9 +1100,23 @@ code, .mono { font-family: var(--font-mono); }
    rule, L1118). SCOPED to .dag-ed-canvas so it can't bleed onto other Drawflow canvases. dag-editor.js
    tags each .connection with data-kind via the authoritative node_out_node-/node_in_node- class decode. */
 .dag-ed-canvas .connection[data-kind="OnFailure"] .main-path { stroke: var(--color-status-failed); stroke-dasharray: 6 4; }
-/* editor decision branch edge — solid amber (only drawn if the editor ever fans branches on-canvas;
-   the current editor collapses a decision to one node, so this is inert but kept for parity). */
-.dag-ed-canvas .connection[data-kind="Decision"] .main-path { stroke: var(--color-status-decision); }
+/* editor decision branch edge — solid, in the branch's own colour. --branch-color is set per-connection by
+   the data-branch rules below (dag-editor.js stamps data-branch from the edge's accent); the amber fallback
+   applies to a decision edge that somehow carries no accent. */
+.dag-ed-canvas .connection[data-kind="Decision"] .main-path { stroke: var(--branch-color, var(--color-status-decision)); }
+
+/* Branch identity: ONE colour per branch, resolved on three surfaces — the connection, the chip inside the
+   diamond, and the branch card — so a chip and its card can be paired at a glance. The editor prints no
+   condition text on edges (a long condition is unreadable there), so this colour carries the whole pairing;
+   the condition itself is spelled out in full on the chip. Setting --branch-color (rather than stroke) lets
+   the [data-kind] rules above own the line style and these own only the hue. */
+.dag-ed-canvas .connection[data-branch="1"], .dag-ed-canvas .dag-ed-node__branch[data-branch="1"], .dag-ed-canvas .dag-ed-node[data-branch="1"] { --branch-color: var(--color-branch-1); }
+.dag-ed-canvas .connection[data-branch="2"], .dag-ed-canvas .dag-ed-node__branch[data-branch="2"], .dag-ed-canvas .dag-ed-node[data-branch="2"] { --branch-color: var(--color-branch-2); }
+.dag-ed-canvas .connection[data-branch="3"], .dag-ed-canvas .dag-ed-node__branch[data-branch="3"], .dag-ed-canvas .dag-ed-node[data-branch="3"] { --branch-color: var(--color-branch-3); }
+.dag-ed-canvas .connection[data-branch="4"], .dag-ed-canvas .dag-ed-node__branch[data-branch="4"], .dag-ed-canvas .dag-ed-node[data-branch="4"] { --branch-color: var(--color-branch-4); }
+.dag-ed-canvas .connection[data-branch="5"], .dag-ed-canvas .dag-ed-node__branch[data-branch="5"], .dag-ed-canvas .dag-ed-node[data-branch="5"] { --branch-color: var(--color-branch-5); }
+.dag-ed-canvas .connection[data-branch="6"], .dag-ed-canvas .dag-ed-node__branch[data-branch="6"], .dag-ed-canvas .dag-ed-node[data-branch="6"] { --branch-color: var(--color-branch-6); }
+.dag-ed-canvas .connection[data-branch="else"], .dag-ed-canvas .dag-ed-node__branch[data-branch="else"], .dag-ed-canvas .dag-ed-node[data-branch="else"] { --branch-color: var(--color-branch-else); }
 /* arrowhead fill via CSS var (NOT the SVG `context-stroke` attr — renders BLACK on older Safari/WebKit). */
 #ukbatch-arrow path { fill: var(--color-border-strong); }
 

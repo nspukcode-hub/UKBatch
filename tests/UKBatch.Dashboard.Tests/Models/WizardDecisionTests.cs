@@ -36,6 +36,42 @@ public sealed class WizardDecisionTests
         Value = value,
     };
 
+    // ── label parity: the authoring chip reads exactly as the saved branch ────────
+
+    [Theory]
+    // Plain condition / explicit label / else — the everyday cases.
+    [InlineData("amount", ConditionOperator.GreaterThan, "1000", null, "amount > 1000")]
+    [InlineData("amount", ConditionOperator.GreaterThan, "1000", "big order", "big order")]
+    [InlineData("", ConditionOperator.Equals, "", null, "else")]
+    // The cases that used to diverge: the draft→branch projection drops a blank label and a blank
+    // condition key and trims both, so a summary that skipped those rules described one thing while the
+    // saved branch described another.
+    [InlineData("amount", ConditionOperator.GreaterThan, "1000", "   ", "amount > 1000")]
+    [InlineData("  amount  ", ConditionOperator.GreaterThan, "1000", null, "amount > 1000")]
+    [InlineData("amount", ConditionOperator.GreaterThan, "1000", "  big  ", "big")]
+    [InlineData("   ", ConditionOperator.Equals, "x", null, "else")]
+    public void BranchSummaryLabel_MatchesSavedBranchLabel(
+        string key, ConditionOperator op, string value, string? label, string expected)
+    {
+        var branchDraft = new DecisionBranchDraft
+        {
+            StepId = "b1",
+            Label = label,
+            When = new ConditionDraft { ParameterKey = key, Operator = op, Value = value },
+            JobName = "JobX",
+        };
+        var draft = new WizardStepDraft { StepType = BatchStepType.Decision };
+        draft.DecisionBranches.Add(branchDraft);
+
+        var saved = draft.ToBatchStep(0).Decision!.Branches[0];
+
+        branchDraft.SummaryLabel().Should().Be(expected);
+        UKBatch.Dashboard.Models.DecisionNodes.BranchLabel(saved).Should().Be(
+            branchDraft.SummaryLabel(),
+            "the editor chip and the saved branch's label share ONE formatter — an authoring label that " +
+            "reads differently once saved is a drift bug, not a display detail");
+    }
+
     [Fact]
     public void FromBatchStep_Decision_RehydratesBranches()
     {

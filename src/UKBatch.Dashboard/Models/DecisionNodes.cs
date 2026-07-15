@@ -17,26 +17,46 @@ public static class DecisionNodes
     public static string BranchLabel(DecisionBranch branch)
     {
         ArgumentNullException.ThrowIfNull(branch);
-        return branch.Label is { Length: > 0 } label ? label : Describe(branch.When);
+        return BranchLabel(branch.Label, branch.When);
     }
+
+    /// <summary>
+    /// The label for a branch from its raw parts — the shared rule behind both the saved-branch label and
+    /// the in-progress draft's summary, so an authoring chip and the label the branch renders with once
+    /// saved cannot drift. A blank/whitespace label counts as "no label" and a blank condition key as "no
+    /// condition", matching the draft→branch projection (which drops both) — otherwise a whitespace-only
+    /// label would read as an empty chip in one view and as the condition text in the other.
+    /// </summary>
+    public static string BranchLabel(string? label, StepCondition? when)
+        => string.IsNullOrWhiteSpace(label) ? Describe(when) : label.Trim();
 
     /// <summary>
     /// Human-readable form of a branch condition: <c>"else"</c> when there is no condition (the default
     /// branch), the presence/boolean phrasing for those operators, or <c>"key symbol value"</c> otherwise.
     /// </summary>
     public static string Describe(StepCondition? when)
+        => when is null ? "else" : Describe(when.ParameterKey, when.Operator, when.Value);
+
+    /// <summary>
+    /// Human-readable form of a condition from its raw parts, for callers holding a mutable draft rather
+    /// than a projected <see cref="StepCondition"/>. A blank/whitespace <paramref name="parameterKey"/>
+    /// yields <c>"else"</c> — the projection treats it as "no condition", so describing it any other way
+    /// would show the operator a condition that will not be saved.
+    /// </summary>
+    public static string Describe(string? parameterKey, ConditionOperator op, string? value)
     {
-        if (when is null)
+        if (string.IsNullOrWhiteSpace(parameterKey))
         {
             return "else";
         }
-        return when.Operator switch
+        var key = parameterKey.Trim();
+        return op switch
         {
-            ConditionOperator.Exists => $"{when.ParameterKey} exists",
-            ConditionOperator.NotExists => $"{when.ParameterKey} not set",
-            ConditionOperator.IsTrue => $"{when.ParameterKey} is true",
-            ConditionOperator.IsFalse => $"{when.ParameterKey} is false",
-            _ => $"{when.ParameterKey} {Symbol(when.Operator)} {when.Value}",
+            ConditionOperator.Exists => $"{key} exists",
+            ConditionOperator.NotExists => $"{key} not set",
+            ConditionOperator.IsTrue => $"{key} is true",
+            ConditionOperator.IsFalse => $"{key} is false",
+            _ => $"{key} {Symbol(op)} {value}",
         };
     }
 
