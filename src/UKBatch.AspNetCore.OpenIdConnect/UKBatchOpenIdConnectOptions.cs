@@ -60,7 +60,11 @@ public sealed class UKBatchOpenIdConnectOptions
 
     /// <summary>
     /// Whether HTTPS metadata is required. Defaults to <c>true</c>. Set to <c>false</c> only for a
-    /// local development provider served over plain HTTP.
+    /// local development provider served over plain HTTP: besides allowing HTTP discovery, it switches
+    /// the login callback to a browser-compatible plain-HTTP mode — query response mode with
+    /// SameSite=Lax correlation/nonce cookies whose <c>Secure</c> flag follows the request scheme
+    /// (an HTTPS request still gets a Secure cookie). The flow stays authorization code + PKCE. Leave
+    /// this <c>true</c> in production, where the framework's stricter form_post + Secure defaults apply.
     /// </summary>
     public bool RequireHttpsMetadata { get; set; } = true;
 

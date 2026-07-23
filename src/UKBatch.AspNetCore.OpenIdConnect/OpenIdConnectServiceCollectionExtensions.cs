@@ -121,21 +121,24 @@ public static class OpenIdConnectServiceCollectionExtensions
         oidc.SignedOutCallbackPath = options.SignedOutCallbackPath;
         oidc.SignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;
 
-        // Over plain HTTP — a local development provider (RequireHttpsMetadata=false) — the default
-        // form_post callback is a cross-site POST whose correlation/nonce cookies a browser will not send.
-        // Switch to a top-level GET callback (query response mode) with Lax cookies, and clear the Secure
-        // flag: the handler marks these cookies Secure, which a browser accepts over HTTP only for
-        // localhost — a real hostname (or a reverse-proxy alias) drops a Secure cookie sent over HTTP, so
-        // the callback would fail correlation. Behind HTTPS the stricter form_post + Secure + SameSite=None
-        // defaults are kept. The flow is still authorization code + PKCE, so the query redirect does not
-        // expose a usable code.
+        // Over plain HTTP — a local development provider (RequireHttpsMetadata=false, a conscious
+        // opt-out whose default is true) — the default form_post callback is a cross-site POST whose
+        // correlation/nonce cookies a browser will not send. Switch to a top-level GET callback (query
+        // response mode) with Lax cookies: Lax is the STRICTER SameSite for a GET callback (None would
+        // also flow on cross-site POSTs), and the flow stays authorization code + PKCE, so the query
+        // redirect does not expose a usable code. SecurePolicy is SameAsRequest rather than None: the
+        // handler's default Always-Secure cookie is dropped by a browser on a plain-HTTP non-localhost
+        // hostname (which is what breaks correlation), but any HTTPS request still gets a Secure cookie
+        // even in this branch — the relaxation never strips Secure from an HTTPS deployment that merely
+        // left the flag false. Behind the production default (RequireHttpsMetadata=true) none of this
+        // applies: form_post + SameSite=None + Secure stay as shipped by the framework.
         if (!options.RequireHttpsMetadata)
         {
             oidc.ResponseMode = OpenIdConnectResponseMode.Query;
             oidc.CorrelationCookie.SameSite = SameSiteMode.Lax;
-            oidc.CorrelationCookie.SecurePolicy = CookieSecurePolicy.None;
+            oidc.CorrelationCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
             oidc.NonceCookie.SameSite = SameSiteMode.Lax;
-            oidc.NonceCookie.SecurePolicy = CookieSecurePolicy.None;
+            oidc.NonceCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
         }
 
         // Scopes come from configuration (default: openid, profile). offline_access is not forced: many
@@ -232,25 +235,65 @@ public static class OpenIdConnectServiceCollectionExtensions
     private static Task OnHubMessageReceived(JwtBearerMessageReceivedContext context)
     {
         // Browsers and the SignalR JS/.NET clients send the token as an access_token query parameter on
-        // the WebSocket handshake (headers cannot be set there). Accept it only for the hub path. The hub
+        // the WebSocket handshake (headers cannot be set there). Accept it ONLY for the hub path. The hub
         // is often mounted under a prefix (for example the API group at /api makes the hub /api/hubs/jobs),
-        // so match the configured hub path anywhere in the request path, not only at its start — otherwise
-        // the WebSocket handshake is rejected (401) and live updates never connect even though the header-
-        // authenticated negotiate call succeeds.
+        // so the configured hub path may appear at any mount depth — but it must match on whole path
+        // segments, otherwise the WebSocket handshake is rejected (401) and live updates never connect,
+        // or worse, a lookalike route ("/api/hubs/jobs-exfil") would start accepting query-string tokens,
+        // widening where a bearer can ride in a loggable URL.
         string? accessToken = context.Request.Query["access_token"];
         if (!string.IsNullOrEmpty(accessToken))
         {
             var hubPath = context.HttpContext.RequestServices
                 .GetService<IOptions<UKBatchOptions>>()?.Value.HubPath ?? DefaultHubPath;
-            var requestPath = context.HttpContext.Request.Path.Value;
-            if (requestPath is not null &&
-                requestPath.Contains(hubPath, StringComparison.OrdinalIgnoreCase))
+            if (IsHubTokenRequest(context.HttpContext.Request.Path.Value, hubPath))
             {
                 context.Token = accessToken;
             }
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// True when <paramref name="requestPath"/> targets the SignalR hub at <paramref name="hubPath"/> —
+    /// the hub path must appear as whole path segments (at any mount depth, e.g. <c>/api/hubs/jobs</c>
+    /// or its <c>/negotiate</c> sub-path), never as a mere substring of another segment
+    /// (<c>/api/hubs/jobs-exfil</c> does not match). Query-string bearer tokens are accepted only on
+    /// these requests.
+    /// </summary>
+    internal static bool IsHubTokenRequest(string? requestPath, string hubPath)
+    {
+        if (string.IsNullOrEmpty(requestPath) || string.IsNullOrEmpty(hubPath))
+        {
+            return false;
+        }
+
+        // A leading slash anchors the match at a segment start ("/apihubs/jobs" cannot match "/hubs/jobs").
+        if (hubPath[0] != '/')
+        {
+            hubPath = "/" + hubPath;
+        }
+
+        var searchFrom = 0;
+        while (true)
+        {
+            var idx = requestPath.IndexOf(hubPath, searchFrom, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0)
+            {
+                return false;
+            }
+
+            // Require a segment boundary AFTER the match too: end of path, or a '/' (the negotiate and
+            // transport sub-paths). "-exfil" style suffixes fail this check.
+            var end = idx + hubPath.Length;
+            if (end == requestPath.Length || requestPath[end] == '/')
+            {
+                return true;
+            }
+
+            searchFrom = idx + 1;
+        }
     }
 
     private static void ConfigureAuthorizationPolicies(

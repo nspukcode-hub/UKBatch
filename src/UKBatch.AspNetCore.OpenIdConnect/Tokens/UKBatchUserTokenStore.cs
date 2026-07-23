@@ -125,6 +125,28 @@ internal sealed class UKBatchUserTokenStore : IDisposable
     }
 
     /// <summary>
+    /// Removes a user's tokens, called at sign-out. Without eviction the signed-out session's
+    /// access/refresh tokens would sit in process memory for the process lifetime, and an already-open
+    /// circuit — which resolves its token from this store on every call — would keep calling the API
+    /// with the cached token after the user signed out.
+    /// </summary>
+    public void Remove(string key)
+    {
+        if (string.IsNullOrEmpty(key))
+        {
+            return;
+        }
+
+        _tokens.TryRemove(key, out _);
+        if (_refreshGates.TryRemove(key, out var gate))
+        {
+            // An in-flight refresh racing this dispose lands in the ObjectDisposedException arms below,
+            // which fall back to the last known token — no unhandled throw.
+            gate.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Returns the current access token for <paramref name="key"/>, refreshing it first when it is near
     /// expiry and a refresh token is available. Returns <c>null</c> when the key is unknown.
     /// </summary>

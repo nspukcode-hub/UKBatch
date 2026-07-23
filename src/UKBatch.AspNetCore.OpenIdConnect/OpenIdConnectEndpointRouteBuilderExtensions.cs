@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using UKBatch.AspNetCore.OpenIdConnect.Tokens;
 
 namespace UKBatch.AspNetCore.OpenIdConnect;
 
@@ -33,9 +35,21 @@ public static class OpenIdConnectEndpointRouteBuilderExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
         ArgumentException.ThrowIfNullOrWhiteSpace(redirectUri);
 
-        endpoints.MapPost(pattern, () => Results.SignOut(
-            new AuthenticationProperties { RedirectUri = redirectUri },
-            [CookieAuthenticationDefaults.AuthenticationScheme, OpenIdConnectDefaults.AuthenticationScheme]));
+        endpoints.MapPost(pattern, (HttpContext httpContext) =>
+        {
+            // Evict the user's server-side tokens FIRST: a still-open circuit resolves its token from
+            // the store on every call, so without eviction a signed-out session's dashboard would keep
+            // calling the API with the cached token until it expired.
+            var key = UKBatchUserTokenStore.BuildKey(httpContext.User);
+            if (key is not null)
+            {
+                httpContext.RequestServices.GetService<UKBatchUserTokenStore>()?.Remove(key);
+            }
+
+            return Results.SignOut(
+                new AuthenticationProperties { RedirectUri = redirectUri },
+                [CookieAuthenticationDefaults.AuthenticationScheme, OpenIdConnectDefaults.AuthenticationScheme]);
+        });
 
         return endpoints;
     }
