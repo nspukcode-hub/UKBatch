@@ -24,6 +24,13 @@
     <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.27" Condition="'$(TargetFramework)' == 'net8.0'" />
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" Condition="'$(TargetFramework)' != 'net8.0'" />
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.27" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <!-- OpenID Connect + JWT bearer handlers are NOT in the shared framework (unlike Cookies), so they
+         are real package references in UKBatch.AspNetCore.OpenIdConnect. Versions track the runtime
+         major per TFM: the 10.0.x line ships no net8.0 assets, so net8.0 resolves the 8.0.x (LTS) line. -->
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="10.0.0" Condition="'$(TargetFramework)' != 'net8.0'" />
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="8.0.27" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" Condition="'$(TargetFramework)' != 'net8.0'" />
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.27" Condition="'$(TargetFramework)' == 'net8.0'" />
     <!-- Built-in OpenAPI document generation requires net9+. The net8.0 build omits the package
          reference entirely (see UKBatch.Api.csproj), so a single version suffices here. -->
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.0" />

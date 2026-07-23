@@ -58,6 +58,7 @@ internal static class JobsEndpoints
                 });
             })
             .WithUKBatchName(operationIdPrefix, "ListJobs")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Lists registered job definitions in registration order. Use `partitioned=true` to filter to IPartitionedJob<T> types.");
 
         jobs.MapGet("/{name}", (string name, IJobDefinitionLookup lookup) =>
@@ -75,6 +76,7 @@ internal static class JobsEndpoints
                 return Results.Ok(JobDefinitionDto.FromModel(def));
             })
             .WithUKBatchName(operationIdPrefix, "GetJob")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Returns the definition by name. 404 if not registered.");
 
         jobs.MapPost("/{name}/trigger", async (
@@ -157,6 +159,7 @@ internal static class JobsEndpoints
                 }
             })
             .WithUKBatchName(operationIdPrefix, "TriggerJob")
+            .WithUKBatchAccess(UKBatchAccessKind.Write)
             .WithSummary("Triggers a single job. Returns 202 with the execution id; track via GET /executions/{id} or subscribe to the SignalR hub. Trigger is decoupled from caller CT to avoid orphaning Pending rows under dispatcher backpressure + client disconnect race.");
     }
 }

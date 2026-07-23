@@ -13,14 +13,16 @@
 <div class="page-title-row">
     <h1 class="page-title">Batches</h1>
     <div class="page-title-row__actions">
-        <a class="btn btn--primary" href="/dashboard/@ServiceName/batches/new">
-            <span class="material-symbols-outlined">add</span> Create batch
-        </a>
-        @* Visual drag-drop editor — the alternative to the guided form wizard. Both create the same
-           BatchDefinition; the editor offers an "Open in form wizard" switch and Detail's Edit opens it too. *@
-        <a class="btn btn--secondary" href="/dashboard/@ServiceName/batches/editor">
-            <span class="material-symbols-outlined">account_tree</span> Visual editor
-        </a>
+        <AuthorizeView Policy="UKBatch:Operator">
+            <a class="btn btn--primary" href="/dashboard/@ServiceName/batches/new">
+                <span class="material-symbols-outlined">add</span> Create batch
+            </a>
+            @* Visual drag-drop editor — the alternative to the guided form wizard. Both create the same
+               BatchDefinition; the editor offers an "Open in form wizard" switch and Detail's Edit opens it too. *@
+            <a class="btn btn--secondary" href="/dashboard/@ServiceName/batches/editor">
+                <span class="material-symbols-outlined">account_tree</span> Visual editor
+            </a>
+        </AuthorizeView>
     </div>
 </div>
 
@@ -60,12 +62,14 @@ else if (_envelope.Items.Count == 0)
                 Detail=@($"No batches match the filters on '{ServiceName}'.")
                 IconName="layers">
         <ActionContent>
-            <a class="btn btn--primary" href="/dashboard/@ServiceName/batches/new">
-                <span class="material-symbols-outlined">add</span> Create batch
-            </a>
-            <a class="btn btn--secondary" href="/dashboard/@ServiceName/batches/editor">
-                <span class="material-symbols-outlined">account_tree</span> Visual editor
-            </a>
+            <AuthorizeView Policy="UKBatch:Operator">
+                <a class="btn btn--primary" href="/dashboard/@ServiceName/batches/new">
+                    <span class="material-symbols-outlined">add</span> Create batch
+                </a>
+                <a class="btn btn--secondary" href="/dashboard/@ServiceName/batches/editor">
+                    <span class="material-symbols-outlined">account_tree</span> Visual editor
+                </a>
+            </AuthorizeView>
         </ActionContent>
     </EmptyState>
 }
@@ -96,11 +100,13 @@ else
                     <td class="data-table__cell">@batch.FailurePolicy</td>
                     <td class="data-table__cell data-table__cell--id">@batch.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm")</td>
                     <td class="data-table__cell">
-                        <button class="btn btn--secondary btn--inline" @onclick="() => RunAsync(batch)"
-                                disabled="@_runInFlight.Contains(batch.Id)">
-                            <span class="material-symbols-outlined">play_arrow</span>
-                            @(_runInFlight.Contains(batch.Id) ? "…" : "Run")
-                        </button>
+                        <AuthorizeView Policy="UKBatch:Operator">
+                            <button class="btn btn--secondary btn--inline" @onclick="() => RunAsync(batch)"
+                                    disabled="@_runInFlight.Contains(batch.Id)">
+                                <span class="material-symbols-outlined">play_arrow</span>
+                                @(_runInFlight.Contains(batch.Id) ? "…" : "Run")
+                            </button>
+                        </AuthorizeView>
                     </td>
                 </tr>
             }

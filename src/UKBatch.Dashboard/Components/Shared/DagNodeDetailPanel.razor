@@ -192,6 +192,9 @@
            not currently awaiting) keep exactly today's read-only layout. *@
         @if (Status == JobStatus.AwaitingApproval && PendingApprovalId is not null)
         {
+            @* Any authenticated user may attempt a decision; the gate's allowed-roles is the real
+               authority, so this is gated on being signed in, not on the operator policy. *@
+            <AuthorizeView>
             <section class="dag-node-detail__section">
                 <h3>Decision</h3>
                 <div class="dag-node-detail__decision">
@@ -227,6 +230,7 @@
                     }
                 </div>
             </section>
+            </AuthorizeView>
         }
         <section class="dag-node-detail__section">
             <h3>Approval gate</h3>

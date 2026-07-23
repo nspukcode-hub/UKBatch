@@ -25,6 +25,7 @@ public sealed class MainLayoutTests : TestContext
 
     public MainLayoutTests()
     {
+        this.AddPermitAllAuth();
         // The toast container + sidebar are purely presentational here; loose JS keeps any incidental
         // interop a no-op rather than a STRICT-mode failure.
         JSInterop.Mode = JSRuntimeMode.Loose;

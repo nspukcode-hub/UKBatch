@@ -23,10 +23,12 @@
        parked on an approval gate nobody can decide; the live feed flips the page to Cancelled. *@
     @if (_completion is null && !_isLoading)
     {
-        <button class="btn btn--danger btn--sm" @onclick="@(() => _confirmCancelOpen = true)" disabled="@_cancelInFlight">
-            <span class="material-symbols-outlined">cancel</span>
-            @(_cancelInFlight ? "Cancelling…" : "Cancel run")
-        </button>
+        <AuthorizeView Policy="UKBatch:Operator">
+            <button class="btn btn--danger btn--sm" @onclick="@(() => _confirmCancelOpen = true)" disabled="@_cancelInFlight">
+                <span class="material-symbols-outlined">cancel</span>
+                @(_cancelInFlight ? "Cancelling…" : "Cancel run")
+            </button>
+        </AuthorizeView>
     }
     @* Retry-from-failed-step — ONLY for a Failed run that was NOT compensated (an unwind already undid
        its completed steps, so continuing forward would replay work on a rolled-back state). The server
@@ -34,10 +36,12 @@
        not the live summary, because the compensation cursor lives on the row. *@
     @if (_loadedRun is { Status: JobStatus.Failed, CompensationStepIndex: null })
     {
-        <button class="btn btn--secondary btn--sm" @onclick="@(() => _confirmRetryOpen = true)" disabled="@_retryInFlight">
-            <span class="material-symbols-outlined">replay</span>
-            @(_retryInFlight ? "Retrying…" : "Retry from failed step")
-        </button>
+        <AuthorizeView Policy="UKBatch:Operator">
+            <button class="btn btn--secondary btn--sm" @onclick="@(() => _confirmRetryOpen = true)" disabled="@_retryInFlight">
+                <span class="material-symbols-outlined">replay</span>
+                @(_retryInFlight ? "Retrying…" : "Retry from failed step")
+            </button>
+        </AuthorizeView>
     }
 </div>
 

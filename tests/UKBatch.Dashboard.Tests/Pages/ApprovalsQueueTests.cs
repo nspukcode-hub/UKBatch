@@ -12,6 +12,8 @@ namespace UKBatch.Dashboard.Tests.Pages;
 
 public sealed class ApprovalsQueueTests : TestContext
 {
+    public ApprovalsQueueTests() => this.AddPermitAllAuth();
+
     private static readonly string[] OpsRole = ["ops"];
 
     private static PendingApprovalDto Approval(string id, string batchId, string title) => new()

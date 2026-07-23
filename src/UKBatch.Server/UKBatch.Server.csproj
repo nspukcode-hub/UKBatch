@@ -23,6 +23,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\UKBatch.AspNetCore\UKBatch.AspNetCore.csproj" />
+    <ProjectReference Include="..\UKBatch.AspNetCore.OpenIdConnect\UKBatch.AspNetCore.OpenIdConnect.csproj" />
     <ProjectReference Include="..\UKBatch.Api\UKBatch.Api.csproj" />
     <ProjectReference Include="..\UKBatch.Dashboard\UKBatch.Dashboard.csproj" />
     <ProjectReference Include="..\UKBatch.Storage.EntityFrameworkCore\UKBatch.Storage.EntityFrameworkCore.csproj" />

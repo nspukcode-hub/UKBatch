@@ -1,3 +1,5 @@
+using Bunit;
+using Bunit.TestDoubles;
 using NSubstitute;
 using UKBatch.Dashboard;
 using UKBatch.Dashboard.Clients;
@@ -11,6 +13,32 @@ namespace UKBatch.Dashboard.Tests.Pages.Common;
 /// <summary>Shared bunit fixture helpers — mock IUKBatchClient + factory + registry + state.</summary>
 internal static class PageTestHelpers
 {
+    /// <summary>
+    /// Registers a signed-in principal that satisfies both the viewer and operator policies, mirroring
+    /// the dashboard's open-default (auth-off) UI where every control is visible. Call it on any test
+    /// that renders a component containing an <c>AuthorizeView</c> / <c>AuthorizeRouteView</c> so the
+    /// cascading authentication state is present.
+    /// </summary>
+    public static void AddPermitAllAuth(this TestContext ctx)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+        var auth = ctx.AddTestAuthorization();
+        auth.SetAuthorized("dashboard");
+        auth.SetPolicies("UKBatch:Viewer", "UKBatch:Operator");
+    }
+
+    /// <summary>
+    /// Registers a signed-in principal that satisfies the viewer policy but NOT the operator policy, so
+    /// a test can assert that operator-gated write controls are hidden from a read-only user.
+    /// </summary>
+    public static void AddViewerOnlyAuth(this TestContext ctx)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+        var auth = ctx.AddTestAuthorization();
+        auth.SetAuthorized("viewer");
+        auth.SetPolicies("UKBatch:Viewer");
+    }
+
     public static UKBatchServiceDescriptor Descriptor(string name) => new()
     {
         Name = name,

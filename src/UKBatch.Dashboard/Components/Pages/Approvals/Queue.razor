@@ -62,14 +62,19 @@ else
                     <td class="data-table__cell data-table__cell--id">@a.PendingSinceUtc.ToString("HH:mm:ss")</td>
                     <td class="data-table__cell data-table__cell--id">@DeadlineDisplay(a)</td>
                     <td class="data-table__cell data-table__cell--actions">
-                        <button class="btn btn--primary btn--sm" @onclick="() => OpenApproveAsync(a)" disabled="@(_inFlight == a.ApprovalId)">
-                            <span class="material-symbols-outlined">check</span>
-                            Approve
-                        </button>
-                        <button class="btn btn--danger btn--sm" @onclick="() => OpenRejectAsync(a)" disabled="@(_inFlight == a.ApprovalId)">
-                            <span class="material-symbols-outlined">close</span>
-                            Reject
-                        </button>
+                        @* Any authenticated user may attempt a decision — the gate's own allowed-roles is
+                           the real authority (a finance approver need not be a dashboard operator). A caller
+                           without the role gets a 403 mapped to a clear message. *@
+                        <AuthorizeView>
+                            <button class="btn btn--primary btn--sm" @onclick="() => OpenApproveAsync(a)" disabled="@(_inFlight == a.ApprovalId)">
+                                <span class="material-symbols-outlined">check</span>
+                                Approve
+                            </button>
+                            <button class="btn btn--danger btn--sm" @onclick="() => OpenRejectAsync(a)" disabled="@(_inFlight == a.ApprovalId)">
+                                <span class="material-symbols-outlined">close</span>
+                                Reject
+                            </button>
+                        </AuthorizeView>
                     </td>
                 </tr>
             }
@@ -218,7 +223,7 @@ else
         }
         catch (UKBatchClientException ex)
         {
-            await Notifications.ErrorAsync("Approve failed", ex.Message);
+            await Notifications.ErrorAsync("Approve failed", DecisionErrorMessage(ex));
         }
         finally
         {
@@ -246,7 +251,7 @@ else
         }
         catch (UKBatchClientException ex)
         {
-            await Notifications.ErrorAsync("Reject failed", ex.Message);
+            await Notifications.ErrorAsync("Reject failed", DecisionErrorMessage(ex));
         }
         finally
         {
@@ -254,6 +259,13 @@ else
             _pendingAction = null;
         }
     }
+
+    // A caller lacking the gate's role gets a 403; surface the same clear message the run detail uses
+    // rather than the raw problem text.
+    private static string DecisionErrorMessage(UKBatchClientException ex)
+        => ex.StatusCode == System.Net.HttpStatusCode.Forbidden
+            ? "Not authorized to decide this gate (role mismatch)."
+            : ex.Message;
 
     private static string DeadlineDisplay(ApprovalRowViewModel a)
     {

@@ -17,6 +17,8 @@ namespace UKBatch.Dashboard.Tests.Pages;
 
 public sealed class JobsDetailTests : TestContext
 {
+    public JobsDetailTests() => this.AddPermitAllAuth();
+
     private const string JobName = "ProcessOrdersJob";
     private const int MaxRecent = 50;   // mirrors Jobs/Detail.MaxRecentRows
 

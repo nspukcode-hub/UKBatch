@@ -15,6 +15,7 @@ using UKBatch.Api.Common;
 using UKBatch.Api.Executions;
 using UKBatch.Api.Hub;
 using UKBatch.Api.Jobs;
+using UKBatch.AspNetCore;
 using UKBatch.Dashboard.Configuration;
 using UKBatch.Runtime;
 
@@ -51,6 +52,8 @@ internal sealed class RestUKBatchClient : IUKBatchClient
     private readonly HubConnection _hub;
     private readonly ILogger<RestUKBatchClient> _logger;
     private readonly DashboardOptions _options;
+    private readonly IUKBatchUserTokenAccessor? _tokenAccessor;
+    private readonly bool _lazyConnect;
     private readonly LruDedupeCache<string> _executionDedupe;
     private readonly LruDedupeCache<string> _progressDedupe;
     private readonly LruDedupeCache<string> _batchCompleteDedupe;
@@ -66,7 +69,22 @@ internal sealed class RestUKBatchClient : IUKBatchClient
         HttpClient http,
         ILogger<RestUKBatchClient> logger,
         IOptions<DashboardOptions> options)
-        : this(descriptor, http, logger, options, hubConnection: null)
+        : this(descriptor, http, logger, options, tokenAccessor: null, lazyConnect: false, hubConnection: null)
+    {
+    }
+
+    /// <summary>
+    /// Per-circuit constructor used under per-user authentication: bound to the circuit's token accessor
+    /// (supplies the user's bearer on REST and the hub) and connecting lazily on first use.
+    /// </summary>
+    internal RestUKBatchClient(
+        UKBatchServiceDescriptor descriptor,
+        HttpClient http,
+        ILogger<RestUKBatchClient> logger,
+        IOptions<DashboardOptions> options,
+        IUKBatchUserTokenAccessor? tokenAccessor,
+        bool lazyConnect)
+        : this(descriptor, http, logger, options, tokenAccessor, lazyConnect, hubConnection: null)
     {
     }
 
@@ -80,6 +98,18 @@ internal sealed class RestUKBatchClient : IUKBatchClient
         ILogger<RestUKBatchClient> logger,
         IOptions<DashboardOptions> options,
         HubConnection? hubConnection)
+        : this(descriptor, http, logger, options, tokenAccessor: null, lazyConnect: false, hubConnection)
+    {
+    }
+
+    private RestUKBatchClient(
+        UKBatchServiceDescriptor descriptor,
+        HttpClient http,
+        ILogger<RestUKBatchClient> logger,
+        IOptions<DashboardOptions> options,
+        IUKBatchUserTokenAccessor? tokenAccessor,
+        bool lazyConnect,
+        HubConnection? hubConnection)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(http);
@@ -90,6 +120,8 @@ internal sealed class RestUKBatchClient : IUKBatchClient
         _http = http;
         _logger = logger;
         _options = options.Value;
+        _tokenAccessor = tokenAccessor;
+        _lazyConnect = lazyConnect;
 
         _executionDedupe = new LruDedupeCache<string>(_options.DedupeCacheCapacity);
         _progressDedupe = new LruDedupeCache<string>(_options.DedupeCacheCapacity);
@@ -425,7 +457,7 @@ internal sealed class RestUKBatchClient : IUKBatchClient
     public async Task SubscribeToExecutionAsync(string executionId, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrEmpty(executionId);
-        EnsureConnected();
+        await EnsureSubscribeReadyAsync(ct).ConfigureAwait(false);
         // Track BEFORE invoke so a mid-flight reconnect picks up the group from
         // _activeGroups. Roll back the entry if the server-side invoke fails so we don't
         // keep a phantom subscription on this client. Idempotent: if the caller already
@@ -454,7 +486,7 @@ internal sealed class RestUKBatchClient : IUKBatchClient
     public async Task SubscribeToBatchAsync(string batchRunId, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrEmpty(batchRunId);
-        EnsureConnected();
+        await EnsureSubscribeReadyAsync(ct).ConfigureAwait(false);
         // Track-before-invoke + rollback on failure (see SubscribeToExecutionAsync).
         var group = $"batch:{batchRunId}";
         if (!_activeGroups.TryAdd(group, 0)) return;
@@ -480,7 +512,7 @@ internal sealed class RestUKBatchClient : IUKBatchClient
     public async Task SubscribeToJobAsync(string jobName, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrEmpty(jobName);
-        EnsureConnected();
+        await EnsureSubscribeReadyAsync(ct).ConfigureAwait(false);
         // Track-before-invoke + rollback on failure (see SubscribeToExecutionAsync).
         var group = $"job:{jobName}";
         if (!_activeGroups.TryAdd(group, 0)) return;
@@ -505,7 +537,7 @@ internal sealed class RestUKBatchClient : IUKBatchClient
 
     public async Task SubscribeAllAsync(CancellationToken ct)
     {
-        EnsureConnected();
+        await EnsureSubscribeReadyAsync(ct).ConfigureAwait(false);
         // Track-before-invoke + rollback on failure (see SubscribeToExecutionAsync).
         const string group = "all";
         if (!_activeGroups.TryAdd(group, 0)) return;
@@ -551,6 +583,15 @@ internal sealed class RestUKBatchClient : IUKBatchClient
                     {
                         hubOpts.Headers[k] = v;
                     }
+                }
+
+                // Per-user authentication: supply the signed-in user's bearer on negotiate and every
+                // reconnect. AsTask() is required — SignalR stores the delegate and awaits the result
+                // across an async boundary, so the ValueTask must be materialized into a Task.
+                if (_tokenAccessor is { } tokenAccessor)
+                {
+                    hubOpts.AccessTokenProvider = () =>
+                        tokenAccessor.GetAccessTokenAsync(CancellationToken.None).AsTask();
                 }
             })
             .WithAutomaticReconnect(BuildReconnectDelays())
@@ -635,6 +676,25 @@ internal sealed class RestUKBatchClient : IUKBatchClient
                 $"UKBatch client '{_descriptor.Name}' is in state {state}; subscribe operations require Connected or PartiallyConnected. " +
                 "If PartiallyConnected, the hub connection is up but some pre-existing group subscriptions failed to re-establish; new subscriptions still work, but consider clicking Retry on the ConnectionBanner to clear the degraded state.");
         }
+    }
+
+    /// <summary>
+    /// Connects the hub if this client owns its connection lifecycle (per-circuit, no startup conductor)
+    /// and is not yet connected, then validates readiness. For the shared-identity path this is a plain
+    /// <see cref="EnsureConnected"/> — the conductor has already connected the client.
+    /// </summary>
+    private async Task EnsureSubscribeReadyAsync(CancellationToken ct)
+    {
+        if (_lazyConnect)
+        {
+            var state = (UKBatchClientState)Volatile.Read(ref _state);
+            if (state is not (UKBatchClientState.Connected or UKBatchClientState.PartiallyConnected))
+            {
+                await ConnectAsync(ct).ConfigureAwait(false);
+            }
+        }
+
+        EnsureConnected();
     }
 
     // ── Hub event handlers — dedupe + parallel-isolated subscriber dispatch ────────────

@@ -21,6 +21,7 @@ public sealed class BatchesRunDetailTests : TestContext
 {
     public BatchesRunDetailTests()
     {
+        this.AddPermitAllAuth();
         // Tests that exercise the live DAG (defId set ⇒ DagStatusCanvas renders) need Loose JS mode
         // the canvas does import/init/buildGraph (all returning IJSObjectReference); STRICT would crash.
         // The pre-existing tests never render the canvas (their execs carry no BatchDefinitionId), so

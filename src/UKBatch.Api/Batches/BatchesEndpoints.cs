@@ -61,6 +61,7 @@ internal static class BatchesEndpoints
                 });
             })
             .WithUKBatchName(operationIdPrefix, "ListBatches")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Lists batch definitions across all sources via IBatchCatalogService. Code-source wins on name collision. Ordered by Name ascending.");
 
         // GET /batches/by-id/{id}
@@ -75,6 +76,7 @@ internal static class BatchesEndpoints
                 return Results.Ok(BatchDefinitionDto.FromModel(def));
             })
             .WithUKBatchName(operationIdPrefix, "GetBatchById")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Returns the batch definition by id from Code or Store sources. 404 if not found anywhere.");
 
         // GET /batches/by-name/{name}
@@ -93,6 +95,7 @@ internal static class BatchesEndpoints
                 return Results.Ok(BatchDefinitionDto.FromModel(def));
             })
             .WithUKBatchName(operationIdPrefix, "GetBatchByName")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Returns the batch definition by name. If `source` is omitted, Code-source wins on collision.");
 
         // POST /batches/by-id/{id}/run
@@ -116,6 +119,7 @@ internal static class BatchesEndpoints
                 return await TryRunBatchAsync(runner, idCtx, traceCtx, def, parameters, body, http).ConfigureAwait(false);
             })
             .WithUKBatchName(operationIdPrefix, "RunBatchById")
+            .WithUKBatchAccess(UKBatchAccessKind.Write)
             .WithSummary("Triggers a new batch run by definition id. Returns 202 with the batch-run id.");
 
         // POST /batches/by-name/{name}/run
@@ -140,6 +144,7 @@ internal static class BatchesEndpoints
                 return await TryRunBatchAsync(runner, idCtx, traceCtx, def, parameters, body, http).ConfigureAwait(false);
             })
             .WithUKBatchName(operationIdPrefix, "RunBatchByName")
+            .WithUKBatchAccess(UKBatchAccessKind.Write)
             .WithSummary("Triggers a new batch run by definition name. Returns 202 with the batch-run id.");
 
         // POST /batches — create (Dashboard or Api source only).
@@ -208,6 +213,7 @@ internal static class BatchesEndpoints
                 }
             })
             .WithUKBatchName(operationIdPrefix, "CreateBatch")
+            .WithUKBatchAccess(UKBatchAccessKind.Write)
             .WithSummary("Creates a Dashboard- or Api-source batch.");
 
         // PUT /batches/by-id/{id}
@@ -296,6 +302,7 @@ internal static class BatchesEndpoints
                 }
             })
             .WithUKBatchName(operationIdPrefix, "UpdateBatch")
+            .WithUKBatchAccess(UKBatchAccessKind.Write)
             .WithSummary("Updates a Store-source batch with optimistic concurrency.");
 
         // DELETE /batches/by-id/{id}
@@ -324,6 +331,7 @@ internal static class BatchesEndpoints
                 return Results.NoContent();
             })
             .WithUKBatchName(operationIdPrefix, "DeleteBatch")
+            .WithUKBatchAccess(UKBatchAccessKind.Write)
             .WithSummary("Deletes a Store-source batch. Idempotent. Code-source batches return 400.");
 
         // GET /batches/{batchRunId}/status — RUN-keyed.
@@ -359,6 +367,7 @@ internal static class BatchesEndpoints
                 });
             })
             .WithUKBatchName(operationIdPrefix, "GetBatchRunStatus")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Returns the executions for ONE batch RUN (the id returned from /run). Empty list if no executions — NOT a 404.");
 
         // GET /batches/runs — run-paginated history. The run row carries the authoritative terminal status
@@ -397,6 +406,7 @@ internal static class BatchesEndpoints
                 });
             })
             .WithUKBatchName(operationIdPrefix, "QueryRuns")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Lists batch RUNS newest-first, optionally filtered by definition id. `includeRunning` (default true) keeps in-progress runs in the result. Filtering by specific terminal statuses is store-API-only and not exposed here.");
 
         // POST /batches/{batchRunId}/cancel — administrative run cancel. This is an admin override whose
@@ -413,6 +423,7 @@ internal static class BatchesEndpoints
                 return Results.NoContent();
             })
             .WithUKBatchName(operationIdPrefix, "CancelBatchRun")
+            .WithUKBatchAccess(UKBatchAccessKind.Write)
             .WithSummary("Cancels an in-flight batch RUN (the id returned from /run). Idempotent — returns 204 even if the run is unknown or already finished. Administrative override, independent of approval-gate roles.");
 
         // POST /batches/{batchRunId}/retry — retries a FAILED run from the step it failed on, as a NEW
@@ -470,6 +481,7 @@ internal static class BatchesEndpoints
                 }
             })
             .WithUKBatchName(operationIdPrefix, "RetryBatchRun")
+            .WithUKBatchAccess(UKBatchAccessKind.Write)
             .WithSummary("Retries a FAILED run from the step it failed on, as a new run carrying the failed run's forwarded state. Returns 202 with the NEW run id. 404 if unknown; 409 if the run is not Failed, was compensated, or the definition changed since the run started.");
 
         // POST /batches/by-id/{id}/pause — suspends the batch's schedule WITHOUT removing its cron, so the
@@ -509,6 +521,7 @@ internal static class BatchesEndpoints
                 return Results.NoContent();
             })
             .WithUKBatchName(operationIdPrefix, "PauseBatchSchedule")
+            .WithUKBatchAccess(UKBatchAccessKind.Write)
             .WithSummary("Pauses a Store-source batch's schedule (keeps the cron, stops firing). Idempotent. The manual /run trigger is unaffected. Code-source batches return 400; unknown id returns 404.");
 
         // POST /batches/by-id/{id}/resume — re-activates a paused schedule. For a catch-up-enabled batch it
@@ -568,6 +581,7 @@ internal static class BatchesEndpoints
                 return Results.NoContent();
             })
             .WithUKBatchName(operationIdPrefix, "ResumeBatchSchedule")
+            .WithUKBatchAccess(UKBatchAccessKind.Write)
             .WithSummary("Resumes a paused Store-source batch's schedule. Idempotent. For a catch-up-enabled batch it advances the last-fire watermark to now so the paused period is not replayed on a later restart. Code-source batches return 400; unknown id returns 404.");
     }
 

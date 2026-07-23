@@ -1,8 +1,14 @@
 @* Root layout. Sidebar + header + content + connection banner + toasts. *@
+@using System.Security.Claims
+@using System.Threading
+@using Microsoft.Extensions.Options
+@using UKBatch.Dashboard.Security
 @inherits LayoutComponentBase
 @implements IDisposable
 @inject IUKBatchServiceRegistry Registry
 @inject IDashboardState State
+@inject IUKBatchClientFactory ClientFactory
+@inject IOptions<DashboardOptions> Options
 
 <div class="dashboard-shell">
     <ServiceSidebar Services="@Registry.All()" CurrentService="@State.CurrentService" />
@@ -21,6 +27,23 @@
                 <span class="dashboard-header__breadcrumb-current">Dashboard</span>
             </div>
             <div class="dashboard-header__actions">
+                <AuthorizeView>
+                    <Authorized>
+                        @if (IsRealSession(context))
+                        {
+                            <span class="dashboard-header__user" title="@RolesTitle(context)">
+                                <span class="material-symbols-outlined">account_circle</span>
+                                <span class="dashboard-header__user-name">@(context.User.Identity?.Name ?? "signed in")</span>
+                            </span>
+                            <form method="post" action="/signout" class="dashboard-header__signout">
+                                <AntiforgeryToken />
+                                <button type="submit" class="btn btn--icon" title="Sign out" aria-label="Sign out">
+                                    <span class="material-symbols-outlined">logout</span>
+                                </button>
+                            </form>
+                        }
+                    </Authorized>
+                </AuthorizeView>
                 <a class="btn btn--icon" href="/dashboard/settings" title="Settings" aria-label="Settings">
                     <span class="material-symbols-outlined">settings</span>
                 </a>
@@ -52,6 +75,42 @@
         // Subscribe so a page swapping the current service (or Settings clearing it to null) repaints
         // the shell immediately, instead of lagging one navigation behind.
         State.CurrentServiceChanged += OnCurrentServiceChanged;
+
+        // Under per-user authentication there is no startup conductor — an eager connect at host start
+        // would loop on the gated hub before anyone is signed in. A circuit only exists once a user HAS
+        // signed in, so eager-connect every service here to bring the live hub up and let the banner read
+        // Connected, mirroring what the conductor does when authentication is off. Fire-and-forget: a
+        // failed connect degrades to the client's automatic reconnect rather than throwing on render.
+        if (Options.Value.PerUserAuthentication)
+        {
+            foreach (var descriptor in Registry.All())
+            {
+                _ = ConnectServiceAsync(descriptor.Name);
+            }
+        }
+    }
+
+    private async Task ConnectServiceAsync(string serviceName)
+    {
+        try
+        {
+            await ClientFactory.GetClient(serviceName).ConnectAsync(CancellationToken.None);
+        }
+        catch
+        {
+            // Degraded UI beats throwing on the render path; the client reconnects on its own.
+        }
+    }
+
+    // True when the principal is a real authenticated session rather than the open-default placeholder,
+    // so the sign-in pill and sign-out control appear only when the dashboard is actually gated.
+    private static bool IsRealSession(AuthenticationState state) =>
+        state.User.Identity?.AuthenticationType != PermitAllAuthenticationStateProvider.AuthDisabledAuthenticationType;
+
+    private static string RolesTitle(AuthenticationState state)
+    {
+        var roles = state.User.FindAll(ClaimTypes.Role).Select(c => c.Value).ToArray();
+        return roles.Length == 0 ? "Signed in" : $"Roles: {string.Join(", ", roles)}";
     }
 
     private void OnCurrentServiceChanged(UKBatchServiceDescriptor? service)

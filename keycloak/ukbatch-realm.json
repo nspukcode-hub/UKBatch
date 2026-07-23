@@ -1,0 +1,53 @@
+{
+  "realm": "ukbatch",
+  "enabled": true,
+  "sslRequired": "none",
+  "roles": {
+    "realm": [
+      { "name": "batch-operator", "description": "May trigger, create, cancel, and manage batches." },
+      { "name": "batch-viewer", "description": "Read-only access to jobs, batches, and runs." }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "ukbatch-dashboard",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "ukbatch-dashboard-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://localhost:5075/*"],
+      "webOrigins": ["http://localhost:5075"],
+      "attributes": {
+        "post.logout.redirect.uris": "http://localhost:5075/*"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "operator",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Olivia",
+      "lastName": "Operator",
+      "email": "operator@example.com",
+      "credentials": [
+        { "type": "password", "value": "operator-pw", "temporary": false }
+      ],
+      "realmRoles": ["batch-operator"]
+    },
+    {
+      "username": "viewer",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Victor",
+      "lastName": "Viewer",
+      "email": "viewer@example.com",
+      "credentials": [
+        { "type": "password", "value": "viewer-pw", "temporary": false }
+      ],
+      "realmRoles": ["batch-viewer"]
+    }
+  ]
+}

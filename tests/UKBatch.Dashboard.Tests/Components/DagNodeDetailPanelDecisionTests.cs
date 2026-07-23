@@ -3,6 +3,7 @@ using FluentAssertions;
 using UKBatch.Abstractions.Batches;
 using UKBatch.Abstractions.Models;
 using UKBatch.Dashboard.Components.Shared;
+using UKBatch.Dashboard.Tests.Pages.Common;
 using Xunit;
 
 namespace UKBatch.Dashboard.Tests.Components;
@@ -17,6 +18,7 @@ public sealed class DagNodeDetailPanelDecisionTests : TestContext
 {
     public DagNodeDetailPanelDecisionTests()
     {
+        this.AddPermitAllAuth();
         // The panel injects IJSRuntime (Copy JSON). No JS call fires in these tests, but Loose mode
         // matches the production graceful-degradation posture and avoids STRICT-mode surprises.
         JSInterop.Mode = Bunit.JSRuntimeMode.Loose;

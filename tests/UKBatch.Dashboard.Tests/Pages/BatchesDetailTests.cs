@@ -28,6 +28,7 @@ public sealed class BatchesDetailTests : TestContext
 {
     public BatchesDetailTests()
     {
+        this.AddPermitAllAuth();
         // Detail's Topology Tree view now renders DagStatusCanvas (Q1 deferral
         // closed), whose OnAfterRenderAsync imports dag-status.js. Loose JSInterop returns defaults for
         // that un-set-up import — the production component catches the (graceful-degradation) failure.

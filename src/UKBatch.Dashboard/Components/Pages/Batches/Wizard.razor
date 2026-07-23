@@ -116,10 +116,12 @@ else
             }
             else
             {
-                <button class="btn btn--primary" @onclick="SubmitAsync" disabled="@_submitting">
-                    <span class="material-symbols-outlined">save</span>
-                    @(_submitting ? "Saving…" : (_model.Id is null ? "Create batch" : "Save changes"))
-                </button>
+                <AuthorizeView Policy="UKBatch:Operator">
+                    <button class="btn btn--primary" @onclick="SubmitAsync" disabled="@_submitting">
+                        <span class="material-symbols-outlined">save</span>
+                        @(_submitting ? "Saving…" : (_model.Id is null ? "Create batch" : "Save changes"))
+                    </button>
+                </AuthorizeView>
             }
         </div>
     </div>

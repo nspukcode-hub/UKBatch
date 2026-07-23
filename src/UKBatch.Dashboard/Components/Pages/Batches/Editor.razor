@@ -159,10 +159,12 @@ else
             }
             <a class="btn btn--ghost" href="/dashboard/@ServiceName/batches">Cancel</a>
             <a class="btn btn--secondary" href="@WizardUrl()">Open in form wizard</a>
-            <button class="btn btn--primary" @onclick="SaveAsync" disabled="@_saving">
-                <span class="material-symbols-outlined">save</span>
-                @(_saving ? "Saving…" : (_model.Id is null ? "Create batch" : "Save changes"))
-            </button>
+            <AuthorizeView Policy="UKBatch:Operator">
+                <button class="btn btn--primary" @onclick="SaveAsync" disabled="@_saving">
+                    <span class="material-symbols-outlined">save</span>
+                    @(_saving ? "Saving…" : (_model.Id is null ? "Create batch" : "Save changes"))
+                </button>
+            </AuthorizeView>
         </div>
     </div>
 }

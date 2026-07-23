@@ -32,6 +32,7 @@ public sealed class EditorTests : TestContext
 {
     public EditorTests()
     {
+        this.AddPermitAllAuth();
         // The DrawflowCanvas imports dag-editor.js in OnAfterRender; Loose mode returns defaults.
         JSInterop.Mode = JSRuntimeMode.Loose;
     }

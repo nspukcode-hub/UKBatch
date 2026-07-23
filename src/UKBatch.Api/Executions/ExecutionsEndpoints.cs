@@ -36,6 +36,7 @@ internal static class ExecutionsEndpoints
                 return Results.Ok(exec);
             })
             .WithUKBatchName(operationIdPrefix, "GetExecution")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Returns a single execution snapshot.");
 
         executions.MapPost("/query", async (
@@ -94,6 +95,7 @@ internal static class ExecutionsEndpoints
                 });
             })
             .WithUKBatchName(operationIdPrefix, "QueryExecutions")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Paginated query. POST is used because JobQuery is rich (Statuses[], UTC bounds, search text). Subject to UKBatchOptions.MaxQueryStatusesCount + MaxQuerySearchTextLength caps.");
 
         executions.MapPost("/{id}/cancel", async (string id, IJobRunner runner, CancellationToken ct) =>
@@ -114,6 +116,7 @@ internal static class ExecutionsEndpoints
                 }
             })
             .WithUKBatchName(operationIdPrefix, "CancelExecution")
+            .WithUKBatchAccess(UKBatchAccessKind.Write)
             .WithSummary("Cancels a single execution. Idempotent — returns 204 even if the execution is already terminal.");
     }
 }

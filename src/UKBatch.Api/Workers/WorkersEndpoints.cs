@@ -162,12 +162,14 @@ internal static class WorkersEndpoints
                 return Results.Accepted();
             })
             .WithUKBatchName(operationIdPrefix, "WorkerBeat")
+            .WithUKBatchAccess(UKBatchAccessKind.Ingest)
             .WithSummary("Worker heartbeat ingest (observability only — NEVER consulted for dispatch). 202 on accept.");
 
         // GET /api/workers — live snapshot.
         workers.MapGet("/", (IWorkerRegistry registry, TimeProvider clock) =>
                 Results.Ok(registry.List(clock.GetUtcNow())))
             .WithUKBatchName(operationIdPrefix, "ListWorkers")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Lists known workers (live, TTL'd). `Online=false` rows are recently-departed workers retained until the hard-evict horizon.");
     }
 }
