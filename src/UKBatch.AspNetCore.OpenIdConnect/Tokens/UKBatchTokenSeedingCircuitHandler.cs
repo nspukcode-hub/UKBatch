@@ -10,54 +10,61 @@ namespace UKBatch.AspNetCore.OpenIdConnect.Tokens;
 /// </summary>
 /// <remarks>
 /// The circuit's DI scope is built during the connection request, whose context carries the auth cookie,
-/// so <see cref="IHttpContextAccessor.HttpContext"/> is live and authenticated at construction. The
-/// reference is snapshotted there and read on circuit open; reading it later would race a recycled
-/// context. Seeding is best-effort and never throws out of the circuit lifecycle.
+/// so <see cref="IHttpContextAccessor.HttpContext"/> is live and authenticated at construction. BOTH the
+/// user key and the token read are taken in the constructor, while the context is provably still bound
+/// to this circuit's own connect request: on a non-WebSocket transport (long polling / SSE) the pooled
+/// context can be recycled to a DIFFERENT user's request once the connect request completes, so reading
+/// the retained reference any later — e.g. on circuit open — could pair one user's key with another
+/// user's tokens. Seeding is best-effort and never throws out of the circuit lifecycle.
 /// </remarks>
 internal sealed class UKBatchTokenSeedingCircuitHandler : CircuitHandler
 {
     private readonly UKBatchUserTokenStore _store;
-    private readonly HttpContext? _httpContext;
+    private readonly string? _key;
+    private readonly Task<TokenSet?>? _tokensTask;
 
     public UKBatchTokenSeedingCircuitHandler(IHttpContextAccessor httpContextAccessor, UKBatchUserTokenStore store)
     {
         _store = store;
-        _httpContext = httpContextAccessor.HttpContext;
-    }
-
-    /// <inheritdoc/>
-    public override async Task OnCircuitOpenedAsync(Circuit circuit, CancellationToken cancellationToken)
-    {
-        await SeedAsync().ConfigureAwait(false);
-        await base.OnCircuitOpenedAsync(circuit, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task SeedAsync()
-    {
-        var httpContext = _httpContext;
+        var httpContext = httpContextAccessor.HttpContext;
         if (httpContext is null)
         {
             return;
         }
 
-        var key = UKBatchUserTokenStore.BuildKey(httpContext.User);
-        if (key is null)
+        _key = UKBatchUserTokenStore.BuildKey(httpContext.User);
+        if (_key is not null)
         {
-            return;
+            _tokensTask = ReadTokensAsync(httpContext);
         }
+    }
 
-        try
+    /// <inheritdoc/>
+    public override async Task OnCircuitOpenedAsync(Circuit circuit, CancellationToken cancellationToken)
+    {
+        if (_key is not null && _tokensTask is not null)
         {
-            var tokens = await UKBatchUserTokenStore.ReadFromHttpContextAsync(httpContext).ConfigureAwait(false);
+            var tokens = await _tokensTask.ConfigureAwait(false);
             if (tokens is not null)
             {
-                _store.Seed(key, tokens);
+                _store.Seed(_key, tokens);
             }
+        }
+
+        await base.OnCircuitOpenedAsync(circuit, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<TokenSet?> ReadTokensAsync(HttpContext httpContext)
+    {
+        try
+        {
+            return await UKBatchUserTokenStore.ReadFromHttpContextAsync(httpContext).ConfigureAwait(false);
         }
         catch (ObjectDisposedException)
         {
-            // Connection context torn down mid-seed; the request-scoped read path re-seeds on the next
+            // Connection context torn down mid-read; the request-scoped read path re-seeds on the next
             // outbound call while a context is still live.
+            return null;
         }
     }
 }

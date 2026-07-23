@@ -88,7 +88,11 @@ public sealed class RoleGatedApiHostFixture : IAsyncLifetime
         return client;
     }
 
-    private static void ConfigureServices(IServiceCollection services)
+    /// <summary>
+    /// Shared by the chained-authorization fixture so both hosts run the same runtime, JWT validation,
+    /// flattening, and policy pair — the only difference between them is how the group is gated.
+    /// </summary>
+    internal static void ConfigureServices(IServiceCollection services)
     {
         services.AddUKBatchAspNetCore(b =>
         {

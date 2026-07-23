@@ -72,8 +72,14 @@ public static class EndpointRouteBuilderExtensions
     /// conventions, so an <c>Add</c> convention would see no tag yet and silently gate nothing. The
     /// <c>Finally</c> pass also reaches endpoints defined in nested sub-groups such as
     /// <c>/approvals</c>. It is idempotent and composes with a caller who also chains
-    /// <c>RequireAuthorization</c>: an endpoint that already carries authorization metadata is left
-    /// untouched.</para>
+    /// <c>RequireAuthorization</c>: authorization metadata entries combine with AND, so the chained
+    /// default requirement and the role policy both apply.</para>
+    /// <para>Opting into role gating means "no anonymous caller": besides the named policy, every
+    /// gated endpoint also carries a plain authorization requirement (the host's default policy), so
+    /// a permissive or misconfigured named policy can never re-open the surface to unauthenticated
+    /// callers. Endpoints without an access-kind tag fail CLOSED to the write policy — a future
+    /// endpoint that misses its tag ships operator-gated rather than silently anonymous; for the
+    /// same reason, map any endpoints of your own on a separate route group.</para>
     /// <para>The policy names are the cross-package contract. A host that registers its own
     /// same-named viewer/operator policies can role-gate the surface without any authentication
     /// integration package.</para>
@@ -93,10 +99,34 @@ public static class EndpointRouteBuilderExtensions
             {
                 UKBatchAccessKind.Write => writePolicy,
                 UKBatchAccessKind.Read or UKBatchAccessKind.GateDecision => readPolicy,
-                _ => null, // Ingest or untagged → not gated by us
+                UKBatchAccessKind.Ingest => null, // worker ingest is deliberately ungated (trusted network / gateway)
+                // Untagged fails CLOSED to the write policy: an endpoint that misses its access-kind
+                // tag ships operator-gated rather than silently anonymous.
+                _ => writePolicy,
             };
-            if (policy is not null &&
-                !builder.Metadata.OfType<Microsoft.AspNetCore.Authorization.IAuthorizeData>().Any())
+            if (policy is null)
+            {
+                return;
+            }
+
+            var authorizeData = builder.Metadata.OfType<Microsoft.AspNetCore.Authorization.IAuthorizeData>().ToList();
+
+            // The named policies are host-supplied and may lack an authenticated-user requirement (a
+            // permissive fallback policy can leak in from an auth-off registration elsewhere in the
+            // host). Opting into role gating means "no anonymous caller", so pin that floor with a
+            // plain authorization entry (the default policy denies anonymous) unless one is already
+            // present — e.g. from a chained RequireAuthorization().
+            if (!authorizeData.Any(a => string.IsNullOrEmpty(a.Policy)))
+            {
+                builder.Metadata.Add(new Microsoft.AspNetCore.Authorization.AuthorizeAttribute());
+            }
+
+            // Skip only when THIS policy is already attached (a second convention run). Any other
+            // authorization metadata — e.g. the default entry RequireAuthorization() stamps on every
+            // endpoint — must not suppress the role requirement: entries combine with AND, so adding
+            // ours alongside strengthens the endpoint, while skipping would leave writes reachable by
+            // any authenticated caller.
+            if (!authorizeData.Any(a => string.Equals(a.Policy, policy, StringComparison.Ordinal)))
             {
                 builder.Metadata.Add(new Microsoft.AspNetCore.Authorization.AuthorizeAttribute(policy));
             }

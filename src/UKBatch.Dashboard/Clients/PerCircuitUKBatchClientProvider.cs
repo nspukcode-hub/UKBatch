@@ -67,7 +67,9 @@ internal sealed class PerCircuitUKBatchClientProvider : IUKBatchClientFactory, I
             // Reuse the pooled named-client handler chain (rotation + primary handler are factory-owned);
             // wrap it with a forwarding handler bound to THIS scope's accessor. disposeHandler:false so
             // disposing the client's HttpClient never disposes the shared pooled inner handler.
-            var forwarding = new UKBatchTokenForwardingHandler(_tokenAccessor)
+            var forwarding = new UKBatchTokenForwardingHandler(
+                _tokenAccessor,
+                _loggerFactory.CreateLogger<UKBatchTokenForwardingHandler>())
             {
                 InnerHandler = _handlerFactory.CreateHandler($"UKBatch.Dashboard.{name}"),
             };

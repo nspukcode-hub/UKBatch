@@ -192,6 +192,16 @@ if (enableDashboard)
 
 var app = builder.Build();
 
+// OIDC without an audience accepts any token the realm issued (issuer + signature only) — workable for
+// a dedicated realm, but a shared realm should mint an API audience and set it here.
+if (enableOidc && string.IsNullOrWhiteSpace(cfg["UKBATCH_OIDC_AUDIENCE"] ?? cfg["UKBatch:Oidc:Audience"]))
+{
+    app.Logger.LogWarning(
+        "UKBATCH_OIDC_AUDIENCE is not set: bearer tokens are accepted on issuer and signature alone, so a " +
+        "token minted for ANY application in this realm can call the API. In production, register an " +
+        "audience with the identity provider (for Keycloak, an audience mapper) and set UKBATCH_OIDC_AUDIENCE.");
+}
+
 // Loud startup warning for the anonymous posture (the throw above guarantees a posture is set; the
 // DevAuth helper logs its own warning via the startup guard it registers).
 if (allowAnonymous && !enableDevAuth)

@@ -111,14 +111,27 @@ public static class ServiceCollectionExtensions
         services.AddAuthorizationCore();
         if (!perUserAuth)
         {
-            // Auth-off: report an authenticated principal and grant the role policies unconditionally so
-            // every control renders, preserving the open default. An authentication integration provides
-            // the real principal and policies instead (and is detected above).
+            // Auth-off: report an authenticated principal and grant the role policies so every control
+            // renders, preserving the open default. An authentication integration provides the real
+            // principal and policies instead (and is detected above).
             services.AddScoped<AuthenticationStateProvider, PermitAllAuthenticationStateProvider>();
             services.Configure<AuthorizationOptions>(options =>
             {
-                options.AddPolicy("UKBatch:Viewer", policy => policy.RequireAssertion(_ => true));
-                options.AddPolicy("UKBatch:Operator", policy => policy.RequireAssertion(_ => true));
+                // Fallback only — never clobber a same-named policy the host has already defined.
+                // Configure callbacks run in registration order, so a host that registered its real
+                // viewer/operator policies BEFORE this call must keep them: an unconditional AddPolicy
+                // here would last-writer-win them into always-true and open a role-gated API to
+                // callers the host's policy would reject. (A host registering AFTER this call
+                // overwrites the fallback, which is equally correct.)
+                if (options.GetPolicy("UKBatch:Viewer") is null)
+                {
+                    options.AddPolicy("UKBatch:Viewer", policy => policy.RequireAssertion(_ => true));
+                }
+
+                if (options.GetPolicy("UKBatch:Operator") is null)
+                {
+                    options.AddPolicy("UKBatch:Operator", policy => policy.RequireAssertion(_ => true));
+                }
             });
         }
 

@@ -67,7 +67,11 @@ public static class OpenIdConnectServiceCollectionExtensions
 
         // Per-user token forwarding: a singleton store keyed by the user, a scoped accessor the dashboard
         // resolves, and a circuit handler that seeds the store while the connecting request context is live.
-        services.AddHttpClient(UKBatchUserTokenStore.RefreshHttpClientName);
+        // The refresh client never follows redirects: the token endpoint is a fixed URL from the discovery
+        // document, and re-POSTing a 307/308 would re-send the client secret and refresh token to wherever
+        // the redirect points.
+        services.AddHttpClient(UKBatchUserTokenStore.RefreshHttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(static () => new SocketsHttpHandler { AllowAutoRedirect = false });
         services.TryAddSingleton<UKBatchUserTokenStore>();
         services.TryAddScoped<IUKBatchUserTokenAccessor, UKBatchUserTokenAccessor>();
         services.TryAddEnumerable(ServiceDescriptor.Scoped<CircuitHandler, UKBatchTokenSeedingCircuitHandler>());
@@ -306,7 +310,37 @@ public static class OpenIdConnectServiceCollectionExtensions
             .RequireAuthenticatedUser()
             .AddAuthenticationSchemes(
                 CookieAuthenticationDefaults.AuthenticationScheme,
-                JwtBearerDefaults.AuthenticationScheme));
+                JwtBearerDefaults.AuthenticationScheme)
+            // Evaluated at request time for the same live-configuration reason as the operator policy
+            // below. With no viewer roles configured, any authenticated user reads (the documented
+            // default); once viewer roles are set, read access narrows to them — and operators, who
+            // are always viewers.
+            .RequireAssertion(context =>
+            {
+                var options = monitor.CurrentValue;
+                if (options.ViewerRoles.Count == 0)
+                {
+                    return true;
+                }
+
+                foreach (var role in options.ViewerRoles)
+                {
+                    if (context.User.IsInRole(role))
+                    {
+                        return true;
+                    }
+                }
+
+                foreach (var role in options.OperatorRoles)
+                {
+                    if (context.User.IsInRole(role))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }));
 
         authorization.AddPolicy(OperatorPolicyName, policy => policy
             .RequireAuthenticatedUser()

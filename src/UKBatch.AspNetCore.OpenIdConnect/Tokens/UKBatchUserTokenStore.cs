@@ -80,8 +80,13 @@ internal sealed class UKBatchUserTokenStore : IDisposable
             return null;
         }
 
+        // Length-prefixing the subject makes the key injective: no subject or session content can make
+        // two different (subject, session) pairs — or a subject-only key — render the same string, so a
+        // crafted claim value can never collide into another user's entry.
         var sessionId = principal.FindFirst("sid")?.Value;
-        return string.IsNullOrEmpty(sessionId) ? subject : $"{subject}|{sessionId}";
+        return string.IsNullOrEmpty(sessionId)
+            ? string.Create(CultureInfo.InvariantCulture, $"{subject.Length}|{subject}")
+            : string.Create(CultureInfo.InvariantCulture, $"{subject.Length}|{subject}|{sessionId}");
     }
 
     /// <summary>
@@ -200,8 +205,16 @@ internal sealed class UKBatchUserTokenStore : IDisposable
                 return current.AccessToken;
             }
 
-            _tokens[key] = refreshed;
-            return refreshed.AccessToken;
+            // Write back conditionally: sign-out may have evicted this user while the refresh was in
+            // flight, and TryUpdate cannot insert, so eviction wins. An unconditional indexer write here
+            // would silently resurrect the signed-out session's tokens and keep a still-open circuit
+            // calling the API after sign-out.
+            if (_tokens.TryGetValue(key, out var existing) && _tokens.TryUpdate(key, refreshed, existing))
+            {
+                return refreshed.AccessToken;
+            }
+
+            return null;
         }
         catch (ObjectDisposedException)
         {

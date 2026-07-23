@@ -27,8 +27,11 @@ public sealed class UKBatchOpenIdConnectOptions
 
     /// <summary>
     /// The audience the API validates bearer tokens against. When null, audience validation is
-    /// disabled. Keycloak emits <c>aud: account</c> by default, so either set this to a value the
-    /// realm maps into the token (via an audience mapper) or leave it null.
+    /// disabled and ANY token the authority issued — including one minted for a different
+    /// application in the same realm — is accepted on issuer and signature alone. Set this in
+    /// production: register an audience with the provider (for Keycloak, an audience mapper that
+    /// puts the value into the token; its default audience is <c>account</c>) and put the same
+    /// value here, so only tokens minted for this API pass.
     /// </summary>
     public string? Audience { get; set; }
 
@@ -56,6 +59,13 @@ public sealed class UKBatchOpenIdConnectOptions
     /// Keycloak's shapes: <c>realm_access.roles</c> and <c>resource_access.*.roles</c> (the <c>*</c>
     /// matches every client). Set to an empty list to disable flattening.
     /// </summary>
+    /// <remarks>
+    /// The <c>*</c> wildcard merges every client's roles into one namespace: a role named
+    /// <c>operator</c> granted for ANY client in the realm would satisfy an operator policy that
+    /// names <c>operator</c>. In a realm shared by several applications, either narrow the path to
+    /// this application's client (<c>resource_access.&lt;client-id&gt;.roles</c>) or keep the
+    /// gating role names unique to this application across the realm.
+    /// </remarks>
     public List<string> RoleClaimPaths { get; set; } = ["realm_access.roles", "resource_access.*.roles"];
 
     /// <summary>
