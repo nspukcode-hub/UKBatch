@@ -73,10 +73,11 @@
     <!-- Transitive pin (CentralPackageTransitivePinningEnabled): Microsoft.EntityFrameworkCore.Design
          (build-time only, PrivateAssets="all") pulls System.Security.Cryptography.Xml 9.0.0 via
          Microsoft.Build.Tasks.Core / Microsoft.CodeAnalysis.Workspaces.MSBuild, which carries
-         NU1903 advisories GHSA-37gx-xxp4-5rgx + GHSA-w3x6-4m5h-cxqf (10.x line patched in 10.0.6).
-         Pin forward to clear the audit under TreatWarningsAsErrors. Design-time only — ships nothing
-         to consumers. -->
-    <PackageVersion Include="System.Security.Cryptography.Xml" Version="10.0.6" Condition="'$(TargetFramework)' != 'net8.0'" />
+         NU1903 advisories: the earlier GHSA-37gx-xxp4-5rgx + GHSA-w3x6-4m5h-cxqf, plus the
+         2026-07-23 batch (GHSA-23rf-6693-g89p, -8q5v-6pqq-x66h, -cvvh-rhrc-wg4q, -g8r8-53c2-pm3f,
+         -mmjf-rqrv-855v) that hit 10.0.6 itself; the 10.x line is patched at 10.0.10. Pin forward
+         to clear the audit under TreatWarningsAsErrors. Design-time only — ships nothing to consumers. -->
+    <PackageVersion Include="System.Security.Cryptography.Xml" Version="10.0.10" Condition="'$(TargetFramework)' != 'net8.0'" />
     <!-- net8.0: the EF Core 8 Design graph pulls the 8.0.x line; both advisories above are
          patched in 8.0.2 on that line. -->
     <PackageVersion Include="System.Security.Cryptography.Xml" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
