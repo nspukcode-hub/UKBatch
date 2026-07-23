@@ -1,6 +1,7 @@
 using UKBatch.Api;
 using UKBatch.AspNetCore;
 using UKBatch.AspNetCore.DevAuth;
+using UKBatch.AspNetCore.OpenIdConnect;
 using UKBatch.Dashboard;
 using UKBatch.Dashboard.Configuration;
 using UKBatch.Storage.EntityFrameworkCore;
@@ -33,21 +34,48 @@ var allowAnonymous = (bool.TryParse(cfg["UKBATCH_ALLOW_ANONYMOUS"], out var aa) 
     || (bool.TryParse(cfg["UKBatch:AllowAnonymous"], out var aaS) && aaS);
 var enableDevAuth = (bool.TryParse(cfg["UKBATCH_DEV_AUTH"], out var da) && da)
     || (bool.TryParse(cfg["UKBatch:DevAuth"], out var daS) && daS);
+// OIDC posture: setting an authority is the opt-in signal. Flat env var wins, then the structured key.
+var oidcAuthority = cfg["UKBATCH_OIDC_AUTHORITY"] ?? cfg["UKBatch:Oidc:Authority"];
+var enableOidc = !string.IsNullOrWhiteSpace(oidcAuthority);
 
-if (!allowAnonymous && !enableDevAuth)
+if (!allowAnonymous && !enableDevAuth && !enableOidc)
 {
     throw new InvalidOperationException(
-        "UKBatch.Server refuses to start without an explicit auth posture. This server has no " +
-        "production authentication scheme in this release and would otherwise expose trigger, cancel, " +
-        "delete, worker-registration and SignalR endpoints anonymously. Choose ONE:\n" +
+        "UKBatch.Server refuses to start without an explicit auth posture. This server would otherwise " +
+        "expose trigger, cancel, delete, worker-registration and SignalR endpoints anonymously. Choose ONE:\n" +
+        "  • Set UKBATCH_OIDC_AUTHORITY (with client id/secret) to require OpenID Connect login with " +
+        "viewer/operator role-gating — the production posture.\n" +
         "  • Set UKBATCH_ALLOW_ANONYMOUS=true to run anonymously ONLY behind a trusted network or an " +
         "external auth gateway (reverse proxy / API gateway that authenticates callers).\n" +
         "  • Set UKBATCH_DEV_AUTH=true for demos — registers a header-trusting dev scheme (NOT secure; " +
-        "callers self-assert identity via X-Dev-User / X-Dev-Roles).\n" +
-        "  • Wait for the OIDC support planned for a future release.");
+        "callers self-assert identity via X-Dev-User / X-Dev-Roles).");
 }
 
-if (enableDevAuth)
+if (enableOidc)
+{
+    // OpenID Connect (e.g. Keycloak): interactive cookie login for the dashboard + JWT bearer for the
+    // API, with viewer/operator role-gating. The authority discovers its endpoints from
+    // {authority}/.well-known/openid-configuration; no identity-provider-specific code lives here.
+    builder.Services.AddUKBatchOpenIdConnect(o =>
+    {
+        o.Authority = oidcAuthority;
+        o.ClientId = cfg["UKBATCH_OIDC_CLIENT_ID"] ?? cfg["UKBatch:Oidc:ClientId"];
+        o.ClientSecret = cfg["UKBATCH_OIDC_CLIENT_SECRET"] ?? cfg["UKBatch:Oidc:ClientSecret"];
+        o.Audience = cfg["UKBATCH_OIDC_AUDIENCE"] ?? cfg["UKBatch:Oidc:Audience"];
+        var operatorRoles = cfg["UKBATCH_OIDC_OPERATOR_ROLES"] ?? cfg["UKBatch:Oidc:OperatorRoles"];
+        if (!string.IsNullOrWhiteSpace(operatorRoles))
+        {
+            o.OperatorRoles = operatorRoles
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToList();
+        }
+        if (bool.TryParse(cfg["UKBATCH_OIDC_REQUIRE_HTTPS_METADATA"], out var requireHttps))
+        {
+            o.RequireHttpsMetadata = requireHttps;
+        }
+    });
+}
+else if (enableDevAuth)
 {
     // Header-trusting dev scheme: an operator can approve via curl with `X-Dev-User` + `X-Dev-Roles: ops`.
     // Callers self-assert identity with no verification — demos only. The helper registers the scheme +
@@ -127,6 +155,9 @@ if (enableDashboard)
 {
     builder.Services.AddUKBatchDashboard(opts =>
     {
+        // Under the OIDC posture the dashboard forwards each signed-in user's token to the API rather
+        // than a single static machine identity.
+        opts.PerUserAuthentication = enableOidc;
         if (!opts.Services.Any(s => string.Equals(s.Name, "self", StringComparison.Ordinal)))
         {
             var selfBase = cfg["UKBatch:Dashboard:SelfBaseUrl"] ?? "http://localhost:8080/api/";
@@ -161,6 +192,16 @@ if (enableDashboard)
 
 var app = builder.Build();
 
+// OIDC without an audience accepts any token the realm issued (issuer + signature only) — workable for
+// a dedicated realm, but a shared realm should mint an API audience and set it here.
+if (enableOidc && string.IsNullOrWhiteSpace(cfg["UKBATCH_OIDC_AUDIENCE"] ?? cfg["UKBatch:Oidc:Audience"]))
+{
+    app.Logger.LogWarning(
+        "UKBATCH_OIDC_AUDIENCE is not set: bearer tokens are accepted on issuer and signature alone, so a " +
+        "token minted for ANY application in this realm can call the API. In production, register an " +
+        "audience with the identity provider (for Keycloak, an audience mapper) and set UKBATCH_OIDC_AUDIENCE.");
+}
+
 // Loud startup warning for the anonymous posture (the throw above guarantees a posture is set; the
 // DevAuth helper logs its own warning via the startup guard it registers).
 if (allowAnonymous && !enableDevAuth)
@@ -180,7 +221,13 @@ if (enableDashboard)
     app.UseAntiforgery();   // REQUIRED — MapRazorComponents emits anti-forgery metadata; else /dashboard 500
 }
 
-app.MapGroup("/api").MapUKBatchApi();                       // REST + hub + /api/workers/*
+var apiGroup = app.MapGroup("/api").MapUKBatchApi();        // REST + hub + /api/workers/*
+if (enableOidc)
+{
+    // Reads require a viewer, writes require an operator; approve/reject require an authenticated caller
+    // (the gate's own allowed-roles is the finer authority). Untouched under the other postures.
+    apiGroup.RequireUKBatchRoleAuthorization();
+}
 if (transport is "http")
 {
     app.MapUKBatchHttpTransport();                          // receiver endpoints (the orchestrator can also receive)
@@ -188,7 +235,14 @@ if (transport is "http")
 
 if (enableDashboard)
 {
-    app.MapUKBatchDashboard();
+    var dashboard = app.MapUKBatchDashboard();
+    if (enableOidc)
+    {
+        dashboard.RequireAuthorization();
+        // The dashboard is mounted at /dashboard, so land there after sign-out (the site root is empty);
+        // /dashboard then re-challenges an unauthenticated user back to the provider's login.
+        app.MapUKBatchSignOut(redirectUri: "/dashboard");
+    }
     app.MapStaticAssets();   // Blazor framework assets (_framework/blazor.web.js); order replicates Sample.Dashboard
 }
 

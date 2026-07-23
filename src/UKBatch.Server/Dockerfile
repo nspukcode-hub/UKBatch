@@ -20,6 +20,7 @@ COPY Directory.Build.props Directory.Packages.props global.json .editorconfig ./
 COPY src/UKBatch.Abstractions/UKBatch.Abstractions.csproj                                 src/UKBatch.Abstractions/
 COPY src/UKBatch.Core/UKBatch.Core.csproj                                                 src/UKBatch.Core/
 COPY src/UKBatch.AspNetCore/UKBatch.AspNetCore.csproj                                     src/UKBatch.AspNetCore/
+COPY src/UKBatch.AspNetCore.OpenIdConnect/UKBatch.AspNetCore.OpenIdConnect.csproj         src/UKBatch.AspNetCore.OpenIdConnect/
 COPY src/UKBatch.Api/UKBatch.Api.csproj                                                   src/UKBatch.Api/
 COPY src/UKBatch.Dashboard/UKBatch.Dashboard.csproj                                       src/UKBatch.Dashboard/
 COPY src/UKBatch.Storage.EntityFrameworkCore/UKBatch.Storage.EntityFrameworkCore.csproj   src/UKBatch.Storage.EntityFrameworkCore/

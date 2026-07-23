@@ -70,14 +70,14 @@ jobs:
       - name: Pack
         run: dotnet pack --configuration Release --no-build --output ./artifacts -p:ContinuousIntegrationBuild=true
 
-      # The solution packs exactly nine packages (the server host, samples, and test projects are
+      # The solution packs exactly ten packages (the server host, samples, and test projects are
       # not packable). Guard the count and the version stamp so a packaging regression cannot
       # reach nuget.org.
       - name: Verify package set
         run: |
           count=$(ls artifacts/*.nupkg | wc -l)
-          if [ "$count" -ne 9 ]; then
-            echo "::error::Expected 9 .nupkg files, found $count:"
+          if [ "$count" -ne 10 ]; then
+            echo "::error::Expected 10 .nupkg files, found $count:"
             ls -l artifacts/
             exit 1
           fi

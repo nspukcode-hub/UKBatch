@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using UKBatch.Api.Approvals;
 using UKBatch.Api.Batches;
+using UKBatch.Api.Common;
 using UKBatch.Api.Executions;
 using UKBatch.Api.Hub;
 using UKBatch.Api.Jobs;
@@ -52,6 +53,87 @@ public static class EndpointRouteBuilderExtensions
         return group;
     }
 
+    /// <summary>
+    /// Opt-in role gating for the mounted UKBatch surface. Reads each endpoint's access-kind tag and
+    /// adds an authorization requirement mapping read/decision endpoints to
+    /// <paramref name="readPolicy"/> and write endpoints to <paramref name="writePolicy"/>. Not
+    /// calling this leaves every endpoint anonymous, exactly as the default posture.
+    /// </summary>
+    /// <param name="group">The mounted UKBatch route group (typically <c>app.MapGroup("/api").MapUKBatchApi()</c>).</param>
+    /// <param name="readPolicy">Policy name applied to read and gate-decision endpoints (a viewer-level policy).</param>
+    /// <param name="writePolicy">Policy name applied to write endpoints (an operator-level policy).</param>
+    /// <remarks>
+    /// <para>Approve and reject endpoints map to the read (viewer) policy, NOT the write policy: the
+    /// approval gate's own allowed-roles check is the real authority, so an approver who holds a gate
+    /// role but not the operator role can still act. The worker heartbeat ingest stays ungated
+    /// (reached over a trusted network or gateway).</para>
+    /// <para>The requirement is applied with a <c>Finally</c> convention so it runs AFTER each
+    /// endpoint's own access-kind tag is in place — group conventions run before endpoint
+    /// conventions, so an <c>Add</c> convention would see no tag yet and silently gate nothing. The
+    /// <c>Finally</c> pass also reaches endpoints defined in nested sub-groups such as
+    /// <c>/approvals</c>. It is idempotent and composes with a caller who also chains
+    /// <c>RequireAuthorization</c>: authorization metadata entries combine with AND, so the chained
+    /// default requirement and the role policy both apply.</para>
+    /// <para>Opting into role gating means "no anonymous caller": besides the named policy, every
+    /// gated endpoint also carries a plain authorization requirement (the host's default policy), so
+    /// a permissive or misconfigured named policy can never re-open the surface to unauthenticated
+    /// callers. Endpoints without an access-kind tag fail CLOSED to the write policy — a future
+    /// endpoint that misses its tag ships operator-gated rather than silently anonymous; for the
+    /// same reason, map any endpoints of your own on a separate route group.</para>
+    /// <para>The policy names are the cross-package contract. A host that registers its own
+    /// same-named viewer/operator policies can role-gate the surface without any authentication
+    /// integration package.</para>
+    /// </remarks>
+    public static RouteGroupBuilder RequireUKBatchRoleAuthorization(
+        this RouteGroupBuilder group,
+        string readPolicy = "UKBatch:Viewer",
+        string writePolicy = "UKBatch:Operator")
+    {
+        ArgumentNullException.ThrowIfNull(group);
+        ArgumentException.ThrowIfNullOrWhiteSpace(readPolicy);
+        ArgumentException.ThrowIfNullOrWhiteSpace(writePolicy);
+        ((IEndpointConventionBuilder)group).Finally(builder =>
+        {
+            var kind = builder.Metadata.OfType<UKBatchEndpointAccessMetadata>().LastOrDefault()?.Kind;
+            var policy = kind switch
+            {
+                UKBatchAccessKind.Write => writePolicy,
+                UKBatchAccessKind.Read or UKBatchAccessKind.GateDecision => readPolicy,
+                UKBatchAccessKind.Ingest => null, // worker ingest is deliberately ungated (trusted network / gateway)
+                // Untagged fails CLOSED to the write policy: an endpoint that misses its access-kind
+                // tag ships operator-gated rather than silently anonymous.
+                _ => writePolicy,
+            };
+            if (policy is null)
+            {
+                return;
+            }
+
+            var authorizeData = builder.Metadata.OfType<Microsoft.AspNetCore.Authorization.IAuthorizeData>().ToList();
+
+            // The named policies are host-supplied and may lack an authenticated-user requirement (a
+            // permissive fallback policy can leak in from an auth-off registration elsewhere in the
+            // host). Opting into role gating means "no anonymous caller", so pin that floor with a
+            // plain authorization entry (the default policy denies anonymous) unless one is already
+            // present — e.g. from a chained RequireAuthorization().
+            if (!authorizeData.Any(a => string.IsNullOrEmpty(a.Policy)))
+            {
+                builder.Metadata.Add(new Microsoft.AspNetCore.Authorization.AuthorizeAttribute());
+            }
+
+            // Skip only when THIS policy is already attached (a second convention run). Any other
+            // authorization metadata — e.g. the default entry RequireAuthorization() stamps on every
+            // endpoint — must not suppress the role requirement: entries combine with AND, so adding
+            // ours alongside strengthens the endpoint, while skipping would leave writes reachable by
+            // any authenticated caller.
+            if (!authorizeData.Any(a => string.Equals(a.Policy, policy, StringComparison.Ordinal)))
+            {
+                builder.Metadata.Add(new Microsoft.AspNetCore.Authorization.AuthorizeAttribute(policy));
+            }
+        });
+        return group;
+    }
+
     /// <summary>Maps the Jobs surface (/jobs[...]).</summary>
     public static RouteGroupBuilder MapJobsApi(this RouteGroupBuilder group)
     {
@@ -94,7 +176,10 @@ public static class EndpointRouteBuilderExtensions
         // RouteGroupBuilder implements IEndpointRouteBuilder; cast for ServiceProvider access.
         IEndpointRouteBuilder endpoints = group;
         var options = endpoints.ServiceProvider.GetRequiredService<IOptions<UKBatchOptions>>();
-        group.MapHub<JobStatusHub>(options.Value.HubPath);
+        // Tag the hub as a read surface so an opt-in role-gating convention maps it to the read
+        // policy. Inert until a host opts in — live updates stay anonymous by default.
+        var hub = group.MapHub<JobStatusHub>(options.Value.HubPath);
+        hub.WithMetadata(new UKBatchEndpointAccessMetadata(UKBatchAccessKind.Read));
         return group;
     }
 }

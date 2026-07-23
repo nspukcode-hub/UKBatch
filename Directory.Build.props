@@ -39,7 +39,7 @@
   </PropertyGroup>
 
   <PropertyGroup Label="Versioning">
-    <VersionPrefix>0.2.3</VersionPrefix>
+    <VersionPrefix>0.2.4</VersionPrefix>
     <VersionSuffix>alpha</VersionSuffix>
   </PropertyGroup>
 
@@ -51,6 +51,18 @@
        reachable. Remove this suppression once EF Core Sqlite ships a SQLitePCLRaw built on SQLite 3.50.2+. -->
   <ItemGroup>
     <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-2m69-gcr7-jv3q" />
+  </ItemGroup>
+
+  <!-- Targeted NuGet audit suppression. GHSA-pgww-w46g-26qg / CVE-2026-54570 (mutated XSS in AngleSharp
+       < 1.5.0) reaches the build only transitively, via bunit 1.34 → AngleSharp 1.1.2. The advisory is
+       patched in 1.5.0, but AngleSharp 1.5.x changed the IHtmlCollection indexer that bunit 1.34 calls
+       (FindAll()[i]), so pinning forward makes bunit throw MissingMethodException at test time — the fix
+       is not consumable until bunit ships an AngleSharp-1.5-compatible release. The vulnerability is an
+       mXSS re-parsing bug in untrusted HTML; the only consumer here is bunit's DOM assertions over the
+       dashboard's own trusted rendered markup (test-only, never shipped), so the trigger is not
+       reachable. Remove this suppression and pin AngleSharp forward once bunit is compatible with 1.5+. -->
+  <ItemGroup>
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-pgww-w46g-26qg" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(IsPackable)' == 'true'">

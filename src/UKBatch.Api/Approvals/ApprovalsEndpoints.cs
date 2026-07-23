@@ -36,6 +36,7 @@ internal static class ApprovalsEndpoints
                 });
             })
             .WithUKBatchName(operationIdPrefix, "ListApprovals")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Lists currently pending approval gates; optional role filter narrows to those the caller can act on.");
 
         approvals.MapGet("/by-batch/{batchId}", async (
@@ -48,6 +49,7 @@ internal static class ApprovalsEndpoints
                 return Results.Ok(gates.Select(ApprovalGateViewDto.FromModel).ToList());
             })
             .WithUKBatchName(operationIdPrefix, "ListBatchGates")
+            .WithUKBatchAccess(UKBatchAccessKind.Read)
             .WithSummary("Lists every approval gate (pending and decided) for one batch run, with its decided outcome, for status colouring. Unfiltered read.");
 
         approvals.MapPost("/{id}/approve", async (
@@ -101,6 +103,7 @@ internal static class ApprovalsEndpoints
                 }
             })
             .WithUKBatchName(operationIdPrefix, "ApproveApproval")
+            .WithUKBatchAccess(UKBatchAccessKind.GateDecision)
             .WithSummary("Approves a pending gate. Approver identity is derived from HttpContext.User; the request body has NO approver field.");
 
         approvals.MapPost("/{id}/reject", async (
@@ -159,6 +162,7 @@ internal static class ApprovalsEndpoints
                 }
             })
             .WithUKBatchName(operationIdPrefix, "RejectApproval")
+            .WithUKBatchAccess(UKBatchAccessKind.GateDecision)
             .WithSummary("Rejects a pending gate. Reason is required. Approver identity is derived from HttpContext.User.");
     }
 
@@ -175,8 +179,14 @@ internal static class ApprovalsEndpoints
     private static ApproverContext BuildApproverFromHttpContext(HttpContext http, UKBatchOptions options)
     {
         var isAuthenticated = http.User.Identity?.IsAuthenticated == true;
+        // Resolve the approver identity from the principal, tolerating providers that do not map a
+        // display name: fall back to the standard OpenID Connect username, then the subject id,
+        // before the anonymous sentinel. An unauthenticated caller is always anonymous.
         var identity = isAuthenticated
-            ? (http.User.Identity!.Name ?? "anonymous")
+            ? (http.User.Identity!.Name
+                ?? http.User.FindFirst("preferred_username")?.Value
+                ?? http.User.FindFirst("sub")?.Value
+                ?? "anonymous")
             : "anonymous";
 
         // Harvest roles ONLY from an authenticated principal. An unauthenticated caller therefore

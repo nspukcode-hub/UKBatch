@@ -50,6 +50,7 @@ public sealed class EditorWizardParityTests : TestContext
 {
     public EditorWizardParityTests()
     {
+        this.AddPermitAllAuth();
         // The Editor's DrawflowCanvas imports dag-editor.js in OnAfterRender; Loose mode returns defaults.
         JSInterop.Mode = JSRuntimeMode.Loose;
     }

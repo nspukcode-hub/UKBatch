@@ -41,10 +41,12 @@ else
             <JobStatusBadge Status="@_execution.Status" />
             @if (CanCancel())
             {
-                <button class="btn btn--danger" @onclick="@(() => _confirmCancelOpen = true)" disabled="@_cancelInFlight">
-                    <span class="material-symbols-outlined">cancel</span>
-                    Cancel
-                </button>
+                <AuthorizeView Policy="UKBatch:Operator">
+                    <button class="btn btn--danger" @onclick="@(() => _confirmCancelOpen = true)" disabled="@_cancelInFlight">
+                        <span class="material-symbols-outlined">cancel</span>
+                        Cancel
+                    </button>
+                </AuthorizeView>
             }
         </div>
     </div>

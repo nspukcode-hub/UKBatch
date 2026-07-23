@@ -24,6 +24,7 @@ public sealed class WizardTests : TestContext
 {
     public WizardTests()
     {
+        this.AddPermitAllAuth();
         JSInterop.Mode = JSRuntimeMode.Loose; // DagView preview inside Review step imports the JS module.
     }
 

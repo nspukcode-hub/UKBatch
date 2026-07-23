@@ -3,9 +3,9 @@ using Microsoft.AspNetCore.Builder;
 namespace UKBatch.Api.Common;
 
 /// <summary>
-/// Helper to apply an OpenAPI operation-id prefix uniformly across the
-/// endpoint <c>Map</c> methods so the same surface can be mounted twice (e.g. <c>/api</c> +
-/// <c>/api/secured</c>) without operation-id collisions.
+/// Api-internal helpers chained onto the endpoint <c>Map</c> methods: an OpenAPI operation-id
+/// prefix (so the same surface can be mounted twice, e.g. <c>/api</c> + <c>/api/secured</c>,
+/// without operation-id collisions) and an access-kind tag used by role-gating.
 /// </summary>
 /// <remarks>
 /// <para><c>internal static</c> — this is an Api-internal mounting concern,
@@ -25,5 +25,16 @@ internal static class RouteHandlerBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrEmpty(name);
         return builder.WithName(prefix is null ? name : prefix + name);
+    }
+
+    /// <summary>
+    /// Tags the endpoint with its <see cref="UKBatchAccessKind"/> so an opt-in role-gating
+    /// convention can map it to a policy. The tag is inert on its own — nothing reads it unless the
+    /// host opts in — so adding it leaves default behavior byte-identical.
+    /// </summary>
+    public static RouteHandlerBuilder WithUKBatchAccess(this RouteHandlerBuilder builder, UKBatchAccessKind kind)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        return builder.WithMetadata(new UKBatchEndpointAccessMetadata(kind));
     }
 }

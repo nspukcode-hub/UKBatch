@@ -1,0 +1,70 @@
+# UKBatch — OpenID Connect (Keycloak) demo, isolated from the main stack.
+#
+# One Keycloak (identity provider, pre-imported realm) + one ukbatch-server running the OIDC posture
+# with in-memory storage and in-process transport. Separate compose project name + image tag so this
+# never touches the main `docker compose` stack or its Postgres volume.
+#
+#   docker compose -f docker-compose.oidc.yml up --build
+#
+# The realm ships two realm roles (batch-operator, batch-viewer) and two users
+# (operator/operator-pw, viewer/viewer-pw). The server is reached at http://localhost:5075.
+#
+# Browser cookie login (OpenID Connect code flow) needs the identity provider to present ONE issuer URL
+# to both the browser (host) and the server (compose network). On a developer machine that is the
+# reverse-proxy / shared-hostname job a real deployment already does; here the demo exercises the API
+# path — acquire a token from Keycloak and call the role-gated API with it — which proves JWT bearer
+# validation + nested-role flattening + viewer/operator gating end to end.
+
+name: ukbatch-oidc-demo
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: ukbatch-oidc-keycloak
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_ENABLED: "true"
+      # Pin the issuer so the token's `iss` is the same value the server discovers over the compose
+      # network (http://keycloak:8080/realms/ukbatch), regardless of which host the request came in on.
+      KC_HOSTNAME: http://keycloak:8080
+      KC_HOSTNAME_STRICT: "false"
+    volumes:
+      - ./keycloak/ukbatch-realm.json:/opt/keycloak/data/import/ukbatch-realm.json:ro
+    ports:
+      - "8081:8080"   # host access for token acquisition (Keycloak's own /realms endpoints)
+
+  ukbatch-server:
+    image: ukbatch/server:oidc-demo
+    container_name: ukbatch-oidc-server
+    build:
+      context: .
+      dockerfile: src/UKBatch.Server/Dockerfile
+    # Keycloak 26's image ships no health-probe tool, so gate on start (it is ready in a few seconds).
+    # The server's OpenID Connect discovery is lazy (first authenticated call), so it does not need the
+    # identity provider up at boot.
+    depends_on:
+      keycloak:
+        condition: service_started
+    environment:
+      UKBATCH_SERVICE_NAME: ukbatch-server
+      UKBATCH_STORAGE: inmemory
+      UKBATCH_TRANSPORT: inprocess
+      UKBATCH_ENABLE_DASHBOARD: "true"
+      # OIDC posture — setting the authority is the opt-in signal. The server reaches Keycloak over the
+      # compose network; the realm's issuer is pinned to this same URL (KC_HOSTNAME above).
+      UKBATCH_OIDC_AUTHORITY: "http://keycloak:8080/realms/ukbatch"
+      UKBATCH_OIDC_CLIENT_ID: "ukbatch-dashboard"
+      UKBATCH_OIDC_CLIENT_SECRET: "ukbatch-dashboard-secret"
+      UKBATCH_OIDC_OPERATOR_ROLES: "batch-operator"
+      # Keycloak here serves plain HTTP on the internal network; skip the HTTPS-metadata requirement.
+      UKBATCH_OIDC_REQUIRE_HTTPS_METADATA: "false"
+      UKBatch__Dashboard__SelfBaseUrl: "http://localhost:8080/api/"
+    ports:
+      - "5075:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20

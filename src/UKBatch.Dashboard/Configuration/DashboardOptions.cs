@@ -43,4 +43,13 @@ public sealed class DashboardOptions
     /// (up to 4× fan-out) is debounced into one <c>StateHasChanged</c> per window. Default <c>100ms</c>.
     /// </summary>
     public TimeSpan UiRefreshDebounce { get; set; } = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>
+    /// When <c>true</c>, the dashboard forwards each signed-in user's own bearer token to the API
+    /// (REST and SignalR) instead of a shared machine identity, and binds a REST + hub client per
+    /// circuit. Requires an authentication integration to be registered first (it supplies the token
+    /// accessor); the server + workers host wires <c>AddUKBatchOpenIdConnect</c> before the dashboard.
+    /// Default <c>false</c> — the shared-identity, app-wide-connected behavior.
+    /// </summary>
+    public bool PerUserAuthentication { get; set; }
 }

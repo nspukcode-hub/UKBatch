@@ -91,11 +91,13 @@ else
     <section class="surface-card">
         <div class="surface-card__header">
             <h2 class="surface-card__title">Trigger</h2>
-            <button class="btn btn--primary" @onclick="TriggerAsync"
-                    disabled="@(_triggerInFlight || (_definition.DeclaredParameters.Count > 0 && !_typedValid))">
-                <span class="material-symbols-outlined">play_arrow</span>
-                @(_triggerInFlight ? "Triggering…" : "Run Now")
-            </button>
+            <AuthorizeView Policy="UKBatch:Operator">
+                <button class="btn btn--primary" @onclick="TriggerAsync"
+                        disabled="@(_triggerInFlight || (_definition.DeclaredParameters.Count > 0 && !_typedValid))">
+                    <span class="material-symbols-outlined">play_arrow</span>
+                    @(_triggerInFlight ? "Triggering…" : "Run Now")
+                </button>
+            </AuthorizeView>
         </div>
         <div class="surface-card__body">
             @if (_definition.DeclaredParameters.Count > 0)

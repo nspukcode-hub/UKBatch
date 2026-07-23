@@ -14,6 +14,10 @@
    from MapRazorComponents<App> — the host MUST also call app.UseAntiforgery(). *@
 @page "/dashboard/{ServiceName}/batches/editor"
 @page "/dashboard/{ServiceName}/batches/{BatchId}/editor"
+@* Authoring is a write surface: gate the route to the operator policy so a viewer never reaches the
+   editor (the server enforces the same policy on save; this closes the route). Under the auth-off
+   default the policy always succeeds, so nothing changes there. *@
+@attribute [Authorize(Policy = "UKBatch:Operator")]
 @using System.Globalization
 @inject IUKBatchServiceRegistry Registry
 @inject IUKBatchClientFactory ClientFactory
@@ -159,10 +163,12 @@ else
             }
             <a class="btn btn--ghost" href="/dashboard/@ServiceName/batches">Cancel</a>
             <a class="btn btn--secondary" href="@WizardUrl()">Open in form wizard</a>
-            <button class="btn btn--primary" @onclick="SaveAsync" disabled="@_saving">
-                <span class="material-symbols-outlined">save</span>
-                @(_saving ? "Saving…" : (_model.Id is null ? "Create batch" : "Save changes"))
-            </button>
+            <AuthorizeView Policy="UKBatch:Operator">
+                <button class="btn btn--primary" @onclick="SaveAsync" disabled="@_saving">
+                    <span class="material-symbols-outlined">save</span>
+                    @(_saving ? "Saving…" : (_model.Id is null ? "Create batch" : "Save changes"))
+                </button>
+            </AuthorizeView>
         </div>
     </div>
 }

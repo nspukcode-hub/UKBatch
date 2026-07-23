@@ -4,7 +4,18 @@
 
 <Router AppAssembly="@typeof(App).Assembly">
     <Found Context="routeData">
-        <RouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)" />
+        <AuthorizeRouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)">
+            <NotAuthorized>
+                <div class="surface-card">
+                    <p>You are not signed in, or you do not have access to this page.</p>
+                </div>
+            </NotAuthorized>
+            <Authorizing>
+                <div class="surface-card">
+                    <p>Signing in…</p>
+                </div>
+            </Authorizing>
+        </AuthorizeRouteView>
         <FocusOnNavigate RouteData="@routeData" Selector="h1" />
     </Found>
 </Router>

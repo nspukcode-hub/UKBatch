@@ -5,6 +5,10 @@
    — the host MUST also call app.UseAntiforgery(). *@
 @page "/dashboard/{ServiceName}/batches/new"
 @page "/dashboard/{ServiceName}/batches/{BatchId}/edit"
+@* Authoring is a write surface: gate the route to the operator policy so a viewer never reaches the
+   form (the server enforces the same policy on submit; this closes the route). Under the auth-off
+   default the policy always succeeds, so nothing changes there. *@
+@attribute [Authorize(Policy = "UKBatch:Operator")]
 @using System.Globalization
 @inject IUKBatchServiceRegistry Registry
 @inject IUKBatchClientFactory ClientFactory
@@ -116,10 +120,12 @@ else
             }
             else
             {
-                <button class="btn btn--primary" @onclick="SubmitAsync" disabled="@_submitting">
-                    <span class="material-symbols-outlined">save</span>
-                    @(_submitting ? "Saving…" : (_model.Id is null ? "Create batch" : "Save changes"))
-                </button>
+                <AuthorizeView Policy="UKBatch:Operator">
+                    <button class="btn btn--primary" @onclick="SubmitAsync" disabled="@_submitting">
+                        <span class="material-symbols-outlined">save</span>
+                        @(_submitting ? "Saving…" : (_model.Id is null ? "Create batch" : "Save changes"))
+                    </button>
+                </AuthorizeView>
             }
         </div>
     </div>

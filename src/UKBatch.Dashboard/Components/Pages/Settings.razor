@@ -1,5 +1,7 @@
 @* Settings page — registry + per-service state + theme toggle + operator claim-config warning. *@
 @page "/dashboard/settings"
+@using System.Security.Claims
+@using UKBatch.Dashboard.Security
 @implements IDisposable
 @inject IUKBatchServiceRegistry Registry
 @inject IUKBatchClientFactory ClientFactory
@@ -14,6 +16,29 @@
 @* OPERATOR WARNING (shared component). Loud banner on top so operators reach the
    production posture before getting confused by empty approval lists. *@
 <OperatorClaimWarning />
+
+@* Session diagnostics — surfaces the identity, roles, and claim types the server sees for the current
+   user, so a role-claim mismatch (empty approval queues, unexpected 403s) is self-diagnosable. Shown
+   only for a real session; the open-default placeholder principal is not a sign-in worth reporting. *@
+<AuthorizeView Context="session">
+    <Authorized>
+        @if (IsRealSession(session))
+        {
+            <section class="surface-card">
+                <div class="surface-card__header">
+                    <h2 class="surface-card__title">Session</h2>
+                </div>
+                <div class="surface-card__body">
+                    <dl class="definition-list">
+                        <dt>Signed in as</dt><dd>@(session.User.Identity?.Name ?? "—")</dd>
+                        <dt>Roles</dt><dd>@RolesDisplay(session)</dd>
+                        <dt>Claim types</dt><dd class="mono">@ClaimTypesDisplay(session)</dd>
+                    </dl>
+                </div>
+            </section>
+        }
+    </Authorized>
+</AuthorizeView>
 
 <section class="surface-card">
     <div class="surface-card__header">
@@ -77,6 +102,21 @@
 @code {
     private readonly Dictionary<string, IUKBatchClient> _clients = new(StringComparer.Ordinal);
     private readonly Dictionary<string, UKBatchClientState> _states = new(StringComparer.Ordinal);
+
+    private static bool IsRealSession(AuthenticationState state) =>
+        state.User.Identity?.AuthenticationType != PermitAllAuthenticationStateProvider.AuthDisabledAuthenticationType;
+
+    private static string RolesDisplay(AuthenticationState state)
+    {
+        var roles = state.User.FindAll(ClaimTypes.Role).Select(c => c.Value).ToArray();
+        return roles.Length == 0 ? "(none)" : string.Join(", ", roles);
+    }
+
+    private static string ClaimTypesDisplay(AuthenticationState state)
+    {
+        var types = state.User.Claims.Select(c => c.Type).Distinct(StringComparer.Ordinal).ToArray();
+        return types.Length == 0 ? "(none)" : string.Join(", ", types);
+    }
 
     protected override void OnInitialized()
     {

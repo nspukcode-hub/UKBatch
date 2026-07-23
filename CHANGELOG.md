@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.4-alpha] - 2026-07-19
+
+Sign-in for the dashboard and the API through an external identity provider: users log in with OpenID Connect, and both the screen and the API act on the roles the provider issues.
+
+### Added
+
+- **OpenID Connect login and role-gating** — a new package, `UKBatch.AspNetCore.OpenIdConnect`. `AddUKBatchOpenIdConnect(...)` wires a cookie session with an interactive OpenID Connect login for the dashboard and JWT bearer validation for the API, over any standard provider (Keycloak, Azure AD, Auth0, IdentityServer) reached by its authority URL — there is no provider-specific code. It defines two roles: a **viewer** (any signed-in user) reads, and an **operator** (a role name you map to your provider's) performs write actions such as trigger, create, cancel, and retry. Approval gates keep their own per-gate allowed-roles check, so an approver who holds a gate's role can still decide it without being an operator.
+- **Role-gating the API** — `RequireUKBatchRoleAuthorization()` on the `MapUKBatchApi` group gates read endpoints to the viewer policy and write endpoints to the operator policy, while worker heartbeat ingest stays open. Endpoints are classified in the library; calling the method is opt-in, so an ungated host is unchanged.
+- **Per-user token forwarding** — when the dashboard runs under OpenID Connect, each signed-in user's access token flows from the dashboard to the API, so the API sees the real user and their roles, and an approval is recorded under the real person rather than a shared service identity. A server-side token store keyed by the user carries the token across the Blazor Server render boundary and refreshes it when it nears expiry.
+- **Nested-role flattening** — providers that nest roles inside a claim (for example Keycloak's `realm_access.roles` and `resource_access.*.roles`) are flattened to standard role claims automatically, so the policies and the approval-gate check read them without extra provider configuration. The claim paths are configurable.
+- **Dashboard sign-in awareness** — the dashboard cascades the signed-in user's identity, hides or disables write controls a viewer cannot use, shows who is signed in with a sign-out control, and adds a session-diagnostics panel that lists the roles and claim types the server sees. With no authentication wired, every control renders as before.
+- **Server OpenID Connect posture** — `UKBatch.Server` accepts an OpenID Connect posture via `UKBATCH_OIDC_AUTHORITY` (plus client id/secret, audience, and operator roles), alongside the existing anonymous and dev-auth postures. `MapUKBatchSignOut` maps a sign-out endpoint. A runnable `docker-compose.oidc.yml` starts Keycloak with a pre-imported realm.
+
+### Changed
+
+- An approval's recorded identity now falls back from the name claim to `preferred_username` then `sub`, so a signed-in user without a mapped name claim is still recorded by their real identity rather than as anonymous.
+
+### Security
+
+- A role-gated API group never admits an anonymous caller: every gated endpoint carries an authenticated-user floor in addition to its named policy, so a permissive or misconfigured policy definition elsewhere in the host cannot re-open the surface. Endpoints without an access classification fail closed to the operator policy — map your own endpoints on a separate route group.
+- Chaining `RequireAuthorization()` with `RequireUKBatchRoleAuthorization()` now applies both: the role requirement is added alongside the default one (they combine with AND) instead of being skipped, so a viewer can no longer reach write endpoints in that composition.
+- The dashboard's auth-off fallback policies no longer overwrite same-named viewer/operator policies a host has already defined.
+- `ViewerRoles` is enforced: when set, read access narrows to those roles (operators always read); empty keeps the documented any-authenticated-user default.
+- The signed-in user's bearer token is only forwarded over HTTPS or to a loopback address; a plain-HTTP non-loopback service gets the request without the token, with a warning naming the misconfigured base address.
+- Sign-out fully evicts the user's server-side tokens even when a token refresh is in flight, the token-refresh HTTP client no longer follows redirects (a redirect would re-send the client secret and refresh token), and the per-user token key is built collision-proof. Circuit token seeding snapshots the user and tokens while the connection request is provably still the user's own.
+- The batch wizard and visual editor routes require the operator policy, matching the write endpoints they submit to.
+
+### Known limitations
+
+- The role model is two levels (viewer/operator). A fine-grained permission matrix, an audit log, and user/role management screens are not part of this release.
+- Interactive browser cookie-login works end to end. The one requirement is that the identity provider and the dashboard appear to the browser under one shared site — the reverse-proxy / shared-hostname (and HTTPS) setup a real deployment already has — because the login callback and its correlation cookie are same-site. For local development over plain HTTP, placing both under one parent domain (same-site) is enough; no HTTPS is required. Only when HTTPS metadata is not required (a conscious opt-out; the default requires it) the callback uses query response mode with SameSite=Lax correlation/nonce cookies whose `Secure` flag follows the request scheme, and the flow stays authorization code + PKCE.
+- Worker-to-server heartbeat is still anonymous (observability only, off the dispatch path).
+- With `SaveTokens` the session cookie holds the tokens under Data Protection; a multi-replica deployment needs a shared Data Protection key ring, and a large token may require cookie chunking.
+- Audience validation is off unless `Audience` is set, so any token the authority issued is accepted on issuer and signature alone. In production, register an audience with the provider (for Keycloak, an audience mapper) and set it; the server logs a warning when it is missing.
+- A central dashboard registered against several services forwards the same user token to each of them; per-service scopes/audiences are a later release. The default single-service topology is unaffected.
+- The default role flattening merges every client's `resource_access` roles into one namespace; in a realm shared by several applications, narrow the path to `resource_access.<client-id>.roles` or keep the gating role names unique to this application.
+
 ## [0.2.3-alpha] - 2026-07-15
 
 Data flow and correctness between the steps of a batch: a step can hand values to the steps after it, a failure can undo the work already done, and a flow can skip a step or route to one of several branches based on what it finds.

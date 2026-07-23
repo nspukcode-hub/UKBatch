@@ -40,17 +40,19 @@ else
                 @* Pausing a schedule stops its cron from firing without deleting the cron, and is
                    independent of the manual Run trigger and of cancelling an in-flight run. Only a
                    scheduled batch can be paused. *@
-                @if (_definition.Schedule is { Length: > 0 })
-                {
-                    <button class="btn btn--secondary" @onclick="ToggleScheduleAsync" disabled="@_scheduleToggleInFlight">
-                        <span class="material-symbols-outlined">@(_definition.ScheduleEnabled ? "pause" : "play_arrow")</span>
-                        @(_definition.ScheduleEnabled ? "Pause schedule" : "Resume schedule")
+                <AuthorizeView Policy="UKBatch:Operator">
+                    @if (_definition.Schedule is { Length: > 0 })
+                    {
+                        <button class="btn btn--secondary" @onclick="ToggleScheduleAsync" disabled="@_scheduleToggleInFlight">
+                            <span class="material-symbols-outlined">@(_definition.ScheduleEnabled ? "pause" : "play_arrow")</span>
+                            @(_definition.ScheduleEnabled ? "Pause schedule" : "Resume schedule")
+                        </button>
+                    }
+                    <button class="btn btn--primary" @onclick="RunAsync" disabled="@_runInFlight">
+                        <span class="material-symbols-outlined">play_arrow</span>
+                        @(_runInFlight ? "Triggering…" : "Run")
                     </button>
-                }
-                <button class="btn btn--primary" @onclick="RunAsync" disabled="@_runInFlight">
-                    <span class="material-symbols-outlined">play_arrow</span>
-                    @(_runInFlight ? "Triggering…" : "Run")
-                </button>
+                </AuthorizeView>
             </div>
         </div>
         <div class="surface-card__body">
@@ -89,12 +91,14 @@ else
                 {
                     @* Single Edit → the visual editor; it offers an "Open in form wizard" link of its
                        own, so one button on Detail is enough. *@
-                    <a class="btn btn--secondary" href="/dashboard/@ServiceName/batches/@Uri.EscapeDataString(_definition.Id)/editor">
-                        <span class="material-symbols-outlined">edit</span> Edit
-                    </a>
-                    <button class="btn btn--danger" @onclick="@(() => _confirmDeleteOpen = true)" disabled="@_deleteInFlight">
-                        <span class="material-symbols-outlined">delete</span> Delete
-                    </button>
+                    <AuthorizeView Policy="UKBatch:Operator">
+                        <a class="btn btn--secondary" href="/dashboard/@ServiceName/batches/@Uri.EscapeDataString(_definition.Id)/editor">
+                            <span class="material-symbols-outlined">edit</span> Edit
+                        </a>
+                        <button class="btn btn--danger" @onclick="@(() => _confirmDeleteOpen = true)" disabled="@_deleteInFlight">
+                            <span class="material-symbols-outlined">delete</span> Delete
+                        </button>
+                    </AuthorizeView>
                 }
             </div>
         </div>

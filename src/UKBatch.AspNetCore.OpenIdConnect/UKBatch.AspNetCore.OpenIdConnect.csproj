@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>OpenID Connect / Keycloak login and viewer/operator role-gating for UKBatch dashboards and APIs. Wires cookie + OpenID Connect + JWT bearer over Microsoft's first-party handlers, flattens nested realm/resource roles, and forwards the signed-in user's token from the dashboard to the API. Call AddUKBatchOpenIdConnect.</Description>
+    <RootNamespace>UKBatch.AspNetCore.OpenIdConnect</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\UKBatch.AspNetCore\UKBatch.AspNetCore.csproj" />
+  </ItemGroup>
+
+  <!-- Cookie authentication is part of the shared framework (FrameworkReference above). Only the
+       OpenID Connect and JWT bearer handlers are separate packages; versions are pinned per TFM in
+       Directory.Packages.props because the ASP.NET Core line tracks the runtime major. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="UKBatch.AspNetCore.OpenIdConnect.Tests" />
+  </ItemGroup>
+
+  <!-- Override the repo-root README pack from Directory.Build.props with the per-project README. -->
+  <ItemGroup>
+    <None Remove="$(MSBuildThisFileDirectory)..\..\README.md" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

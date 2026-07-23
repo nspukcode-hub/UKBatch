@@ -11,6 +11,8 @@ namespace UKBatch.Dashboard.Tests.Pages;
 
 public sealed class ExecutionsDetailTests : TestContext
 {
+    public ExecutionsDetailTests() => this.AddPermitAllAuth();
+
     private static JobExecution Snapshot(string id, JobStatus status) => new()
     {
         ExecutionId = id,
